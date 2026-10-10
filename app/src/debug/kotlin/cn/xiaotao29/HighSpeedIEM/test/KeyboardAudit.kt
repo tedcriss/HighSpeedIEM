@@ -49,7 +49,10 @@ internal class KeyboardAudit(
                 }
                 if (view is ViewGroup) repeat(view.childCount) { inspect(view.getChildAt(it)) }
             }
-            android.view.inspector.WindowInspector.getGlobalWindowViews().filter { it.hasWindowFocus() }.forEach(::inspect)
+            val windows = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                android.view.inspector.WindowInspector.getGlobalWindowViews()
+            } else listOf(activity.window.decorView)
+            windows.filter { it.hasWindowFocus() }.forEach(::inspect)
         }
         return result
     }

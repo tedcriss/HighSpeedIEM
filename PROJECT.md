@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.3`（versionCode 14），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.4`（versionCode 15），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -32,6 +32,7 @@ adb shell am instrument -w -e scenarios native-selftest,launch-tabs,device-valid
 场景：`native-selftest, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
 route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, rotation, compact-mode, compact-routes, compact-binding-phone`。
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
+动效专项：`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
 后两项均在手机上通过主线程 `Activity.setContent` 临时加载实际 `CompactFlow`，并在 `finally` 恢复手机界面；
 small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动手表模拟器，不更改手机系统分辨率。
 输出逐场景 `=== SCENARIO <名称>: PASS/FAIL - 说明` 与 `=== SUMMARY`。
@@ -153,7 +154,8 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   未定义类型回退为系统常量名加编号，能力提示始终保留原始类型。完整列表见 [设备类型映射](设备类型映射.md)。
 - 所有下拉框保留原生 OutlinedTextField；菜单宽度 240–360dp，选中项背景高亮、长文本折行。
   收起时的已选值超过可用宽度会使用原生文字滚动接口自动横向滚动，短文字不滚动；
-  首尾各停留 1.5 秒，展开菜单时暂停，值或宽度变化后从开头重新显示。边框、标签和箭头保持固定。
+  首尾各停留 1.5 秒，双向平滑滚动，展开菜单时暂停，值或宽度变化后从开头重新显示。
+  系统关闭动画时保持起始文字，避免瞬间反复跳动。边框、标签和箭头保持固定。
   普通项底色与选中高亮共用同一圆角矩形形状。
   任务页收起时显示“ID 设备编号 · 通道 索引”，仅设备编号与通道索引的数值通过原生
   OutputTransformation 局部加粗；展开菜单第一行显示“ID 设备编号 · 通道 索引”，
@@ -178,10 +180,30 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   列表与 Snackbar 使用容器实际测量高度避让，适配字体增大和启动/停止文字变化。
 - 2.0 起任务页工具栏容器使用固定 6dp 阴影，展开与收起均指定同一 elevation；
   禁用、可启动、运行、按下与聚焦等状态都使用相同容器阴影。
-- 保留全局无波纹、触控反选不残留焦点框和各 UI 自身订阅 session.version 的既有行为。
+- 2.4 恢复 Material 3 原生水波纹；触控反选不残留焦点框，各 UI 自身订阅 session.version。
   下拉关闭时，触控清焦点，按键操作恢复到原入口。
   输入与输出页提示条靠近页面底部，任务页抬高到转发按钮上方。
 - 设计依据：[Material Design 3 in Compose](https://developer.android.com/develop/ui/compose/designsystems/material3)。
+
+## 视觉动效（2.4，2026-10-10）
+
+- 主题使用 `MotionScheme.standard()`，颜色/透明度使用 effects 参数，尺寸/位置使用 spatial 参数；
+  沿用 Compose 的系统动画时长缩放，不添加自定义动画引擎、强制振动或持续装饰动画。
+- 输入/输出卡片使用原生 `Card(onClick, enabled)`，按下波纹沿 24dp 圆角裁切；
+  选中与取消的容器/文字颜色平滑变化。内嵌复选框、参数框和能力入口保留独立操作及反馈。
+- 标准导航页面淡入，离开的页面立即释放组合与音频预览，避免退场动画保留旧焦点、弹层或点击入口。
+  原生 SaveableStateHolder 保留各页滚动位置，返回时不恢复音频测试。加载遮罩淡入淡出，加载圈由原生控件绘制。
+- 转发行按固定行 ID 使用 `animateItem` 淡入/淡出并平滑重排；状态徽标与启动/停止文字平滑调整宽度，
+  操作图标使用原生 Crossfade。运行参数只在出现/消失时展开/收起，不给实时数值叠加循环动画。
+- 紧凑界面的页点点击和左右键使用原生 Pager 动画，与滑动手势一致；当前页点平滑变为短胶囊，
+  保持独立 48dp 点击区与 Tab 语义。通道列表使用原生 ListItem 选中反馈及 animateItem。
+  中号启动按钮使用 `ButtonDefaults.shapesFor` 的原生按压形状及默认 elevation。
+- 下拉菜单、箭头、复选框、导航选中指示、Rich tooltip 和 Snackbar 沿用控件自带动效；
+  焦点立即跟随真实操作目标，不延迟键盘与无障碍反馈。系统动画关闭时可照常选择、切页和启停。
+
+依据：[Material Motion](https://m3.material.io/styles/motion)、
+[MotionScheme](https://developer.android.com/reference/kotlin/androidx/compose/material3/MotionScheme)、
+[Compose 原生动效](https://developer.android.com/develop/ui/compose/animation/composables-modifiers)。
 
 ## 非触控与无障碍（2.3）
 

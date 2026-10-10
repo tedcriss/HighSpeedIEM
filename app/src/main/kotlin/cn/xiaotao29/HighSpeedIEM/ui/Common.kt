@@ -1,5 +1,12 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.Crossfade
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.background
@@ -27,6 +34,17 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.input.pointer.pointerInput
 
+/** Only decorative pixels overlap; the action keeps one native click target. */
+@Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+internal fun ForwardingIcon(running: Boolean, modifier: Modifier = Modifier) {
+    Crossfade(running, animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "forwarding-icon") { stopping ->
+        Icon(if (stopping) Icons.Filled.Close else Icons.Filled.PlayArrow,
+            contentDescription = null, modifier = modifier)
+    }
+}
+
 /** A shared heading hierarchy for the three standard destinations. */
 @Composable
 fun PageHeading(title: String, description: String, status: String) {
@@ -45,12 +63,14 @@ fun PageHeading(title: String, description: String, status: String) {
 
 /** Shared by the phone heading and compact information module. */
 @Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 fun StatusBadge(status: String) {
     Surface(color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         shape = MaterialTheme.shapes.extraLarge) {
         Text(status, style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            modifier = Modifier.animateContentSize(MaterialTheme.motionScheme.fastSpatialSpec())
+                .padding(horizontal = 12.dp, vertical = 6.dp)
                 .semantics { liveRegion = LiveRegionMode.Polite },
             maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -61,12 +81,13 @@ fun StatusBadge(status: String) {
  * The overlay absorbs touches so controls cannot be operated while probing.
  */
 @Composable
-fun LoadingOverlay(showHint: Boolean) {
+fun LoadingOverlay(showHint: Boolean, blockInput: Boolean = true) {
     Box(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-            .pointerInput(Unit) {
+            .pointerInput(blockInput) {
+                if (!blockInput) return@pointerInput
                 awaitPointerEventScope {
                     while (true) awaitPointerEvent().changes.forEach { it.consume() }
                 }

@@ -91,6 +91,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 "keyboard-compact-phone" to ::scenarioKeyboardCompactPhone,
                 "keyboard-overflow-phone" to ::scenarioKeyboardOverflowPhone,
                 "keyboard-compact-small-phone" to ::scenarioKeyboardCompactSmallPhone,
+                "visual-motion" to ::scenarioVisualMotion,
             )
             val names = if (requested.isEmpty() || requested.contains("all")) {
                 scenarios.keys.toList()
@@ -310,6 +311,13 @@ class UnifiedTestInstrumentation : Instrumentation() {
     }
 
     // ---- scenarios ----
+
+    private fun scenarioVisualMotion(): Pair<Boolean, String> {
+        val s = session()
+        if (!awaitDiscovery(s) || !waitUntil(10000) { !s.forwardingLockedPublic }) return false to "session busy"
+        val activity = s.listener as? MainActivity ?: return false to "activity missing"
+        return true to MotionAudit(this, device, activity, s).run()
+    }
 
     private fun scenarioNativeSelfTest(): Pair<Boolean, String> {
         NativeAudio.loadError?.let { return false to it }
@@ -1376,6 +1384,9 @@ class UnifiedTestInstrumentation : Instrumentation() {
         val activity = s.listener as? MainActivity ?: return false to "activity missing"
         try {
             runOnMainSync {
+                // This harness temporarily replaces the Scaffold/SnackbarHost.
+                // Consume any notice from a prior scenario before that host goes away.
+                s.consumeNotice()
                 activity.setContent {
                     HighSpeedIEMTheme {
                         androidx.compose.material3.Surface { CompactFlow(activity, s) }

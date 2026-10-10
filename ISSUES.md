@@ -75,11 +75,11 @@
 
 所有 `OptionDropdown`（输入页参数、任务页路由通道）的选中项采用**背景高亮**（`SelectableDropdownMenuItem` + `MenuDefaults.selectableItemColors(selectedContainerColor = primaryContainer, selectedTextColor = onPrimaryContainer)`），不再使用尾部勾选图标。material3 1.5.0-beta01 的菜单 API 已重构：旧的 `DropdownMenuItemDefaults` 不存在，选中态用 `SelectableDropdownMenuItem`（需显式 import，同包显式导入风格下漏 import 会报 Unresolved reference）。
 
-### 统一规则：所有控件操作后不保留 tapped 状态（2026-10-09 用户要求）
+### 原生按压反馈与无残留（2.4，2026-10-10 用户要求）
 
-- **全局禁用 ripple/按压指示**：`HighSpeedIEMTheme` 内 `CompositionLocalProvider(LocalIndication provides NoIndication)`，NoIndication 是空操作 `IndicationNodeFactory`（foundation 1.12 起旧 `IndicationInstance`/`rememberUpdatedInstance` 已废弃不可用，必须用 Node API：`create()` 返回 `Modifier.Node() + DrawModifierNode`，draw 里只调 `drawContent()`；每次 create 必须返回新节点实例，不能共享单例节点）。覆盖卡片、复选框、按钮、导航项、下拉项等一切控件。**注意：曾按用户要求短暂恢复过波纹，用户看到效果后明确否决（"外观不好看"），已撤回——不要再尝试恢复波纹。**
+- **恢复原生 ripple/按压指示**：本次用户明确喜欢卡片选中波纹并要求全面优化视觉动效，取代 2026-10-09 的无波纹偏好。删除全局 `NoIndication` 覆盖，通道卡片改用原生可点击 `Card`，由圆角 Surface 处理水波纹、按压/聚焦状态与取消反馈。主题和标准过渡采用 `MotionScheme.standard()`，不叠加自绘波纹、缩放抖动或 tapped 状态。
 - **下拉锚点清焦点**：`OptionDropdown` 在选中项 onClick 与 onDismissRequest 两条关闭路径都 `LocalFocusManager.current.clearFocus()`，否则锚点保留焦点态主色边框（实测复现过的残留）。
-- 卡片边框仅 `selected || focused` 时绘制（tappedKey 已删，见 P1 一节）。
+- 卡片选中以平滑容器配色表示；键盘焦点轮廓只跟随真实目标，取消按压不遗留状态，也不启动音频测试。
 
 ### 下拉菜单实现细节（2026-10-09 定稿：全原生）
 

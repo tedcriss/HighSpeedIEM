@@ -1,5 +1,11 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +34,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -55,7 +63,7 @@ private enum class Tab(val label: String, val icon: ImageVector, val selectedIco
  * Session mutations are tracked through [MonitorSession.version]; the value is
  * read in this scope so navigation and page content stay in sync.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun MonitorApp(activity: MainActivity, session: MonitorSession) {
     // Read in this composition scope (not inside a nested lambda) so every
@@ -63,6 +71,7 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
     @Suppress("UNUSED_VARIABLE") val version = session.version.collectAsState().value
     val notice = session.notices.collectAsState().value
     val snackbar = remember { SnackbarHostState() }
+    val pageState = rememberSaveableStateHolder()
     var taskControlsHeight by remember { mutableStateOf(0.dp) }
 
     val configuration = LocalConfiguration.current
@@ -161,13 +170,39 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
                     if (isCompact) {
                         CompactFlow(activity, session)
                     } else {
-                        when (selectedTab) {
-                            Tab.INPUT -> InputPage(activity, session)
-                            Tab.OUTPUT -> OutputPage(activity, session)
-                            Tab.TASK -> TaskPage(activity, session) { taskControlsHeight = it }
+                        // Dispose the old destination immediately: its tooltips,
+                        // focus targets and audio cleanup must not survive a fade.
+                        // Only the incoming page animates; native saved scroll
+                        // state survives navigation without retaining previews.
+                        key(selectedTab) {
+                            val entering = remember {
+                                MutableTransitionState(false).apply { targetState = true }
+                            }
+                            AnimatedVisibility(
+                                visibleState = entering,
+                                enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
+                                exit = ExitTransition.None,
+                                modifier = Modifier.fillMaxSize(),
+                                label = "destination",
+                            ) {
+                                pageState.SaveableStateProvider(selectedTab.name) {
+                                    when (selectedTab) {
+                                        Tab.INPUT -> InputPage(activity, session)
+                                        Tab.OUTPUT -> OutputPage(activity, session)
+                                        Tab.TASK -> TaskPage(activity, session) { taskControlsHeight = it }
+                                    }
+                                }
+                            }
                         }
                     }
-                    if (session.loadingPublic) LoadingOverlay(showHint = !isCompact)
+                    AnimatedVisibility(
+                        visible = session.loadingPublic,
+                        enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
+                        exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
+                        label = "channel-loading",
+                    ) {
+                        LoadingOverlay(showHint = !isCompact, blockInput = session.loadingPublic)
+                    }
                 }
             }
         }

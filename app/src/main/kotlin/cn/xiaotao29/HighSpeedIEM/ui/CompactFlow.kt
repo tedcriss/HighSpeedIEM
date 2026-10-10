@@ -1,5 +1,8 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -23,15 +27,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -75,11 +76,13 @@ import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
 
 /** Three compact views onto the phone task table, with a separate page indicator. */
 @Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 fun CompactFlow(activity: MainActivity, session: MonitorSession) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
     val pagerState = rememberPagerState(initialPage = session.tab.coerceIn(0, 2), pageCount = { 3 })
     val round = LocalConfiguration.current.isScreenRound
     val scope = rememberCoroutineScope()
+    val pageMotion = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
     val pageFocus = remember { List(3) { FocusRequester() } }
     var enterPage by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
     // These pages configure routes; entering from a phone releases previews/tests.
@@ -92,10 +95,13 @@ fun CompactFlow(activity: MainActivity, session: MonitorSession) {
         }
         if (step == 0) false else {
             if (event.type == KeyEventType.KeyDown && !session.loadingPublic) {
-                val next = (pagerState.currentPage + step).coerceIn(0, 2)
+                val next = (pagerState.targetPage + step).coerceIn(0, 2)
+                // Footer targets are always present. Move focus with the key,
+                // not after the spring settles and later user input has arrived.
+                pageFocus[next].requestFocus()
                 scope.launch {
-                    pagerState.scrollToPage(next)
-                    pageFocus[next].requestFocus()
+                    pagerState.animateScrollToPage(next,
+                        animationSpec = pageMotion)
                 }
             }
             true
@@ -138,7 +144,8 @@ fun CompactFlow(activity: MainActivity, session: MonitorSession) {
                 onEnterPage = { last ->
                     enterPage?.invoke(last) ?: pageFocus[if (last) 2 else 0].requestFocus()
                 }) { page ->
-                scope.launch { pagerState.scrollToPage(page) }
+                scope.launch { pagerState.animateScrollToPage(page,
+                    animationSpec = pageMotion) }
             }
         }
     }
@@ -146,6 +153,7 @@ fun CompactFlow(activity: MainActivity, session: MonitorSession) {
 
 /** The only content on a selection page, including the dropdown's blank option. */
 @Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private fun CompactDeviceList(
     channels: List<Channel>, selectedKey: String?, enabled: Boolean,
     sideInset: Dp, endInset: Dp, input: Boolean,
@@ -223,7 +231,11 @@ private fun CompactDeviceList(
                 ),
                 shapes = ListItemDefaults.shapes(shape = MaterialTheme.shapes.large,
                     selectedShape = MaterialTheme.shapes.large),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = sideInset)
+                modifier = Modifier.animateItem(
+                    fadeInSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                    placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                    fadeOutSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                ).fillMaxWidth().padding(horizontal = sideInset)
                     .focusRequester(itemFocus[index])
                     .onFocusChanged { if (it.isFocused) focusedIndex = index }
                     .keyboardFocus(enabled, MaterialTheme.shapes.large)
@@ -238,6 +250,7 @@ private fun CompactDeviceList(
 
 /** A small independent footer, always outside the page content. */
 @Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 internal fun CompactPageIndicator(currentPage: Int, focus: List<FocusRequester>,
     bottomInset: Dp = 0.dp, enabled: Boolean = true,
     onEnterPage: (Boolean) -> Unit, onPage: (Int) -> Unit) {
@@ -250,6 +263,11 @@ internal fun CompactPageIndicator(currentPage: Int, focus: List<FocusRequester>,
         ) {
             repeat(3) { index ->
                 val current = currentPage == index
+                val indicatorWidth by animateDpAsState(if (current) 20.dp else 8.dp,
+                    MaterialTheme.motionScheme.fastSpatialSpec(), label = "compact-page-width")
+                val indicatorColor by animateColorAsState(
+                    if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                    MaterialTheme.motionScheme.fastEffectsSpec(), label = "compact-page-color")
                 Box(Modifier.size(48.dp).focusRequester(focus[index])
                     .onPreviewKeyEvent { event ->
                         val last = index == 0 && event.key == Key.DirectionUp
@@ -260,13 +278,13 @@ internal fun CompactPageIndicator(currentPage: Int, focus: List<FocusRequester>,
                         }
                     }
                     .keyboardFocus(enabled, shape = CircleShape)
+                    .clip(CircleShape)
                     .selectable(selected = current, enabled = enabled, role = Role.Tab, onClick = { onPage(index) })
                     .semantics {
                         contentDescription = "第 ${index + 1} 页"
                         stateDescription = listOf("输入通道", "输出通道", "任务控制")[index]
                     }, contentAlignment = Alignment.Center) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(
-                        if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant))
+                    Box(Modifier.width(indicatorWidth).height(8.dp).clip(CircleShape).background(indicatorColor))
                 }
             }
         }
@@ -275,6 +293,7 @@ internal fun CompactPageIndicator(currentPage: Int, focus: List<FocusRequester>,
 
 /** Shared status/data fill the space above a medium-sized action. */
 @Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private fun CompactStartPage(
     activity: MainActivity, session: MonitorSession,
     sideInset: Dp, infoTopInset: Dp, footerFocus: List<FocusRequester>,
@@ -342,7 +361,7 @@ private fun CompactStartPage(
             Button(
                 onClick = { activity.safe { if (running) session.stop(null, false) else activity.startForwarding() } },
                 enabled = buttonEnabled,
-                shape = ButtonDefaults.shape,
+                shapes = ButtonDefaults.shapesFor(buttonHeight),
                 colors = ActionStyle.primaryColors(),
                 elevation = ActionStyle.buttonElevation(),
                 contentPadding = ButtonDefaults.contentPaddingFor(buttonHeight, hasStartIcon = showIcon),
@@ -353,13 +372,12 @@ private fun CompactStartPage(
                         ButtonDefaults.shape, MaterialTheme.colorScheme.onPrimary),
             ) {
                 if (showIcon) {
-                    Icon(if (running) Icons.Filled.Close else Icons.Filled.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(ButtonDefaults.iconSizeFor(buttonHeight)))
+                    ForwardingIcon(running, Modifier.size(ButtonDefaults.iconSizeFor(buttonHeight)))
                     Spacer(Modifier.size(ButtonDefaults.iconSpacingFor(buttonHeight)))
                 }
                 Text(if (running) "停止转发" else "启动 $count 个转发",
-                    style = ButtonDefaults.textStyleFor(buttonHeight), textAlign = TextAlign.Center)
+                    style = ButtonDefaults.textStyleFor(buttonHeight), textAlign = TextAlign.Center,
+                    modifier = Modifier.animateContentSize(MaterialTheme.motionScheme.fastSpatialSpec()))
             }
         }
     }

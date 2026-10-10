@@ -1,5 +1,11 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,8 +21,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ButtonDefaults
@@ -28,6 +32,8 @@ import androidx.compose.material3.SplitButtonDefaults
 import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
@@ -111,7 +117,12 @@ fun TaskPage(
                     PageHeading("音频转发", "配对已启用的输入与输出通道，即可开始转发。", status)
                 }
                 itemsIndexed(cards, key = { _, card -> card.row.id }, contentType = { _, _ -> "route" }) { index, card ->
-                    RouteCard(card, index, inputChannels, outputChannels, editable) { input, value ->
+                    RouteCard(card, index, inputChannels, outputChannels, editable,
+                        Modifier.animateItem(
+                            fadeInSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                            placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                            fadeOutSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                        )) { input, value ->
                         activity.safe { session.setRouteSide(card.row, input, value) }
                     }
                 }
@@ -147,12 +158,13 @@ private fun RouteCard(
     inputChannels: List<Channel>,
     outputChannels: List<Channel>,
     editable: Boolean,
+    modifier: Modifier = Modifier,
     onPick: (Boolean, String?) -> Unit,
 ) {
     val row = state.row
     val largeText = LocalDensity.current.fontScale > 1.2f
     Card(
-        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).testTag("task-route-$index"),
+        modifier = modifier.fillMaxWidth().padding(bottom = 12.dp).testTag("task-route-$index"),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         shape = MaterialTheme.shapes.large,
@@ -182,6 +194,7 @@ private fun RouteCard(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private fun RouteSide(
     current: String?,
     channels: List<Channel>,
@@ -195,6 +208,8 @@ private fun RouteSide(
     val keys = listOf<String?>(null) + channels.map { it.key }
     val labels = listOf(" ") + channels.map(::channelLabel)
     val selected = keys.indexOf(current).coerceAtLeast(0)
+    var lastStats by remember { mutableStateOf(stats) }
+    SideEffect { if (stats.isNotEmpty()) lastStats = stats }
 
     Column(modifier) {
         OptionDropdown(
@@ -230,12 +245,19 @@ private fun RouteSide(
         ) { position ->
             if (position in keys.indices) onPick(input, keys[position])
         }
-        if (stats.isNotEmpty()) Text(
-            stats,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp),
-        )
+        // Animate the appearance of stats, never the continuously refreshed text.
+        AnimatedVisibility(
+            visible = stats.isNotEmpty(),
+            enter = expandVertically(MaterialTheme.motionScheme.fastSpatialSpec()) +
+                fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
+            exit = shrinkVertically(MaterialTheme.motionScheme.fastSpatialSpec()) +
+                fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
+            label = "route-stats",
+        ) {
+            Text(if (stats.isNotEmpty()) stats else lastStats, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp))
+        }
     }
 }
 
@@ -289,11 +311,11 @@ fun SplitStartButton(
                 modifier = Modifier.keyboardFocus(startEnabled, ButtonDefaults.shape,
                     MaterialTheme.colorScheme.onPrimary),
             ) {
-                Icon(if (running) Icons.Filled.Close else Icons.Filled.PlayArrow,
-                    contentDescription = null, modifier = Modifier.size(20.dp))
+                ForwardingIcon(running, Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (running) "停止转发" else "启动 $count 个转发",
+                    modifier = Modifier.animateContentSize(MaterialTheme.motionScheme.fastSpatialSpec()),
                 )
             }
         },

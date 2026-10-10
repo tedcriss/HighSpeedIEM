@@ -1,28 +1,20 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
-import androidx.compose.foundation.IndicationNodeFactory
-import androidx.compose.foundation.LocalIndication
-import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.graphics.drawscope.ContentDrawScope
-import androidx.compose.ui.node.DelegatableNode
-import androidx.compose.ui.node.DrawModifierNode
 
 private val LightScheme = lightColorScheme(
     primary = Color(0xFF006A60),
@@ -100,33 +92,10 @@ private val AppTypography = DefaultTypography.copy(
     titleMedium = DefaultTypography.titleMedium.copy(fontWeight = FontWeight.Medium),
 )
 
-/** Resolve the M3 disabled fill on an opaque surface before adding shadows.
- * A translucent fill over a manual shadow makes disabled floating buttons dirty.
- */
+/** Shared M3 disabled color roles, resolved on the current opaque surface. */
 internal object ActionStyle {
-    // M3 small-button visual height (40dp); touch-target sizing stays native.
-    val containerHeight = ButtonDefaults.MinHeight
-    // Shared native elevation for every state of the four primary action controls.
-    val elevation = 6.dp
-
     @Composable
-    fun buttonElevation() = ButtonDefaults.buttonElevation(
-        defaultElevation = elevation,
-        pressedElevation = elevation,
-        focusedElevation = elevation,
-        hoveredElevation = elevation,
-        disabledElevation = elevation,
-    )
-
-    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
-    @Composable
-    fun toggleElevation() = ToggleButtonDefaults.elevation(
-        defaultElevation = elevation,
-        pressedElevation = elevation,
-        focusedElevation = elevation,
-        hoveredElevation = elevation,
-        disabledElevation = elevation,
-    )
+    fun buttonElevation() = ButtonDefaults.buttonElevation()
 
     val disabledContainer: Color
         @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
@@ -140,40 +109,17 @@ internal object ActionStyle {
         disabledContentColor = disabledContent,
     )
 
-    @Composable
-    fun tonalColors() = ButtonDefaults.filledTonalButtonColors(
-        disabledContainerColor = disabledContainer,
-        disabledContentColor = disabledContent,
-    )
-}
-
-/** Draws nothing: used to disable ripple/press feedback app-wide. */
-private object NoIndication : IndicationNodeFactory {
-    override fun create(interactionSource: InteractionSource): DelegatableNode = NoIndicationNode()
-    override fun hashCode(): Int = -2
-    override fun equals(other: Any?) = other === this
-}
-
-private class NoIndicationNode : Modifier.Node(), DrawModifierNode {
-    override fun ContentDrawScope.draw() {
-        drawContent()
-    }
 }
 
 /** Material 3 theme following the system dark mode. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HighSpeedIEMTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (isSystemInDarkTheme()) DarkScheme else LightScheme,
         shapes = AppShapes,
         typography = AppTypography,
-    ) {
-        // Ripple/press indication stays disabled app-wide (user preference,
-        // 2026-10-09: the ripple look was rejected). Residual-state hygiene
-        // lives in the controls themselves: only the active window's keyboard
-        // target draws a ring; keyboard dismissal restores the dropdown anchor.
-        CompositionLocalProvider(LocalIndication provides NoIndication) {
-            content()
-        }
-    }
+        motionScheme = MotionScheme.standard(),
+        content = content,
+    )
 }

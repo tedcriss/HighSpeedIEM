@@ -2,11 +2,11 @@ package cn.xiaotao29.HighSpeedIEM.ui
 
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.OutputTransformation
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -47,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.key
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -132,7 +133,7 @@ fun OutputPage(activity: MainActivity, session: MonitorSession) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DeviceCard(
     activity: MainActivity,
@@ -145,35 +146,44 @@ private fun DeviceCard(
     val locked = session.forwardingLockedPublic
     val selectionLocked = if (channel.input) locked else session.outputSelectionLockedPublic
     val enabled = channel.key !in session.disabled
+    val colors = MaterialTheme.colorScheme
+    val containerColor by animateColorAsState(
+        if (selected) colors.secondaryContainer else colors.surfaceContainerLow,
+        MaterialTheme.motionScheme.fastEffectsSpec(), label = "channel-selection-container",
+    )
+    val contentColor by animateColorAsState(
+        if (selected) colors.onSecondaryContainer else colors.onSurface,
+        MaterialTheme.motionScheme.fastEffectsSpec(), label = "channel-selection-content",
+    )
 
     val cardShape = MaterialTheme.shapes.large
     val cardFocus = remember { FocusRequester() }
     SpectrumTooltip(session, channel, cardFocus) {
         Card(
+            enabled = !selectionLocked,
+            onClick = {
+                activity.safe {
+                    // Check the live session as well as the composed enabled state.
+                    if (!(if (channel.input) session.forwardingLockedPublic else session.outputSelectionLockedPublic)) {
+                        if (channel.input) {
+                            session.selectInput(channel.key)
+                            if (session.selectedInput != null) activity.previewPermissions(channel)
+                            else session.updatePreview()
+                        } else {
+                            session.selectOutput(channel.key)
+                            if (session.selectedOutput != null) {
+                                if (activity.isBluetooth(channel)) activity.permissionTestFor(channel)
+                                else session.ringtone()
+                            }
+                        }
+                    }
+                }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 12.dp)
                 .focusRequester(cardFocus)
                 .keyboardFocus(!selectionLocked, cardShape)
-                .clickable(enabled = !selectionLocked) {
-                    activity.safe {
-                        // Live re-check (as in the original implementation): the
-                        // composed `locked` can be one frame behind a state flip.
-                        if (!(if (channel.input) session.forwardingLockedPublic else session.outputSelectionLockedPublic)) {
-                            if (channel.input) {
-                                session.selectInput(channel.key)
-                                if (session.selectedInput != null) activity.previewPermissions(channel)
-                                else session.updatePreview()
-                            } else {
-                                session.selectOutput(channel.key)
-                                if (session.selectedOutput != null) {
-                                    if (activity.isBluetooth(channel)) activity.permissionTestFor(channel)
-                                    else session.ringtone()
-                                }
-                            }
-                        }
-                    }
-                }
                 .semantics {
                     role = Role.Button
                     contentDescription = "ID ${channel.device.id}，通道 ${channel.index}，${channel.device.productName}，" +
@@ -181,13 +191,13 @@ private fun DeviceCard(
                     stateDescription = if (selected) "测试中" else "未测试"
                     this.selected = selected
                 },
-            colors = if (selected) {
-                CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
-            } else {
-                CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-            },
+            colors = CardDefaults.cardColors(
+                containerColor = containerColor,
+                contentColor = contentColor,
+                // A resource lock disables interaction, not channel visibility.
+                disabledContainerColor = containerColor,
+                disabledContentColor = contentColor,
+            ),
             shape = cardShape,
         ) {
             Column(Modifier.padding(16.dp)) {
@@ -370,15 +380,22 @@ fun OptionDropdown(
     // Scroll only the native text viewport; the outline, label and arrow stay fixed.
     // A changed value/width restarts at the beginning, and opening the menu pauses it.
     LaunchedEffect(value, valueScroll.maxValue, expanded, scrollSpeed) {
+        val motionScale = coroutineContext[MotionDurationScale]
         valueScroll.scrollTo(0)
         val overflow = valueScroll.maxValue
         if (expanded || overflow <= 0 || overflow == Int.MAX_VALUE) return@LaunchedEffect
         val duration = (overflow / scrollSpeed * 1000).roundToInt().coerceAtLeast(500)
         while (isActive) {
             delay(1500)
+            // A marquee is optional motion: keep the start readable when the
+            // system disables animations, rather than jumping between ends.
+            if (motionScale?.scaleFactor == 0f) {
+                valueScroll.scrollTo(0)
+                continue
+            }
             valueScroll.animateScrollTo(overflow, tween(duration, easing = LinearEasing))
             delay(1500)
-            valueScroll.scrollTo(0)
+            valueScroll.animateScrollTo(0, tween(duration, easing = LinearEasing))
         }
     }
     val focusManager = LocalFocusManager.current
