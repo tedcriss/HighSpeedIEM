@@ -341,42 +341,48 @@ private fun VerticalTaskControls(activity: MainActivity, session: MonitorSession
     val startEnabled = !blocked && (running || count > 0)
     val startLabel = if (running) "停止转发" else "启动 $count 个转发"
     BoxWithConstraints(Modifier.fillMaxHeight().testTag("task-toolbar-lane")) {
-        val availableHeight = (maxHeight - 24.dp).coerceAtLeast(48.dp)
-        VerticalFloatingToolbar(
-            expanded = true,
-            expandedShadowElevation = TaskToolbarShadowElevation,
-            collapsedShadowElevation = TaskToolbarShadowElevation,
-            modifier = Modifier.align(Alignment.Center).padding(horizontal = 12.dp)
-                .heightIn(max = availableHeight).verticalScroll(rememberScrollState())
-                .testTag("task-forwarding-toolbar"),
+        // Scroll the lane, not the elevated surface: a tight scroll viewport
+        // clips the toolbar shadow at its top/bottom even when it fits on screen.
+        Column(
+            modifier = Modifier.fillMaxHeight().verticalScroll(rememberScrollState())
+                .padding(12.dp).heightIn(min = (maxHeight - 24.dp).coerceAtLeast(0.dp)),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(2.dp),
-                horizontalAlignment = Alignment.CenterHorizontally) {
-                val batteryShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp,
-                    bottomStart = 4.dp, bottomEnd = 4.dp)
-                val startShape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp,
-                    bottomStart = 24.dp, bottomEnd = 24.dp)
-                Button(
-                    onClick = { activity.safe { activity.launchBatterySettings() } },
-                    enabled = batteryEnabled,
-                    shape = batteryShape,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                    modifier = Modifier.fillMaxWidth().keyboardFocus(batteryEnabled, batteryShape)
-                        .semantics { contentDescription = "打开系统后台运行保护设置" },
-                ) { Icon(Icons.Filled.Battery5Bar, null, Modifier.size(20.dp)) }
-                Button(
-                    onClick = { activity.safe { if (running) session.stop(null, false) else activity.startForwarding() } },
-                    enabled = startEnabled,
-                    shape = startShape,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                    modifier = Modifier.fillMaxWidth().keyboardFocus(startEnabled, startShape,
-                        MaterialTheme.colorScheme.onPrimary)
-                        .semantics { contentDescription = startLabel },
-                ) {
-                    ForwardingIcon(running, Modifier.size(20.dp))
+            VerticalFloatingToolbar(
+                expanded = true,
+                expandedShadowElevation = TaskToolbarShadowElevation,
+                collapsedShadowElevation = TaskToolbarShadowElevation,
+                modifier = Modifier.testTag("task-forwarding-toolbar"),
+            ) {
+                Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    val batteryShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp,
+                        bottomStart = 4.dp, bottomEnd = 4.dp)
+                    val startShape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp,
+                        bottomStart = 24.dp, bottomEnd = 24.dp)
+                    Button(
+                        onClick = { activity.safe { activity.launchBatterySettings() } },
+                        enabled = batteryEnabled,
+                        shape = batteryShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                        modifier = Modifier.fillMaxWidth().keyboardFocus(batteryEnabled, batteryShape)
+                            .semantics { contentDescription = "打开系统后台运行保护设置" },
+                    ) { Icon(Icons.Filled.Battery5Bar, null, Modifier.size(20.dp)) }
+                    Button(
+                        onClick = { activity.safe { if (running) session.stop(null, false) else activity.startForwarding() } },
+                        enabled = startEnabled,
+                        shape = startShape,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                        modifier = Modifier.fillMaxWidth().keyboardFocus(startEnabled, startShape,
+                            MaterialTheme.colorScheme.onPrimary)
+                            .semantics { contentDescription = startLabel },
+                    ) {
+                        ForwardingIcon(running, Modifier.size(20.dp))
+                    }
                 }
             }
         }
