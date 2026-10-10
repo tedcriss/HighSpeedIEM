@@ -68,9 +68,22 @@ struct Ring {
 
 struct Engine;
 
+// Error threads can outlive Engine::stop(). Never let them dereference Engine.
+struct EngineSignal {
+    std::atomic<int> error{0};
+    std::atomic<bool> active{false};
+    void fail(oboe::Result result) {
+        int expected = 0;
+        error.compare_exchange_strong(expected, static_cast<int>(result));
+        active.store(false);
+    }
+};
+
 // One opened stream per physical device endpoint.
-struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback {
+struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
+                  std::enable_shared_from_this<Endpoint> {
     Engine *engine;
+    std::shared_ptr<EngineSignal> signal;
     int deviceId;
     int channels;
     bool input;
@@ -92,8 +105,8 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback 
     uint64_t lastFrames = 0;
     std::chrono::steady_clock::time_point lastProgress = std::chrono::steady_clock::now();
 
-    Endpoint(Engine *e, int device, int channelCount, bool isInput)
-        : engine(e), deviceId(device), channels(channelCount), input(isInput) {}
+    Endpoint(Engine *e, std::shared_ptr<EngineSignal> state, int device, int channelCount, bool isInput)
+        : engine(e), signal(std::move(state)), deviceId(device), channels(channelCount), input(isInput) {}
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *stream, void *audioData, int32_t numFrames) override;
     bool onError(oboe::AudioStream *stream, oboe::Result error) override;
@@ -132,15 +145,14 @@ struct Route {
 };
 
 struct Engine {
-    std::vector<std::unique_ptr<Endpoint>> endpoints;
+    std::vector<std::shared_ptr<Endpoint>> endpoints;
     std::vector<std::unique_ptr<Route>> routes;
-    std::atomic<int> error{0};
-    std::atomic<bool> active{false};
+    std::shared_ptr<EngineSignal> signal = std::make_shared<EngineSignal>();
+    std::atomic<int> &error = signal->error;
+    std::atomic<bool> &active = signal->active;
 
     void fail(oboe::Result result) {
-        int expected = 0;
-        error.compare_exchange_strong(expected, static_cast<int>(result));
-        active.store(false);
+        signal->fail(result);
     }
 
     Endpoint *endpoint(int deviceId, int channels, bool input) {
@@ -150,7 +162,7 @@ struct Engine {
                 return e.get();
             }
         }
-        endpoints.push_back(std::make_unique<Endpoint>(this, deviceId, channels, input));
+        endpoints.push_back(std::make_shared<Endpoint>(this, signal, deviceId, channels, input));
         return endpoints.back().get();
     }
 
@@ -182,9 +194,11 @@ struct Engine {
         for (auto &e : endpoints) {
             if (e->stream) {
                 e->stream->close();
-                e->stream.reset();
             }
         }
+        // A callback already executing on another endpoint can still reference
+        // a route's input/output stream. Keep all stream objects until ALL close.
+        for (auto &e : endpoints) e->stream.reset();
     }
 
     ~Engine() { stop(); }
@@ -201,8 +215,8 @@ struct Engine {
             ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::None)
             ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
             ->setSharingMode(e.exclusive ? oboe::SharingMode::Exclusive : oboe::SharingMode::Shared)
-            ->setDataCallback(&e)
-            ->setErrorCallback(&e)
+            ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(e.shared_from_this()))
+            ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(e.shared_from_this()))
             ->setUsage(oboe::Usage::Game)
             ->setInputPreset(static_cast<oboe::InputPreset>(e.inputPreset));
         oboe::Result result = builder.openStream(e.stream);
@@ -286,17 +300,17 @@ void writePcm(void *data, const float *values, int count, oboe::AudioFormat form
 
 bool Endpoint::onError(oboe::AudioStream *, oboe::Result result) {
     // Handled from the control thread; do not close, lock or allocate here.
-    engine->fail(result);
+    signal->fail(result);
     return true;
 }
 
 oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buffer, int32_t numFrames) {
     float *samples = scratch.data();
     if (numFrames < 0 || static_cast<uint32_t>(numFrames) > kRingCapacity) {
-        engine->fail(oboe::Result::ErrorOutOfRange);
+        signal->fail(oboe::Result::ErrorOutOfRange);
         return oboe::DataCallbackResult::Stop;
     }
-    if (!engine->active.load(std::memory_order_acquire)) {
+    if (!signal->active.load(std::memory_order_acquire)) {
         if (!input) std::memset(buffer, 0, static_cast<size_t>(numFrames) * channels * s->getBytesPerSample());
         return oboe::DataCallbackResult::Stop;
     }
@@ -539,15 +553,14 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_probe(JNIEnv *, jclass, jint de
     return channels;
 }
 
-// Opens a device and, for inputs, records a short window to find live channels.
-// Returns [channels, error, frames, peak per channel].
+// Open-only validation: silence and capture policy are not device failures.
+// Returns [channels, error]; never starts capture or installs callbacks.
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_checkDevice(JNIEnv *env, jclass, jint deviceId, jboolean input, jint requested, jint listenMillis) {
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_checkDevice(JNIEnv *env, jclass, jint deviceId, jboolean input, jint requested) {
+    std::lock_guard<std::mutex> lock(controlMutex);
     std::shared_ptr<oboe::AudioStream> stream;
     std::string error;
     int channels = std::clamp(static_cast<int>(requested), 1, kMaxChannels);
-    int64_t frames = 0;
-    std::vector<float> peaks(channels, 0.f);
     try {
         oboe::AudioStreamBuilder builder;
         builder.setAudioApi(oboe::AudioApi::AAudio)
@@ -573,44 +586,10 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_checkDevice(JNIEnv *env, jclass
             if (channels < 1 || channels > kMaxChannels) {
                 error = oboe::convertToText(oboe::Result::ErrorOutOfRange);
             } else {
-                peaks.assign(channels, 0.f);
                 const oboe::AudioFormat format = stream->getFormat();
                 if (format != oboe::AudioFormat::Float && format != oboe::AudioFormat::I16 &&
                     format != oboe::AudioFormat::I24 && format != oboe::AudioFormat::I32) {
                     error = oboe::convertToText(oboe::Result::ErrorInvalidFormat);
-                } else if (input) {
-                    const oboe::Result started = stream->requestStart();
-                    if (started != oboe::Result::OK) {
-                        error = oboe::convertToText(started);
-                    } else {
-                        const int chunk = std::clamp(stream->getSampleRate() / 100, 1, 4096);
-                        std::vector<int32_t> buffer(chunk * channels);
-                        const auto deadline = std::chrono::steady_clock::now() +
-                                              std::chrono::milliseconds(
-                                                  std::clamp(static_cast<int>(listenMillis), 100, 3000));
-                        while (error.empty() && std::chrono::steady_clock::now() < deadline) {
-                            const auto read = stream->read(buffer.data(), chunk, 20000000);
-                            if (!read) {
-                                error = oboe::convertToText(read.error());
-                                break;
-                            }
-                            frames += read.value();
-                            for (int f = 0; f < read.value(); ++f) {
-                                for (int c = 0; c < channels; ++c) {
-                                    const float value = readPcm(buffer.data(), f * channels + c, format);
-                                    if (!std::isfinite(value)) {
-                                        error = oboe::convertToText(oboe::Result::ErrorInvalidFormat);
-                                        break;
-                                    }
-                                    peaks[c] = std::max(peaks[c], std::abs(value));
-                                }
-                            }
-                            if (read.value() == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                        }
-                        if (error.empty() && frames == 0) {
-                            error = oboe::convertToText(oboe::Result::ErrorTimeout);
-                        }
-                    }
                 }
             }
         }
@@ -618,25 +597,14 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_checkDevice(JNIEnv *env, jclass
         error = e.what();
     }
     if (stream) {
-        if (input && stream->getState() != oboe::StreamState::Open) {
-            const auto r = stream->stop(500000000);
-            if (error.empty() && r != oboe::Result::OK) error = oboe::convertToText(r);
-        }
         const auto r = stream->close();
         if (error.empty() && r != oboe::Result::OK) error = oboe::convertToText(r);
     }
     channels = std::clamp(channels, 1, kMaxChannels);
-    peaks.resize(channels, 0.f);
     const jclass stringClass = env->FindClass("java/lang/String");
-    const jobjectArray array = env->NewObjectArray(channels + 3, stringClass, nullptr);
+    const jobjectArray array = env->NewObjectArray(2, stringClass, nullptr);
     env->DeleteLocalRef(stringClass);
-    std::vector<std::string> values{std::to_string(channels), error, std::to_string(frames)};
-    for (float peak : peaks) {
-        std::ostringstream s;
-        s.precision(9);
-        s << peak;
-        values.push_back(s.str());
-    }
+    std::vector<std::string> values{std::to_string(channels), error};
     for (size_t i = 0; i < values.size(); ++i) {
         const auto value = toJString(env, values[i]);
         env->SetObjectArrayElement(array, i, value);
@@ -804,6 +772,18 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_injectError(JNIEnv *, jclass, j
 // Verifies the lock-free ring and PCM conversions without touching audio devices.
 extern "C" JNIEXPORT jstring JNICALL
 Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
+    // Reproduce a late Oboe error callback after its owning engine is gone.
+    // Callback ownership must retain the endpoint and its independent signal.
+    std::shared_ptr<Endpoint> lateCallback;
+    {
+        Engine old;
+        old.endpoint(1, 1, true);
+        lateCallback = old.endpoints.front();
+    }
+    lateCallback->onError(nullptr, oboe::Result::ErrorDisconnected);
+    if (lateCallback->signal->error.load() != static_cast<int>(oboe::Result::ErrorDisconnected)) {
+        return toJString(env, "FAIL late error callback lifetime");
+    }
     Ring ring;
     float x = 0;
     if (ring.pop(x)) return toJString(env, "FAIL empty");
@@ -842,5 +822,5 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
             }
         }
     }
-    return toJString(env, "PASS native FIFO and PCM16/24/32/Float conversion");
+    return toJString(env, "PASS native FIFO, PCM16/24/32/Float and late error callback lifetime");
 }

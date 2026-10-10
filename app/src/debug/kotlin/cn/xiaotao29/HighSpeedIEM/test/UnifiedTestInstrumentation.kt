@@ -74,6 +74,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 "native-selftest" to ::scenarioNativeSelfTest,
                 "launch-tabs" to ::scenarioLaunchTabs,
                 "device-validity" to ::scenarioDeviceValidity,
+                "device-lifecycle" to { true to DeviceLifecycleAudit(this, session()).run() },
                 "selection-preview" to ::scenarioSelectionPreview,
                 "spectrum-tooltip" to ::scenarioSpectrumTooltip,
                 "ringtone-test" to ::scenarioRingtone,
@@ -602,17 +603,20 @@ class UnifiedTestInstrumentation : Instrumentation() {
             val originalStatus = s.status
             val originalRows = s.model.rows.map { it.input to it.output }
             setRingtone(mediaFixture("HighSpeedIEM-complete-test.wav", wav.array()).toString())
-            val startedAt = SystemClock.uptimeMillis()
+            val requestedAt = SystemClock.uptimeMillis()
             clickOutput()
             check(waitUntil(5000) { s.testingPublic && active() }) { diagnostics(s) }
+            // UI automation can wait before delivering the tap. Measure the
+            // continuous playback check from confirmed playback, not that wait.
+            val playingAt = SystemClock.uptimeMillis()
             check(!device.hasObject(By.text("测试选中通道")) && !device.hasObject(By.text("停止测试"))) { "old test button remains" }
             check(!s.outputSelectionLockedPublic) { "output cards locked during playback" }
-            while (SystemClock.uptimeMillis() - startedAt < 21500) {
+            while (SystemClock.uptimeMillis() - playingAt < 20500) {
                 check(s.testingPublic && s.selectedOutput == channel.key) { "early completion; " + diagnostics(s) }
                 SystemClock.sleep(100)
             }
             check(waitUntil(10000) { released() }) { "natural completion leaked; " + diagnostics(s) }
-            val elapsed = SystemClock.uptimeMillis() - startedAt
+            val elapsed = SystemClock.uptimeMillis() - requestedAt
             check(elapsed >= durationMs - 250) { "tail truncated: ${elapsed}ms" }
             check(s.selectedOutput == null && channel.key !in s.disabled && s.status == originalStatus)
             check(s.model.rows.map { it.input to it.output } == originalRows)
@@ -810,7 +814,14 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 device.findObject(By.res("task-route-${rows - 1}")) != null &&
                 device.findObject(By.res("task-route-$rows")) == null &&
                 device.findObject(By.text("启动 $complete 个转发")) != null
-        }) { "table/UI mismatch: expected=$rows/$complete actual=${s.model.rows.size}/${s.model.validCount()}" }
+        }) {
+            device.dumpWindowHierarchy(File(targetContext.filesDir, "route-table-failure.xml"))
+            device.takeScreenshot(File(targetContext.filesDir, "route-table-failure.png"))
+            "table/UI mismatch: expected=$rows/$complete actual=${s.model.rows.size}/${s.model.validCount()} " +
+                "tab=${s.tab} last=${device.findObject(By.res("task-route-${rows - 1}")) != null} " +
+                "extra=${device.findObject(By.res("task-route-$rows")) != null} " +
+                "start=${device.findObject(By.text("启动 $complete 个转发")) != null}; ${diagnostics(s)}"
+        }
         check(s.model.rows.last().blank() && s.model.rows.count { it.blank() } == 1)
     }
 

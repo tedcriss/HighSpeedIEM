@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.8`（versionCode 19），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.9`（versionCode 20），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -30,7 +30,7 @@ adb shell am instrument -w -e scenarios native-selftest,launch-tabs,device-valid
 ```
 
 场景：`native-selftest, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
-route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, rotation, compact-mode, compact-routes, compact-binding-phone`。
+route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, device-lifecycle, rotation, compact-mode, compact-routes, compact-binding-phone`。
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
 动效专项：`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
 布局专项：`adaptive-layout`，同一手机上的横竖屏、1/2/3 列、150%/200% 字体、600px 模式切换与滚动锚点恢复。
@@ -51,10 +51,10 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   2 个 burst 起步并用 `LatencyTuner` 调整；积压时丢弃过期音频而不是累积延迟。
 - `audio/MonitorSession.kt`：会话状态机（设备枚举、探测、参数、转发表、后台错误）。
   只存在于内存，不持久化；Activity 重建时由 `MonitorApplication` 持有并复用。
-- `audio/DeviceValidator.kt`：实际开流探测。输入录制约 1.2 秒逐通道查峰值，
-  输出只验证能否打开；最多 4 个设备并行，全部释放后串行复核失败/静音设备。
-  探测通过的通道默认启用，失败或静音默认取消勾选但保留在列表。
-  结果按设备身份缓存，普通刷新保留用户手动勾选。
+- `audio/DeviceValidator.kt`：输入和输出均只验证能否打开并关闭目标设备，不开始录音、
+  不读取采样或检查静音。串行探测避免输入抢占，不为失败设备重复开流；
+  能正常打开的实际通道默认启用，失败设备禁用但仍保留在列表并提示原始错误。
+  结果按设备身份缓存，普通刷新保留未变化设备的验证结果、参数和手动启用状态。
 - `audio/RingtoneTest.kt`：系统默认铃声 → MediaExtractor/MediaCodec → AudioTrack
   写入所选输出通道；独占测试走 AAudio 原生写路径。
 - `service/ForwardingService.kt`：microphone + mediaPlayback 前台服务 + CPU 部分唤醒锁。
@@ -112,6 +112,33 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 
 **错误原则**：转发运行中发生致命错误时先停止全部转发、等待资源安全释放，
 再显示原始错误信息（不重写系统的错误文本）。
+
+## 设备变化与资源生命周期（2.9）
+
+- 原生 `AudioManager.registerAudioDeviceCallback` 在主线程通知变化。空闲时立即显示加载遮罩、
+  取消预览/铃声选择，连续事件以 200ms 防抖合并，只保存最新设备快照，最多一个探测在执行。
+  原探测完成当前开流并关闭后检查版本；过期结果不发布，随后探测最新快照。
+- `getDevices(GET_DEVICES_ALL)` 一次读取系统公开的输入、输出；按方向与设备 ID 区分，
+  不按名称、类型或地址合并设备，不限制 USB 设备数量。只使回调涉及的设备缓存失效，
+  未变化设备不重新开流。列表、参数和转发表剪枝在资源释放后一次发布。
+- 从准备转发开始到停止清理结束，设备回调仅标记待更新；不枚举、不修改列表/路由、不探测。
+  AAudio/Oboe 错误及进度异常统一停止全部流，释放资源和前台服务后显示原始错误，
+  随后阻塞处理转发期间积累的设备变化。没有流错误的设备通知不会自行中断转发。
+- Oboe 使用共享所有权的流回调；迟到的错误回调只访问独立保活的原子错误状态，
+  不引用已释放的引擎。关闭所有流后才清除各流对象，避免其他声道回调访问已清空的流指针。
+- 设备页的高度缓存通过原生 Saver 校验当前完整通道 key 列表和数组长度，拒绝过期或旧格式缓存；
+  页面隐藏时通道增删、重新进入页面及旋转都不会用过期索引测量卡片。晚到的测量回调额外校验索引。
+- 下一次探测/转发必须等待铃声工作线程的 `finally` 完成。超时看门狗只报告等待异常，
+  不强行解锁、不允许旧设备所有者尚未释放时重开。
+- `device-lifecycle` 在手机上使用实际 AudioDeviceInfo 和实际开流，以 debug 专用反射替换
+  系统快照并调用生产设备回调，覆盖单设备增删、可见删除/隐藏新增后返回页面、
+  41 次连续变化、扫描中替换、慢清理、
+  预览移除、启动/运行冻结、正常停止后更新、原生断开错误的全资源清理和提示；finally 恢复原快照。
+  模拟事件不代表真实 USB 驱动热插拔已验收。
+
+多 USB 的系统边界：Android 官方说明 Android 14 起多 USB 同时路由仍要求不同音频设备类型，
+以及内核和厂商支持。应用只能显示系统公开的 AudioDeviceInfo；未公开的 USB 音频端点无法
+通过这些普通应用 API 补列。依据：[AOSP 多设备音频路由](https://source.android.com/docs/core/audio/combined-audio-routing)。
 
 ## 三种自适应布局
 

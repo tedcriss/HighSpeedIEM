@@ -35,10 +35,9 @@ object NativeAudio {
     external fun probe(deviceId: Int, input: Boolean): Int
 
     /**
-     * Opens a device to verify it works. Inputs record [listenMillis] of audio and
-     * report per-channel peaks. Returns [channels, error, frames, peak...].
+     * Opens and closes a device without recording. Returns [channels, error].
      */
-    external fun checkDevice(deviceId: Int, input: Boolean, channels: Int, listenMillis: Int): Array<String>
+    external fun checkDevice(deviceId: Int, input: Boolean, channels: Int): Array<String>
 
     /** Spectrum of an input channel: [sampleRate, dBFS bins...]; empty when idle. */
     external fun spectrum(deviceId: Int, channel: Int): FloatArray

@@ -101,6 +101,7 @@ class MonitorSession(private val context: Context) {
     }
 
     fun updateSettings(channel: Channel, transform: (DeviceSettings) -> DeviceSettings) {
+        if (forwardingLocked() || channel.key !in (if (channel.input) inputs else outputs)) return
         settings[channel.deviceKey] = transform(config(channel))
     }
 
@@ -157,6 +158,10 @@ class MonitorSession(private val context: Context) {
     private var previewOperation = 0
     private var stopOperation = 0
     private var refreshGeneration = 0
+    private val discoveryRevision = AtomicInteger()
+    private val changedDevices = HashSet<String>()
+    private var devicesDirty = false
+    private val refreshDevices = Runnable { refresh() }
     private var visibilityGeneration = 0
     private var statsUiAt = 0L
     private var previewOpeningSince = 0L
@@ -180,26 +185,36 @@ class MonitorSession(private val context: Context) {
         }
 
     private val validated = HashMap<String, ValidationResult>()
+    private var readDevices: () -> Array<AudioDeviceInfo> = {
+        audioManager.getDevices(AudioManager.GET_DEVICES_ALL)
+    }
 
     private val deviceCallback = object : android.media.AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(devices: Array<out AudioDeviceInfo>) = refresh()
+        override fun onAudioDevicesAdded(devices: Array<out AudioDeviceInfo>) = devicesChanged(devices)
+        override fun onAudioDevicesRemoved(devices: Array<out AudioDeviceInfo>) = devicesChanged(devices)
+    }
 
-        override fun onAudioDevicesRemoved(devices: Array<out AudioDeviceInfo>) {
-            var affected = false
-            val raw = StringBuilder("AudioDeviceCallback.onAudioDevicesRemoved: ")
-            for (x in devices) {
-                raw.append("deviceId=").append(x.id).append(" ").append(x.productName).append("; ")
-                for (r in model.rows) {
-                    val i = inputs[r.input]
-                    val o = outputs[r.output]
-                    if ((i != null && i.device.id == x.id) || (o != null && o.device.id == x.id)) affected = true
-                }
-                val p = inputs[previewKey]
-                val q = outputs[selectedOutput]
-                if ((p != null && p.device.id == x.id) || (q != null && q.device.id == x.id)) affected = true
+    private fun devicesChanged(devices: Array<out AudioDeviceInfo>) {
+        if (disposed) return
+        try {
+            for (d in devices) {
+                if (d.isSource) changedDevices.add(DeviceValidator.key(d, true))
+                if (d.isSink) changedDevices.add(DeviceValidator.key(d, false))
             }
-            if (affected) stop(raw.toString(), false)
-            refresh()
+            devicesDirty = true
+            discoveryRevision.incrementAndGet()
+            // Forwarding errors belong to AAudio, not topology notifications.
+            // Freeze lists/routes from preparation through resource cleanup.
+            if (running || starting || (busy && ringtoneKey == null)) return
+            loading = true
+            testGeneration.incrementAndGet()
+            selectedInput = null
+            selectedOutput = null
+            changed()
+            main.removeCallbacks(refreshDevices)
+            main.postDelayed(refreshDevices, 200)
+        } catch (e: RuntimeException) {
+            message(e.toString())
         }
     }
 
@@ -349,61 +364,56 @@ class MonitorSession(private val context: Context) {
 
     fun refresh() {
         if (disposed || NativeAudio.loadError != null) return
+        if (running || starting || (busy && ringtoneKey == null)) {
+            devicesDirty = true
+            return
+        }
+        main.removeCallbacks(refreshDevices)
         try {
-            val manager = audioManager
-            val ins = manager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-            val outs = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            // One native snapshot; no name/type deduplication or USB count limit.
+            val devices = readDevices()
+            val ins = devices.filter { it.isSource }.toTypedArray()
+            val outs = devices.filter { it.isSink }.toTypedArray()
             val mic = microphoneAllowed()
             val fingerprint = buildString {
                 for (d in ins) append(DeviceValidator.identity(d, true, mic)).append(";")
                 for (d in outs) append(DeviceValidator.identity(d, false, mic)).append(";")
             }
-            if (fingerprint != deviceSnapshot) {
+            if (fingerprint != deviceSnapshot || devicesDirty) {
+                validated.keys.removeAll(changedDevices)
+                changedDevices.clear()
+                devicesDirty = false
                 deviceSnapshot = fingerprint
                 pendingInputs = ins
                 pendingOutputs = outs
                 refreshPending = true
                 refreshGeneration++
+                discoveryRevision.incrementAndGet()
                 val live = HashSet<String>()
                 for (d in ins) live.add(DeviceValidator.key(d, true))
                 for (d in outs) live.add(DeviceValidator.key(d, false))
                 validated.keys.retainAll(live)
-                inputs.values.removeIf { !live.contains(it.deviceKey) }
-                outputs.values.removeIf { !live.contains(it.deviceKey) }
-                settings.keys.retainAll(live)
-                model.prune(enabledChannels(inputs), enabledChannels(outputs))
-                if (!inputs.containsKey(selectedInput)) selectedInput = null
-                if (!outputs.containsKey(selectedOutput)) selectedOutput = null
-                var unchecked = false
-                for (d in ins) {
-                    val r = validated[DeviceValidator.key(d, true)]
-                    unchecked = unchecked || r == null || r.identity != DeviceValidator.identity(d, true, mic)
-                }
-                for (d in outs) {
-                    val r = validated[DeviceValidator.key(d, false)]
-                    unchecked = unchecked || r == null || r.identity != DeviceValidator.identity(d, false, mic)
-                }
-                if (unchecked) {
-                    loading = true
-                    selectedInput = null
-                    selectedOutput = null
-                    changed()
-                    if (!scanInFlight && (running || starting || busy || previewOpening || previewKey != null)) {
-                        stop(null, false)
-                        return
-                    }
+                // Publish a complete list only after all probe resources close.
+                loading = true
+                selectedInput = null
+                selectedOutput = null
+                changed()
+                if (busy || previewOpening || previewKey != null) {
+                    stop(null, false)
+                    return
                 }
             }
             drainRefresh()
         } catch (e: RuntimeException) {
             loading = false
             refreshPending = false
+            message(e.toString())
             stop(e.toString(), false, report = false)
         }
     }
 
     private fun drainRefresh() {
-        if (disposed || !refreshPending || scanInFlight || busy || previewOpening || permissionWaiting) return
+        if (disposed || running || starting || devicesDirty || !refreshPending || scanInFlight || busy || previewOpening || permissionWaiting) return
         val mic = microphoneAllowed()
         if (loading && pendingInputs.isNotEmpty() && !mic && !permissionAsked) {
             if (!visible || listener == null || permissionWaiting) return
@@ -422,6 +432,7 @@ class MonitorSession(private val context: Context) {
         val ins = pendingInputs
         val outs = pendingOutputs
         val token = refreshGeneration
+        val revision = discoveryRevision.get()
         val visibilityToken = visibilityGeneration
         val unchecked = ArrayList<DeviceValidator.Target>()
         for (d in ins) {
@@ -455,7 +466,7 @@ class MonitorSession(private val context: Context) {
             try {
                 NativeAudio.stop()
                 runOnTestThread()
-                found = validator.scan(unchecked, mic)
+                found = validator.scan(unchecked, mic) { revision != discoveryRevision.get() }
             } catch (e: Exception) {
                 failure = e.toString()
             } catch (e: LinkageError) {
@@ -466,18 +477,16 @@ class MonitorSession(private val context: Context) {
             main.post {
                 scanInFlight = false
                 if (disposed) return@post
-                if (token != refreshGeneration || (ins.isNotEmpty() && (!visible || visibilityToken != visibilityGeneration))) {
+                if (token != refreshGeneration || revision != discoveryRevision.get() ||
+                    (ins.isNotEmpty() && (!visible || visibilityToken != visibilityGeneration))) {
                     refreshPending = true
                     drainRefresh()
                     return@post
                 }
                 if (error.isNotEmpty()) {
                     loading = false
-                    // Keep failed devices listed, default disabled; log only.
+                    // Keep failed devices listed and show the unmodified error.
                     android.util.Log.e("Discovery", error)
-                    for (t in unchecked) {
-                        result as Map<String, ValidationResult>
-                    }
                     val stamped = HashMap(result)
                     for (t in unchecked) {
                         val identity = DeviceValidator.identity(t.device, t.input, mic)
@@ -487,7 +496,6 @@ class MonitorSession(private val context: Context) {
                         }
                     }
                     validated.putAll(stamped)
-                    loading = false
                     commitDevices(ins, outs, stamped)
                     drainRefresh()
                     return@post
@@ -500,13 +508,10 @@ class MonitorSession(private val context: Context) {
         }
     }
 
-    /** Occupies the test executor until prior ringtone work drains (bounded wait). */
-    private fun runOnTestThread(timeoutMillis: Long = 3000) {
-        try {
-            test.submit { }.get(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
-        } catch (e: java.util.concurrent.TimeoutException) {
-            android.util.Log.w("Monitor", "test executor drain timed out")
-        }
+    /** The worker's finally block must release all owners before the next open. */
+    private fun runOnTestThread() {
+        // The watchdog reports slow cleanup without permitting overlapping use.
+        test.submit { }.get()
     }
 
     private fun commitDevices(
@@ -520,6 +525,9 @@ class MonitorSession(private val context: Context) {
         inputs.putAll(newInputs)
         outputs.clear()
         outputs.putAll(newOutputs)
+        settings.keys.retainAll((newInputs.values + newOutputs.values).map { it.deviceKey }.toSet())
+        if (selectedInput !in inputs) selectedInput = null
+        if (selectedOutput !in outputs) selectedOutput = null
         val all = HashSet<String>()
         all.addAll(newInputs.keys)
         all.addAll(newOutputs.keys)
@@ -530,16 +538,18 @@ class MonitorSession(private val context: Context) {
                 val r = fresh[channel.deviceKey]
                 if (r != null) {
                     android.util.Log.i("DeviceScan", channel.deviceKey + " channels=" + r.channels +
-                        " peaks=" + r.peaks.contentToString() + " exclusive=" + r.exclusiveSupport +
+                        " exclusive=" + r.exclusiveSupport +
                         " error=" + r.error + (if (disabled.contains(channel.key)) " disabled=" + channel.key else ""))
                     settings[channel.deviceKey] = cfg.copy(exclusiveSupport = r.exclusiveSupport,
                         exclusive = cfg.exclusive && r.exclusiveSupport == 1)
-                    if (r.valid(channel.input, channel.index)) disabled.remove(channel.key)
+                    if (r.valid(channel.index)) disabled.remove(channel.key)
                     else disabled.add(channel.key)
                 }
             }
         }
         model.prune(enabledChannels(inputs), enabledChannels(outputs))
+        fresh.values.map { it.error }.filter { it.isNotEmpty() }.distinct()
+            .takeIf { it.isNotEmpty() }?.let { message(it.joinToString("\n")) }
         changed()
         updatePreview()
     }
@@ -704,7 +714,12 @@ class MonitorSession(private val context: Context) {
                     starting = false
                     running = true
                     status = "转发运行中 · " + model.validCount() + " 对通道 · 可在后台运行"
-                    owner.running(model.validCount())
+                    try {
+                        owner.running(model.validCount())
+                    } catch (e: RuntimeException) {
+                        stop(e.toString(), false)
+                        return@post
+                    }
                     changed()
                 }
             }
@@ -771,26 +786,33 @@ class MonitorSession(private val context: Context) {
             main.post {
                 if (disposed || token != stopOperation) return@post
                 busy = false
-                try {
-                    if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice()
-                    audioManager.mode = AudioManager.MODE_NORMAL
-                } catch (e: RuntimeException) {
-                    android.util.Log.e("Monitor", e.toString())
+                val failures = ArrayList<String>()
+                if (failure != null) failures.add(failure)
+                fun cleanup(action: () -> Unit) {
+                    try {
+                        action()
+                    } catch (e: RuntimeException) {
+                        failures.add(e.toString())
+                    }
                 }
-                status = if (failure == null) "已停止 · 可编辑通道转发" else "已停止 · 系统返回错误"
+                // Failure in one cleanup must not skip the remaining owners.
+                cleanup { if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice() }
+                cleanup { audioManager.mode = AudioManager.MODE_NORMAL }
                 val old = service
                 service = null
-                old?.closed(failure)
-                if (failure != null) {
-                    android.util.Log.e("Monitor", failure)
+                cleanup { old?.closed(failures.takeIf { it.isNotEmpty() }?.joinToString("\n")) }
+                val errors = failures.distinct().takeIf { it.isNotEmpty() }?.joinToString("\n")
+                status = if (errors == null) "已停止 · 可编辑通道转发" else "已停止 · 系统返回错误"
+                if (errors != null) {
+                    android.util.Log.e("Monitor", errors)
                     if (report) {
                         rejectChannel(inputTest)
                         rejectChannel(outputTest)
-                        message(failure)
                     }
+                    message(errors)
                 }
                 changed()
-                if (dispose) disposeNow() else drainRefresh()
+                if (dispose) disposeNow() else if (devicesDirty) refresh() else drainRefresh()
             }
         }
     }
@@ -811,7 +833,6 @@ class MonitorSession(private val context: Context) {
         listener = null
         audio.shutdown()
         test.shutdown()
-        validator.shutdown()
         (context.applicationContext as? cn.xiaotao29.HighSpeedIEM.MonitorApplication)?.release(this)
     }
 
@@ -876,7 +897,7 @@ class MonitorSession(private val context: Context) {
     }
 
     fun parameterChanged(channel: Channel) {
-        if (running || operationsBlocked()) return
+        if (forwardingLocked()) return
         testGeneration.incrementAndGet()
         previewKey = null
         changed()
@@ -884,7 +905,7 @@ class MonitorSession(private val context: Context) {
     }
 
     fun enable(channel: Channel, on: Boolean) {
-        if (running || operationsBlocked()) return
+        if (forwardingLocked() || channel.key !in (if (channel.input) inputs else outputs)) return
         if (on) disabled.remove(channel.key) else disabled.add(channel.key)
         var used = false
         for (r in model.rows) {
@@ -896,6 +917,7 @@ class MonitorSession(private val context: Context) {
     }
 
     fun selectInput(key: String?) {
+        if (disposed || forwardingLocked() || (key != null && key !in inputs)) return
         selectedInput = if (key == selectedInput) null else key
         changed()
     }
@@ -915,7 +937,7 @@ class MonitorSession(private val context: Context) {
     }
 
     fun selectOutput(key: String?) {
-        if (disposed || outputSelectionLockedPublic) return
+        if (disposed || outputSelectionLockedPublic || (key != null && key !in outputs)) return
         testGeneration.incrementAndGet()
         ringtoneRequested = false
         selectedOutput = if (key == selectedOutput) null else key
@@ -1014,58 +1036,19 @@ class MonitorSession(private val context: Context) {
         main.postDelayed(tick, 150)
     }
 
-    /**
-     * Emergency unlock. Preparation and cleanup bound their runtime (native
-     * stop/open timeouts, 3 s executor drains), so previewOpening/busy/scan
-     * flags all clear within a few seconds on a healthy system. If one exceeds
-     * its budget the completion handler is never going to arrive (wedged
-     * executor or dropped post): restore interactivity instead of leaving the
-     * device cards permanently disabled, and bump generation so a late
-     * completion from the stuck operation cannot mutate the newer state.
-     */
+    // A slow/hung driver is never permission to unlock while it owns resources.
+    // Report once per operation and keep the same executor/lock until completion.
+    private val timeoutReported = HashMap<String, Long>()
     private fun watchdog(now: Long) {
-        if (previewOpening && now - previewOpeningSince > PREVIEW_WATCHDOG_MS) {
-            android.util.Log.e(
-                "Monitor",
-                "watchdog: previewOpening stuck " + (now - previewOpeningSince) + "ms, forcing unlock")
-            previewOpening = false
-            previewOperation++
-            generation++
-            status = "就绪 · 预览开流超时，已恢复操作"
-            changed()
+        fun report(kind: String, active: Boolean, since: Long, timeout: Long) {
+            if (active && now - since > timeout && timeoutReported[kind] != since) {
+                timeoutReported[kind] = since
+                message("java.util.concurrent.TimeoutException: $kind")
+            }
         }
-        if (busy && !testing && now - busySince > BUSY_WATCHDOG_MS) {
-            android.util.Log.e(
-                "Monitor",
-                "watchdog: busy stuck " + (now - busySince) + "ms, forcing unlock")
-            busy = false
-            starting = false
-            testing = false
-            ringtoneKey = null
-            generation++
-            val old = service
-            service = null
-            status = "已停止 · 音频操作超时，已恢复操作"
-            changed()
-            old?.closed("音频操作超时，已恢复")
-        }
-        if (scanInFlight && now - scanSince > SCAN_WATCHDOG_MS) {
-            android.util.Log.e(
-                "Monitor",
-                "watchdog: device scan stuck " + (now - scanSince) + "ms, forcing unlock")
-            scanInFlight = false
-            loading = false
-            refreshPending = true
-            changed()
-        }
-    }
-
-    private companion object {
-        // Ringtone playback has no total duration limit; its worker detects
-        // stalled decoding/writes. This watchdog covers preparation/cleanup.
-        const val PREVIEW_WATCHDOG_MS = 8_000L
-        const val BUSY_WATCHDOG_MS = 20_000L
-        const val SCAN_WATCHDOG_MS = 60_000L
+        report("audio preview open", previewOpening, previewOpeningSince, 8_000L)
+        report("audio preparation/cleanup", busy && !testing, busySince, 20_000L)
+        report("audio device discovery", scanInFlight, scanSince, 60_000L)
     }
 
     fun onVisible(visible: Boolean) {

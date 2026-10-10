@@ -2,7 +2,24 @@
 
 2026-10-09 第二轮会话结束时的状态。原 P0（会话锁 flake）与 P1（行焦点环）均已闭合并全量验证，根因与修复记录在下方"已解决"一节，其中的 Compose 强跳过陷阱是本项目的头号架构约束，改 UI 前必读。
 
-## 当前无未闭合问题
+## 物理设备待复测
+
+2.9 已修复设备变化时运行列表被改写、设备页过期测量数组越界、并行输入探测/静音误判、
+Oboe 错误回调与释放竞态，
+并通过手机模拟器的模拟设备变化与真实开流测试。多个 USB 外设的实际驱动插拔尚未复测；
+需在报告问题的手机上检查系统公开设备清单与 app 是否一致，不能把模拟回调当作物理 USB 验收。
+
+### 2.9 设备生命周期重构（2026-10-10）
+
+- 空闲用 AudioDeviceCallback 原生通知与 200ms 防抖合并，串行、仅开关流验证；丢弃过期结果。
+- 转发从准备到清理期间冻结列表/探测，AAudio 致命错误停止全流，结束后阻塞补刷新。
+- **已实际复现设备页崩溃**：`ChannelList.onSizeChanged` 恢复长度 7 的旧高度数组后写 index 7，
+  抛 ArrayIndexOutOfBoundsException。rememberSaveable 的 inputs 不会验证恢复值；现以 Saver
+  校验通道 key 列表与长度，拒绝过期/旧格式缓存，并保护晚到的测量回调。
+- 流回调使用共享所有权，错误状态独立保活，全部流 close 后再 reset 各流指针。
+- **取代下方历史 watchdog 行为**：超时只提示，不强行清除占用锁；铃声 finally 完成后才能开始下一次开流。
+- 多 USB 列表无按名称/类型去重及数量上限；系统未公开端点的限制保留，详见 PROJECT.md。
+
 
 ### 2.2 任务转发表状态重构（2026-10-10）
 
@@ -64,7 +81,7 @@
 
 虽然锁卡死并非本次根因，MonitorSession 仍按原修复方向加固（防御模拟器/真机上原生开流挂起等未知时序）：
 - `updatePreview` / `stop` 的 main.post 改用**专属操作计数**（previewOperation / stopOperation）判定"最后一个落定的操作"，previewOpening / busy 不再可能因共享 generation 被无关操作 bump 而永久滞留；
-- 150ms tick 中新增 watchdog：previewOpening>8s、非铃声播放期间 busy>20s、scanInFlight>60s 强制解锁并 bump generation 作废迟到的完成回调（Log.e "watchdog:" 可诊断）；1.4 起正常铃声播放无总时长限制，由播放工作线程检查连续无进度超时。
+- 历史 watchdog 曾在 previewOpening>8s、busy>20s、scanInFlight>60s 强制解锁；**2.9 已替换**为只提示超时并保留资源锁，直到真实清理完成，避免设备热插拔时重叠开流。正常铃声播放仍无总时长限制，工作线程检查连续无进度超时。
 - 验证：连点同卡 5 次全部往返、仪器 selection-preview / ringtone-test / forward-start-stop PASS。
 
 ### P1 焦点环（已按用户最新要求调整）

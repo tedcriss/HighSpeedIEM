@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
@@ -41,6 +42,10 @@ internal fun appLayoutMode(widthPx: Int, heightPx: Int, uiMode: Int): AppLayoutM
     widthPx > heightPx -> AppLayoutMode.Landscape
     else -> AppLayoutMode.Portrait
 }
+
+/** A restored page may have a different device list than when it was saved. */
+internal fun restoreChannelHeights(savedKeys: List<*>?, savedHeights: IntArray?, currentKeys: List<Any>): IntArray? =
+    savedHeights?.takeIf { savedKeys == currentKeys && it.size == currentKeys.size + 1 }
 
 /** Native single-column lists and adaptive grids share cards and a saved logical scroll anchor. */
 @Composable
@@ -62,9 +67,19 @@ internal fun <T> ChannelList(
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
     val portraitScroll = rememberScrollState()
-    val heights = rememberSaveable(items.size) { IntArray(items.size + 1) }
+    val itemKeys = items.map(itemKey)
+    // rememberSaveable inputs invalidate live state, but do not validate a
+    // restored SaveableStateHolder value. Device removal while this page is
+    // hidden used to restore a shorter array on return and crash measurement.
+    val heights = rememberSaveable(itemKeys, saver = Saver<IntArray, Any>(
+        save = { listOf(itemKeys, it) },
+        restore = { saved ->
+            val state = saved as? List<*>
+            restoreChannelHeights(state?.getOrNull(0) as? List<*>, state?.getOrNull(1) as? IntArray, itemKeys)
+        },
+    )) { IntArray(items.size + 1) }
     var previousLandscape by rememberSaveable { mutableStateOf(landscape) }
-    LaunchedEffect(landscape) {
+    LaunchedEffect(landscape, itemKeys) {
         if (previousLandscape != landscape) {
             if (eagerPortrait) {
                 // The device cards contain nested focus targets. Keeping the portrait
@@ -109,7 +124,10 @@ internal fun <T> ChannelList(
             Box(Modifier.onSizeChanged { heights[0] = it.height }) { heading() }
             items.forEachIndexed { index, item ->
                 key(itemKey(item)) {
-                    Box(Modifier.onSizeChanged { heights[index + 1] = it.height }) { card(index, item, Modifier) }
+                    Box(Modifier.onSizeChanged {
+                        // A removed node can still deliver a final measurement.
+                        if (index + 1 in heights.indices) heights[index + 1] = it.height
+                    }) { card(index, item, Modifier) }
                 }
             }
         }
