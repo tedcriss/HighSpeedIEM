@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.5`（versionCode 16），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.6`（versionCode 17），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -34,7 +34,8 @@ route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, r
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
 动效专项：`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
 布局专项：`adaptive-layout`，同一手机上的横竖屏、1/2/3 列、150%/200% 字体、600px 模式切换与滚动锚点恢复。
-后两项均在手机上通过主线程 `Activity.setContent` 临时加载实际 `CompactFlow`，并在 `finally` 恢复手机界面；
+浮层专项：`tooltip-compatibility`，测量真实频谱、输入/输出能力提示与整张卡片的交叠面积，覆盖横竖屏、1/2/3 列与 200% 字体；检查安全边界、正文滚动、固定关闭键及嵌套点击。
+`keyboard-compact-phone` 与 `keyboard-compact-small-phone` 均在手机上通过主线程 `Activity.setContent` 临时加载实际 `CompactFlow`，并在 `finally` 恢复手机界面；
 small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动手表模拟器，不更改手机系统分辨率。
 输出逐场景 `=== SCENARIO <名称>: PASS/FAIL - 说明` 与 `=== SUMMARY`。
 默认只在正常分辨率的手机模拟器执行，不使用 `all`（会包含 `compact-mode`）。
@@ -130,8 +131,12 @@ LazyVerticalGrid / GridCells.Adaptive，最小卡片宽度 320dp 并随字体比
 卡片按原列表顺序从左到右、从上到下排列，内容和控件沿用竖屏组件。
 使用稳定 key、contentType 和原生保存的滚动状态，切页保留位置；横竖屏切换时同步可见项索引和偏移。
 设备页记录原生测量的标题/卡片高度，用于 ScrollState 与 LazyGridState 的滚动位置转换。
-设备能力和频谱仍使用绑定卡片/控件的原生 TooltipBox / RichTooltip，位置避开系统栏、
-刘海和窗口边缘；能力弹窗最大宽度 480dp，窄窗口继续收缩，长表格独立滚动。
+设备能力和频谱共用原生 TooltipBox / RichTooltip，使用 PopupPositionProvider 扩展接口按整张卡片的实测可见边界避让。
+比较上、下、左、右及空间不足时角落候选位置的交叠面积，横屏优先侧边、竖屏优先上下；空间不足时选择遮挡最少的位置。
+提示限制在 Scaffold 的实测内容安全区内，避开系统栏、刘海、顶部标题和应用导航；能力提示最大宽度 480dp，
+频谱最大宽度 360dp，并根据侧边空间继续收缩。横屏单列无侧边空间时，宽度不超过卡片宽度的一半；竖屏优先限制高度以容纳卡片上方或下方，超大字体使卡片占满视口时，高度不超过可见卡片的一半。整个提示的正文独立滚动、关闭键固定可见，标题保留通道身份。
+省略 Material 3 可选的 caret，避免原生默认 caret 对自定义侧边位置仍按上下方向绘制造成错误指向。
+设备卡片的参数按实测宽度和字体比例改为单列；设备能力与独占控件可原生换行，标签保留自然换行。
 
 横屏任务页的工具栏使用原生 VerticalFloatingToolbar，左侧全高度区域独占宽度，
 转发对列表在其右侧布局，卡片无法滑到工具栏下方。电池键在上、转发键在下，图标在文字上方，
@@ -206,7 +211,7 @@ LazyVerticalGrid / GridCells.Adaptive，最小卡片宽度 320dp 并随字体比
 - 实时频谱为线性频率轴的柱状图，0 至 -90 dBFS；相邻 FFT bin 按峰值合并为最多 48 根柱，
   随可用宽度调整数量，保留窄峰和柱间间隔。频谱使用通道卡片作为 Rich tooltip 锚点，
   标题标明设备 ID 和通道索引；弹层宽度不超过 360dp 并适应窗口，图表内容高度为 144dp。
-  原生控件自动选择锚点上方或下方，位置限制在系统栏及安全区域内。
+  通过原生 PopupPositionProvider 扩展接口选择遮挡最少的四向位置，并限制在页面内容安全区内。
 - 1.8 起标准任务页转发按键组统一使用 Material 3 原生填充分裂按钮
   LeadingButton / TrailingButton，默认小号最小高度、圆角、内边距、labelLarge 字体、
   20dp 图标和至少 48dp 触摸区域。两键共用原生填充按钮的阴影状态与禁用配色；

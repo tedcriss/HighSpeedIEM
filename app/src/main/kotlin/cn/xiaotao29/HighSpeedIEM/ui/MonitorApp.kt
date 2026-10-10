@@ -54,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
@@ -65,12 +66,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.roundToIntRect
 import cn.xiaotao29.HighSpeedIEM.MainActivity
 import cn.xiaotao29.HighSpeedIEM.R
 import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
@@ -98,6 +103,7 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
     val snackbar = remember { SnackbarHostState() }
     val pageState = rememberSaveableStateHolder()
     var taskControlsHeight by remember { mutableStateOf(0.dp) }
+    var tooltipViewport by remember { mutableStateOf<IntRect?>(null) }
 
     val configuration = LocalConfiguration.current
     val windowSize = LocalWindowInfo.current.containerSize
@@ -193,42 +199,46 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
                             if (tab != selectedTab) activity.safe { session.switchTab(tabs.indexOf(tab)) }
                         }
                     }
-                    Box(Modifier.weight(1f).fillMaxHeight()) {
-                        if (isCompact) {
-                            pageState.SaveableStateProvider("compact") { CompactFlow(activity, session) }
-                        } else {
-                            // Dispose the old destination immediately: its tooltips,
-                            // focus targets and audio cleanup must not survive a fade.
-                            // Only the incoming page animates; native saved scroll
-                            // state survives navigation without retaining previews.
-                            key(selectedTab) {
-                                val entering = remember {
-                                    MutableTransitionState(false).apply { targetState = true }
-                                }
-                                androidx.compose.animation.AnimatedVisibility(
-                                    visibleState = entering,
-                                    enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
-                                    exit = ExitTransition.None,
-                                    modifier = Modifier.fillMaxSize(),
-                                    label = "destination",
-                                ) {
-                                    pageState.SaveableStateProvider(selectedTab.name) {
-                                        when (selectedTab) {
-                                            Tab.INPUT -> InputPage(activity, session, landscape)
-                                            Tab.OUTPUT -> OutputPage(activity, session, landscape)
-                                            Tab.TASK -> TaskPage(activity, session, landscape = landscape) { taskControlsHeight = it }
+                    Box(Modifier.weight(1f).fillMaxHeight().onGloballyPositioned {
+                        tooltipViewport = it.boundsInWindow().roundToIntRect()
+                    }) {
+                        CompositionLocalProvider(LocalTooltipViewport provides tooltipViewport) {
+                            if (isCompact) {
+                                pageState.SaveableStateProvider("compact") { CompactFlow(activity, session) }
+                            } else {
+                                // Dispose the old destination immediately: its tooltips,
+                                // focus targets and audio cleanup must not survive a fade.
+                                // Only the incoming page animates; native saved scroll
+                                // state survives navigation without retaining previews.
+                                key(selectedTab) {
+                                    val entering = remember {
+                                        MutableTransitionState(false).apply { targetState = true }
+                                    }
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visibleState = entering,
+                                        enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
+                                        exit = ExitTransition.None,
+                                        modifier = Modifier.fillMaxSize(),
+                                        label = "destination",
+                                    ) {
+                                        pageState.SaveableStateProvider(selectedTab.name) {
+                                            when (selectedTab) {
+                                                Tab.INPUT -> InputPage(activity, session, landscape)
+                                                Tab.OUTPUT -> OutputPage(activity, session, landscape)
+                                                Tab.TASK -> TaskPage(activity, session, landscape = landscape) { taskControlsHeight = it }
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        androidx.compose.animation.AnimatedVisibility(
-                            visible = session.loadingPublic,
-                            enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
-                            exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
-                            label = "channel-loading",
-                        ) {
-                            LoadingOverlay(showHint = !isCompact, blockInput = session.loadingPublic)
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = session.loadingPublic,
+                                enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
+                                exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
+                                label = "channel-loading",
+                            ) {
+                                LoadingOverlay(showHint = !isCompact, blockInput = session.loadingPublic)
+                            }
                         }
                     }
                 }

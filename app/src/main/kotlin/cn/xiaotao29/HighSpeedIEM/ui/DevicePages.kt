@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -61,6 +63,10 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.roundToIntRect
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -140,7 +146,8 @@ private fun DeviceCard(
 
     val cardShape = MaterialTheme.shapes.large
     val cardFocus = remember { FocusRequester() }
-    SpectrumTooltip(session, channel, cardFocus) {
+    var cardBounds by remember { mutableStateOf<IntRect?>(null) }
+    SpectrumTooltip(session, channel, cardFocus, cardBounds) {
         Card(
             enabled = !selectionLocked,
             onClick = {
@@ -164,6 +171,7 @@ private fun DeviceCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 12.dp)
+                .onGloballyPositioned { cardBounds = it.boundsInWindow().roundToIntRect() }
                 .focusRequester(cardFocus)
                 .keyboardFocus(!selectionLocked, cardShape)
                 .semantics {
@@ -217,11 +225,13 @@ private fun DeviceCard(
                         },
                     )
                 }
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    maxItemsInEachRow = 2,
                     horizontalArrangement = Arrangement.SpaceBetween) {
-                    DeviceCapabilityTooltip(channel, enabled = !session.loadingPublic)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.align(Alignment.CenterVertically)) {
+                        DeviceCapabilityTooltip(channel, cardBounds, enabled = !session.loadingPublic)
+                    }
+                    Row(Modifier.align(Alignment.CenterVertically), verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             "独占",
                             style = MaterialTheme.typography.labelMedium,
@@ -262,35 +272,38 @@ private fun ParameterRow(
 ) {
     val editable = channel.index == 0 && !locked
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val rates = DeviceSettings.rates(channel.device)
-            val rateLabels = rates.map { if (it == 0) "自动" else "$it Hz" }
-            OptionDropdown(
-                label = "采样率",
-                options = rateLabels,
-                selectedIndex = rates.indexOf(cfg.rate).coerceAtLeast(0),
-                enabled = editable,
-                hint = "ID ${channel.device.id} 通道 ${channel.index}，采样率；自动由系统选择，同一设备由通道 0 设置",
-                modifier = Modifier.weight(1f),
-            ) { index ->
-                activity.safe {
-                    session.updateSettings(channel) { it.copyOf(rate = rates[index]) }
-                    session.parameterChanged(channel)
+        val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            ParameterFields(stacked = maxWidth < 280.dp * fontScale) { fieldModifier ->
+                val rates = DeviceSettings.rates(channel.device)
+                val rateLabels = rates.map { if (it == 0) "自动" else "$it Hz" }
+                OptionDropdown(
+                    label = "采样率",
+                    options = rateLabels,
+                    selectedIndex = rates.indexOf(cfg.rate).coerceAtLeast(0),
+                    enabled = editable,
+                    hint = "ID ${channel.device.id} 通道 ${channel.index}，采样率；自动由系统选择，同一设备由通道 0 设置",
+                    modifier = fieldModifier,
+                ) { index ->
+                    activity.safe {
+                        session.updateSettings(channel) { it.copyOf(rate = rates[index]) }
+                        session.parameterChanged(channel)
+                    }
                 }
-            }
-            val formats = DeviceSettings.formats(channel.device)
-            val formatLabels = formats.map { DeviceSettings.formatName(it) }
-            OptionDropdown(
-                label = "采样深度",
-                options = formatLabels,
-                selectedIndex = formats.indexOf(cfg.format).coerceAtLeast(0),
-                enabled = editable,
-                hint = "ID ${channel.device.id} 通道 ${channel.index}，采样深度；自动由系统选择，同一设备由通道 0 设置",
-                modifier = Modifier.weight(1f),
-            ) { index ->
-                activity.safe {
-                    session.updateSettings(channel) { it.copyOf(format = formats[index]) }
-                    session.parameterChanged(channel)
+                val formats = DeviceSettings.formats(channel.device)
+                val formatLabels = formats.map { DeviceSettings.formatName(it) }
+                OptionDropdown(
+                    label = "采样深度",
+                    options = formatLabels,
+                    selectedIndex = formats.indexOf(cfg.format).coerceAtLeast(0),
+                    enabled = editable,
+                    hint = "ID ${channel.device.id} 通道 ${channel.index}，采样深度；自动由系统选择，同一设备由通道 0 设置",
+                    modifier = fieldModifier,
+                ) { index ->
+                    activity.safe {
+                        session.updateSettings(channel) { it.copyOf(format = formats[index]) }
+                        session.parameterChanged(channel)
+                    }
                 }
             }
         }
@@ -309,6 +322,15 @@ private fun ParameterRow(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ParameterFields(stacked: Boolean, content: @Composable (Modifier) -> Unit) {
+    if (stacked) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { content(Modifier.fillMaxWidth()) }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { content(Modifier.weight(1f)) }
     }
 }
 
@@ -411,7 +433,7 @@ fun OptionDropdown(
             state = textState,
             readOnly = true,
             enabled = enabled,
-            label = { Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1) },
+            label = { Text(label, style = MaterialTheme.typography.labelMedium) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             textStyle = MaterialTheme.typography.bodyMedium,
             outputTransformation = valueStyling,

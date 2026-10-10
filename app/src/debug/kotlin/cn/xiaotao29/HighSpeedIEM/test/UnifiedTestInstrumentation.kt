@@ -85,6 +85,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 "error-stop" to ::scenarioErrorStop,
                 "rotation" to ::scenarioRotation,
                 "adaptive-layout" to { true to AdaptiveLayoutAudit(this, device, session()).run() },
+                "tooltip-compatibility" to { true to TooltipCompatibilityAudit(this, device, session()).run() },
                 "compact-mode" to ::scenarioCompactMode,
                 "compact-routes" to ::scenarioCompactRoutes,
                 "compact-binding-phone" to ::scenarioCompactBindingPhone,
@@ -438,7 +439,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
             expect(s.selectedInput == channel.key && device.hasObject(By.text("实时频谱")), "tooltip timed out")
             device.pressBack()
             expect(waitUntil(8000) { released() }, "back failed to release input")
-            expect(!device.hasObject(By.text("实时频谱")), "graph survived back")
+            expect(waitUntil(3000) { !device.hasObject(By.text("实时频谱")) }, "graph survived back")
             expect(channel.key !in s.disabled, "normal dismissal disabled input")
             checks.add("card/back/persistence")
 
@@ -492,7 +493,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
             open()
             NativeAudio.injectError(-899) // oboe Result::ErrorDisconnected
             expect(waitUntil(8000) { released() }, "delayed error leaked")
-            expect(!device.hasObject(By.text("实时频谱")), "graph survived error")
+            // Resource release precedes TooltipBox's native exit transition.
+            expect(waitUntil(3000) { !device.hasObject(By.text("实时频谱")) }, "graph survived error")
             expect(channel.key in s.disabled, "failed input still enabled")
             expect(s.notices.value?.contains("ErrorDisconnected") == true, "raw error missing")
             expect(siblings.all { (key, disabled) -> (key in s.disabled) == disabled }, "error changed sibling channels")
@@ -506,7 +508,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 s.updatePreview()
             }
             expect(waitUntil(10000) { released() && channel.key in s.disabled }, "open error did not close preview")
-            expect(!device.hasObject(By.text("实时频谱")), "graph survived open failure")
+            expect(waitUntil(3000) { !device.hasObject(By.text("实时频谱")) }, "graph survived open failure")
             checks.add("open-error")
             return true to checks.joinToString(", ") + "; native stats and spectrum empty after every release"
         } finally {

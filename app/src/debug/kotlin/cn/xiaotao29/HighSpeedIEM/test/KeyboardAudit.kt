@@ -84,6 +84,7 @@ internal class KeyboardAudit(
             focused()?.takeIf { it.label.contains(label) }?.let { return it }
             press(android.view.KeyEvent.KEYCODE_DPAD_DOWN)
         }
+        screenshot("unreachable-target")
         error("unreachable: $label; focused=${focused()}; targets=${targets()}")
     }
 
