@@ -1,6 +1,5 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
-import androidx.compose.foundation.border
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
@@ -49,7 +48,16 @@ import androidx.compose.runtime.key
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
@@ -87,6 +95,7 @@ fun InputPage(activity: MainActivity, session: MonitorSession) {
         Column(
             Modifier
                 .fillMaxSize()
+                .passiveScroll()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
@@ -110,6 +119,7 @@ fun OutputPage(activity: MainActivity, session: MonitorSession) {
         Column(
             Modifier
                 .fillMaxSize()
+                .passiveScroll()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
@@ -135,18 +145,16 @@ private fun DeviceCard(
     val locked = session.forwardingLockedPublic
     val selectionLocked = if (channel.input) locked else session.outputSelectionLockedPublic
     val enabled = channel.key !in session.disabled
-    var focused by remember { mutableStateOf(false) }
 
     val cardShape = MaterialTheme.shapes.large
-    SpectrumTooltip(session, channel) {
+    val cardFocus = remember { FocusRequester() }
+    SpectrumTooltip(session, channel, cardFocus) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 12.dp)
-                // Ring sources: selected or keyboard focus only. A lingering
-                // "last tapped" ring was removed on purpose: after deselecting a
-                // channel the card must look untouched again.
-                .onFocusChanged { focused = it.hasFocus }
+                .focusRequester(cardFocus)
+                .keyboardFocus(!selectionLocked, cardShape)
                 .clickable(enabled = !selectionLocked) {
                     activity.safe {
                         // Live re-check (as in the original implementation): the
@@ -166,14 +174,12 @@ private fun DeviceCard(
                         }
                     }
                 }
-                .then(
-                    if (selected || focused) {
-                        Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
-                    } else Modifier
-                )
                 .semantics {
-                    contentDescription = channel.device.productName.toString() + "，通道 " + channel.index +
-                        if (selected) "，已选中" else ""
+                    role = Role.Button
+                    contentDescription = "ID ${channel.device.id}，通道 ${channel.index}，${channel.device.productName}，" +
+                        if (channel.input) "查看实时频谱" else "播放或停止测试铃声"
+                    stateDescription = if (selected) "测试中" else "未测试"
+                    this.selected = selected
                 },
             colors = if (selected) {
                 CardDefaults.cardColors(
@@ -195,7 +201,7 @@ private fun DeviceCard(
                                 contentDescription = null, modifier = Modifier.size(20.dp))
                         }
                     }
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(Modifier.weight(1f).clearAndSetSemantics {}, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
                             "ID ${channel.device.id} · 通道 ${channel.index}",
                             style = MaterialTheme.typography.titleMedium,
@@ -214,13 +220,15 @@ private fun DeviceCard(
                         checked = enabled,
                         onCheckedChange = { on -> activity.safe { session.enable(channel, on) } },
                         enabled = !locked,
-                        modifier = Modifier.semantics { contentDescription = "允许在任务控制中选择该通道" },
+                        modifier = Modifier.keyboardFocus(!locked).semantics {
+                            contentDescription = "允许 ID ${channel.device.id} 通道 ${channel.index} 用于转发"
+                        },
                     )
                 }
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween) {
-                    DeviceCapabilityTooltip(channel)
+                    DeviceCapabilityTooltip(channel, enabled = !session.loadingPublic)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             "独占",
@@ -237,8 +245,8 @@ private fun DeviceCard(
                                 }
                             },
                             enabled = cfg.exclusiveSupport == 1 && channel.index == 0 && !locked,
-                            modifier = Modifier.semantics {
-                                contentDescription = if (cfg.exclusiveSupport == 1)
+                            modifier = Modifier.keyboardFocus(cfg.exclusiveSupport == 1 && channel.index == 0 && !locked).semantics {
+                                contentDescription = "ID ${channel.device.id} 通道 ${channel.index}，" + if (cfg.exclusiveSupport == 1)
                                     "请求设备独占，实际结果取决于系统；由通道 0 设置"
                                 else "系统未提供可用独占模式"
                             },
@@ -270,7 +278,7 @@ private fun ParameterRow(
                 options = rateLabels,
                 selectedIndex = rates.indexOf(cfg.rate).coerceAtLeast(0),
                 enabled = editable,
-                hint = "采样率，自动由系统选择；同一设备由通道 0 设置",
+                hint = "ID ${channel.device.id} 通道 ${channel.index}，采样率；自动由系统选择，同一设备由通道 0 设置",
                 modifier = Modifier.weight(1f),
             ) { index ->
                 activity.safe {
@@ -285,7 +293,7 @@ private fun ParameterRow(
                 options = formatLabels,
                 selectedIndex = formats.indexOf(cfg.format).coerceAtLeast(0),
                 enabled = editable,
-                hint = "采样深度，自动由系统选择；同一设备由通道 0 设置",
+                hint = "ID ${channel.device.id} 通道 ${channel.index}，采样深度；自动由系统选择，同一设备由通道 0 设置",
                 modifier = Modifier.weight(1f),
             ) { index ->
                 activity.safe {
@@ -300,7 +308,7 @@ private fun ParameterRow(
                 options = DeviceSettings.PRESET_LABELS.toList(),
                 selectedIndex = DeviceSettings.PRESET_VALUES.indexOf(cfg.preset).coerceAtLeast(0),
                 enabled = editable,
-                hint = "录音预设，自动由系统选择；同一设备由通道 0 设置",
+                hint = "ID ${channel.device.id} 通道 ${channel.index}，录音预设；自动由系统选择，同一设备由通道 0 设置",
                 modifier = Modifier.fillMaxWidth(),
             ) { index ->
                 activity.safe {
@@ -335,6 +343,14 @@ fun OptionDropdown(
     onSelected: (Int) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val anchorFocus = remember { FocusRequester() }
+    val itemFocus = remember(options.size) { List(options.size) { FocusRequester() } }
+    val inputMode = LocalInputModeManager.current
+    var restoreFocus by remember { mutableStateOf(false) }
+    fun dismiss() {
+        expanded = false
+        restoreFocus = inputMode.inputMode == InputMode.Keyboard
+    }
     val value = selectedValue?.text ?: options.getOrElse(selectedIndex) { options.firstOrNull() ?: "" }
     // Native presentation-only styling keeps the text, selection and scrolling unchanged.
     val valueStyling = remember(selectedValue) {
@@ -365,12 +381,16 @@ fun OptionDropdown(
             valueScroll.scrollTo(0)
         }
     }
-    // The anchor must not keep its focused outline after the menu closes:
-    // clear focus on every dismissal path.
     val focusManager = LocalFocusManager.current
-    LaunchedEffect(enabled) {
-        if (!enabled && expanded) {
+    LaunchedEffect(enabled, expanded, restoreFocus) {
+        if (!enabled) {
             expanded = false
+            restoreFocus = false
+        } else if (!expanded && restoreFocus) {
+            androidx.compose.runtime.withFrameNanos { }
+            anchorFocus.requestFocus()
+            restoreFocus = false
+        } else if (!expanded && inputMode.inputMode == InputMode.Touch) {
             focusManager.clearFocus()
         }
     }
@@ -386,7 +406,7 @@ fun OptionDropdown(
     ExposedDropdownMenuBox(
         expanded = expanded,
         onExpandedChange = { expanded = it && enabled },
-        modifier = modifier.semantics { contentDescription = hint },
+        modifier = modifier,
     ) {
         OutlinedTextField(
             state = textState,
@@ -398,29 +418,41 @@ fun OptionDropdown(
             outputTransformation = valueStyling,
             shape = MaterialTheme.shapes.small,
             colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(
+                focusedBorderColor = if (expanded) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.primary,
                 unfocusedBorderColor = MaterialTheme.colorScheme.outline,
                 disabledBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
             ),
             lineLimits = TextFieldLineLimits.SingleLine,
             scrollState = valueScroll,
             modifier = Modifier
+                .focusRequester(anchorFocus)
+                .keyboardFocus(enabled, MaterialTheme.shapes.small)
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = hint
+                    stateDescription = (if (value.isBlank()) "未选择" else value) +
+                        if (expanded) "，已展开" else "，已收起"
+                },
         )
         ExposedDropdownMenu(expanded = expanded,
             matchAnchorWidth = false,
-            modifier = Modifier.widthIn(min = 240.dp, max = 360.dp),
+            modifier = Modifier.widthIn(min = 240.dp, max = 360.dp).passiveScroll(),
             onDismissRequest = {
-            expanded = false
-            focusManager.clearFocus()
+            dismiss()
         }) {
+            LaunchedEffect(expanded) {
+                if (expanded && itemFocus.isNotEmpty()) {
+                    androidx.compose.runtime.withFrameNanos { }
+                    itemFocus[selectedIndex.coerceIn(itemFocus.indices)].requestFocus()
+                }
+            }
             options.forEachIndexed { index, option ->
                 val chosen = index == selectedIndex
                 SelectableDropdownMenuItem(
                     selected = chosen,
                     onClick = {
-                        expanded = false
-                        focusManager.clearFocus()
+                        dismiss()
                         if (enabled) onSelected(index)
                     },
                     text = {
@@ -428,6 +460,14 @@ fun OptionDropdown(
                     },
                     shapes = itemShapes,
                     colors = itemColors,
+                    modifier = Modifier.focusRequester(itemFocus[index])
+                        .focusProperties {
+                            next = itemFocus[(index + 1) % itemFocus.size]
+                            previous = itemFocus[(index - 1 + itemFocus.size) % itemFocus.size]
+                        }
+                        .keyboardFocus().semantics {
+                        if (option.isBlank()) contentDescription = "空白，清除$label"
+                    },
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 )
             }

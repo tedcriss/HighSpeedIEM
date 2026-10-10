@@ -170,8 +170,8 @@ fun HighSpeedIEMTheme(content: @Composable () -> Unit) {
     ) {
         // Ripple/press indication stays disabled app-wide (user preference,
         // 2026-10-09: the ripple look was rejected). Residual-state hygiene
-        // lives in the controls themselves: cards draw a ring only while
-        // selected/focused; dropdown anchors clear focus on dismiss.
+        // lives in the controls themselves: only the active window's keyboard
+        // target draws a ring; keyboard dismissal restores the dropdown anchor.
         CompositionLocalProvider(LocalIndication provides NoIndication) {
             content()
         }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.RichTooltip
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
@@ -15,7 +16,13 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.IntOffset
@@ -33,6 +40,7 @@ import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
 internal fun SpectrumTooltip(
     session: MonitorSession,
     channel: Channel,
+    anchorFocus: FocusRequester,
     content: @Composable () -> Unit,
 ) {
     if (!channel.input) {
@@ -44,6 +52,19 @@ internal fun SpectrumTooltip(
         !session.runningPublic && !session.startingPublic
     val token = session.inputSelectionToken
     val state = rememberTooltipState(isPersistent = true)
+    val closeFocus = remember { FocusRequester() }
+    val inputMode = LocalInputModeManager.current
+    var wasActive by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    LaunchedEffect(active, session.forwardingLockedPublic, session.visible) {
+        if (active) wasActive = true
+        else if (wasActive && !session.forwardingLockedPublic && session.visible) {
+            wasActive = false
+            if (inputMode.inputMode == InputMode.Keyboard) {
+                androidx.compose.runtime.withFrameNanos { }
+                anchorFocus.requestFocus()
+            }
+        }
+    }
 
     DisposableEffect(active, token) {
         onDispose {
@@ -109,6 +130,15 @@ internal fun SpectrumTooltip(
                 caretShape = TooltipDefaults.caretShape(),
                 maxWidth = width,
                 title = { Text("ID ${channel.device.id} · 通道 ${channel.index}") },
+                action = {
+                    TextButton(onClick = {
+                        state.dismiss()
+                        session.dismissInputPreview(channel.key, token)
+                    }, modifier = Modifier.focusRequester(closeFocus).keyboardFocus(active)) { Text("关闭") }
+                    LaunchedEffect(Unit) {
+                        if (inputMode.inputMode == InputMode.Keyboard) closeFocus.requestFocus()
+                    }
+                },
             ) {
                 SpectrumContent(
                     session,

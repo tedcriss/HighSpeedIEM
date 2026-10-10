@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.2`（versionCode 13），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.3`（versionCode 14），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -31,9 +31,13 @@ adb shell am instrument -w -e scenarios native-selftest,launch-tabs,device-valid
 
 场景：`native-selftest, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
 route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, rotation, compact-mode, compact-routes, compact-binding-phone`。
+非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
+后两项均在手机上通过主线程 `Activity.setContent` 临时加载实际 `CompactFlow`，并在 `finally` 恢复手机界面；
+small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动手表模拟器，不更改手机系统分辨率。
 输出逐场景 `=== SCENARIO <名称>: PASS/FAIL - 说明` 与 `=== SUMMARY`。
 默认只在正常分辨率的手机模拟器执行，不使用 `all`（会包含 `compact-mode`）。
-低分辨率、电视、手表等平台仅在用户显式要求时测试。
+可在手机上临时加载实际极简组件，或通过降低手机分辨率验证生产模式切换；
+电视、手表等平台的模拟器仅在用户显式要求时测试。
 
 ## 架构
 
@@ -59,7 +63,7 @@ route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, r
 
 **选中与启用相互独立**：输入、输出列表各自最多选中一个通道（再点取消），
 选中用于频谱或铃声测试；启用复选框可多选，决定通道是否出现在任务页下拉框。
-卡片点击后行获得焦点；选中或持焦点的行显示主色边框。
+选中通道用容器配色表示；按键焦点用当前控件自己的边框表示。内部控件聚焦时，整张卡片不再跟随画框。
 
 **输入页**：通道卡片（设备名、通道索引、启用复选框；能力详情、独占复选框；
 采样率/采样深度/录音预设）。页面不再保留常驻频谱框；选中后按该通道参数开流，
@@ -116,7 +120,8 @@ route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, r
 - 第 3 页信息模块占用中号按钮上方的全部剩余空间：顶部复用手机任务页的状态提示框，下面显示映射转发对的输入与输出实际运行参数，
   内容可独立滚动，未运行时参数区域保持空白。底部居中放置一个 Material 3 中号填充启动/停止按钮，默认高度 56dp。
   启动文字为“启动 N 个转发”，N 是整张任务表的有效配对数；启动、停止与手机共用同一会话与前台服务。
-- 底部的 `CompactPageIndicator` 独立占用 32dp，包含三个圆点，当前页高亮；页面左右滑动切换。
+- 底部的 `CompactPageIndicator` 包含三个圆点，当前页高亮；每点都有独立的 48dp 选择区域与 Tab 语义，
+  点击或确认键可切页，左右方向键也可直接切页。圆屏额外保留底部安全边距，焦点框不被圆形边缘裁切。
 - 前两页固定映射启动时手机任务表第 1 行的空白添加行，以固定转发行 ID 绑定，不随列表索引变化。
   该行选中输入或输出后，后台继续保留新增空白行，允许添加任意其他转发对；两页仍编辑原绑定行。
   清空一侧保留另一侧及映射；两侧都清空后删除旧行并映射尾部空白新增行，不接管其他已有转发对。
@@ -173,9 +178,39 @@ route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, r
   列表与 Snackbar 使用容器实际测量高度避让，适配字体增大和启动/停止文字变化。
 - 2.0 起任务页工具栏容器使用固定 6dp 阴影，展开与收起均指定同一 elevation；
   禁用、可启动、运行、按下与聚焦等状态都使用相同容器阴影。
-- 保留全局无波纹、反选清边框、下拉关闭清焦点和各 UI 自身订阅 session.version 的既有行为。
+- 保留全局无波纹、触控反选不残留焦点框和各 UI 自身订阅 session.version 的既有行为。
+  下拉关闭时，触控清焦点，按键操作恢复到原入口。
   输入与输出页提示条靠近页面底部，任务页抬高到转发按钮上方。
 - 设计依据：[Material Design 3 in Compose](https://developer.android.com/develop/ui/compose/designsystems/material3)。
+
+## 非触控与无障碍（2.3）
+
+- 只依赖方向键、确认（Enter / DPAD_CENTER）、返回、首页。上下按阅读顺序逐个遍历，左右用于横向控件；
+  极简界面的左右键切页。到列表之外仍可继续到导航与启动/停止按钮，无需触摸、Tab 或特殊遥控器键。
+- `KeyboardFocus.kt` 只装饰原生控件已有的焦点节点，不叠加 `focusable`；使用 `isFocused` 区分自身与子控件。
+  只在按键模式及当前 Android 窗口中画 3dp 轮廓，弹层不会与底层入口同时画框。填充主按钮用 onPrimary 轮廓保证对比度。
+  TalkBack 的触摸探索启用时采用系统朗读焦点框，不再叠加应用自绘轮廓；停用后自动恢复按键轮廓。
+  禁用控件不进入按键焦点；纯文本、装饰图标、加载遮罩及包含操作控件的滚动容器不增加冗余停点。
+- 只读下拉框在编辑器处理前拦截方向键，避免移动光标或吞掉按键；展开后直接聚焦当前选项，
+  菜单项有明确的前后焦点顺序，每次上下移动一项。空白选项会读出“清除…”，返回不改选项，选择/返回均恢复入口焦点。
+- 设备能力与实时频谱只在确认后打开，不因移动焦点自动弹出；弹层提供可聚焦“关闭”，支持返回。
+  频谱关闭后同步取消预览并在资源解锁后恢复入口焦点，退出页/后台继续遵循原音频资源生命周期。
+- 长设备列表随焦点自动滚动；任务列表的 `BringIntoViewSpec` 按悬浮工具栏实测高度扣除遮挡区域，
+  保证按键聚焦的末行下拉框完整显示在工具栏上方。
+- 极简列表的上下键显式加载相邻 Lazy 项后聚焦，分页入口能到达完整列表的首尾项；
+  后台缓存页不注册当前页的焦点路径。圆屏页点留有安全边距，状态与参数一起滚动，给小屏保留阅读空间。
+- 独立且溢出的设备能力/极简运行信息保留一个可滚动焦点，上下读内容，到边缘继续遍历；左右可离开该区域
+  （极简界面优先执行切页）。没有溢出的文字区域不增加焦点停点。
+- 无障碍描述含设备 ID、通道及动作；复选框、菜单和页点保留原生角色/选中/禁用语义，
+  下拉框补充当前值与展开状态，卡片补充测试状态。标题标记 heading，状态徽标使用 polite live region；
+  装饰图标和重复的设备标题不再重复朗读。加载遮罩只吸收指针，不伪装成可点击按钮。
+- 专项测试从实际 Compose semantics 枚举焦点，以真实遥控键注入遍历/操作，检查唯一停点、同一窗口内重复边界、
+  正反向路径和禁用跳过；弹层通过公开 `WindowInspector` 读取当前窗口的真实焦点，避免 UiAutomation 焦点缓存滞后造成误判。
+  不使用点击坐标或语义 performClick/requestFocus 代替被测导航。
+
+设计依据：[Android 焦点目标](https://developer.android.com/develop/ui/compose/touch-input/focus/focus-target)、
+[焦点行为](https://developer.android.com/develop/ui/compose/touch-input/focus/change-focus-behavior)、
+[Compose 无障碍](https://developer.android.com/develop/ui/compose/accessibility)。
 
 ## 边界
 

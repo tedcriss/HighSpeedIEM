@@ -15,7 +15,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -35,14 +36,34 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.stateDescription
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -58,9 +79,28 @@ fun CompactFlow(activity: MainActivity, session: MonitorSession) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
     val pagerState = rememberPagerState(initialPage = session.tab.coerceIn(0, 2), pageCount = { 3 })
     val round = LocalConfiguration.current.isScreenRound
+    val scope = rememberCoroutineScope()
+    val pageFocus = remember { List(3) { FocusRequester() } }
+    var enterPage by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
     // These pages configure routes; entering from a phone releases previews/tests.
     LaunchedEffect(session) { activity.safe { session.switchTab(2) } }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize().onPreviewKeyEvent { event ->
+        val step = when (event.key) {
+            Key.DirectionLeft -> -1
+            Key.DirectionRight -> 1
+            else -> 0
+        }
+        if (step == 0) false else {
+            if (event.type == KeyEventType.KeyDown && !session.loadingPublic) {
+                val next = (pagerState.currentPage + step).coerceIn(0, 2)
+                scope.launch {
+                    pagerState.scrollToPage(next)
+                    pageFocus[next].requestFocus()
+                }
+            }
+            true
+        }
+    }) {
         // Subscribe inside this content scope: its memoized lambda otherwise
         // retains non-snapshot session fields when the parent recomposes.
         @Suppress("UNUSED_VARIABLE") val contentVersion = session.version.collectAsState().value
@@ -68,24 +108,38 @@ fun CompactFlow(activity: MainActivity, session: MonitorSession) {
         val sideInset = if (round) maxWidth * 0.14f else 0.dp
         val endInset = if (round) maxHeight * 0.14f else 8.dp
         val infoTopInset = if (round) maxHeight * 0.10f else 12.dp
+        val pageIndicatorInset = if (round) maxHeight * 0.08f else 0.dp
         val row = session.model.compactRow
         val editable = !session.forwardingLockedPublic
         Column(Modifier.fillMaxSize()) {
-            HorizontalPager(state = pagerState, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
+            HorizontalPager(state = pagerState,
+                modifier = Modifier.weight(1f).fillMaxWidth().passiveScroll()) { page ->
                 when (page) {
                     0, 1 -> {
                         val input = page == 0
                         val channels = (if (input) session.inputs else session.outputs)
                             .values.filter { it.key !in session.disabled }
                         CompactDeviceList(channels, if (input) row.input else row.output,
-                            editable, sideInset, endInset, input) { key ->
+                            editable && page == pagerState.currentPage, sideInset, endInset, input,
+                            active = page == pagerState.currentPage,
+                            onEnterReady = { if (page == pagerState.currentPage) enterPage = it },
+                            onExit = { forward -> pageFocus[if (forward) 0 else 2].requestFocus() }) { key ->
                             activity.safe { session.setCompactRouteSide(input, key) }
                         }
                     }
-                    else -> CompactStartPage(activity, session, sideInset, infoTopInset)
+                    else -> CompactStartPage(activity, session, sideInset, infoTopInset, pageFocus,
+                        round = round,
+                        active = page == pagerState.currentPage,
+                        onEnterReady = { if (page == pagerState.currentPage) enterPage = it })
                 }
             }
-            CompactPageIndicator(pagerState.currentPage)
+            CompactPageIndicator(pagerState.currentPage, pageFocus,
+                bottomInset = pageIndicatorInset, enabled = !session.loadingPublic,
+                onEnterPage = { last ->
+                    enterPage?.invoke(last) ?: pageFocus[if (last) 2 else 0].requestFocus()
+                }) { page ->
+                scope.launch { pagerState.scrollToPage(page) }
+            }
         }
     }
 }
@@ -94,14 +148,57 @@ fun CompactFlow(activity: MainActivity, session: MonitorSession) {
 @Composable
 private fun CompactDeviceList(
     channels: List<Channel>, selectedKey: String?, enabled: Boolean,
-    sideInset: Dp, endInset: Dp, input: Boolean, onPick: (String?) -> Unit,
+    sideInset: Dp, endInset: Dp, input: Boolean,
+    active: Boolean,
+    onEnterReady: (((Boolean) -> Unit)?) -> Unit,
+    onExit: (Boolean) -> Unit, onPick: (String?) -> Unit,
 ) {
+    val choices = listOf<Channel?>(null) + channels
+    val identities = choices.map { it?.key }
+    val listState = rememberLazyListState()
+    val itemFocus = remember(identities) { List(choices.size) { FocusRequester() } }
+    val scope = rememberCoroutineScope()
+    var focusedIndex by remember { mutableIntStateOf(0) }
+    var navigationJob by remember { mutableStateOf<Job?>(null) }
+    fun navigate(index: Int) {
+        focusedIndex = index
+        navigationJob?.cancel()
+        navigationJob = scope.launch {
+            listState.scrollToItem(index)
+            androidx.compose.runtime.withFrameNanos { }
+            itemFocus[index].requestFocus()
+        }
+    }
+    DisposableEffect(identities, enabled, active) {
+        onEnterReady(if (enabled) { last -> navigate(if (last) choices.lastIndex else 0) } else null)
+        onDispose { onEnterReady(null) }
+    }
+    DisposableEffect(identities, enabled) {
+        onDispose { navigationJob?.cancel() }
+    }
     LazyColumn(
-        modifier = Modifier.fillMaxSize().selectableGroup()
+        modifier = Modifier.fillMaxSize().passiveScroll().selectableGroup()
+            .onPreviewKeyEvent { event ->
+                val step = when (event.key) {
+                    Key.DirectionUp -> -1
+                    Key.DirectionDown -> 1
+                    else -> 0
+                }
+                val next = focusedIndex + step
+                if (!enabled || step == 0) false else {
+                    if (event.type == KeyEventType.KeyDown) {
+                        // Materialize the requested lazy item before focusing
+                        // it, including entry from the fixed page controls.
+                        if (next in choices.indices) navigate(next) else onExit(step > 0)
+                    }
+                    true
+                }
+            }
             .semantics { contentDescription = if (input) "输入通道列表" else "输出通道列表" },
+        state = listState,
         contentPadding = PaddingValues(top = endInset, bottom = endInset),
     ) {
-        items(listOf<Channel?>(null) + channels, key = { it?.key ?: "blank" }) { channel ->
+        itemsIndexed(choices, key = { _, channel -> channel?.key ?: "blank" }) { index, channel ->
             val current = selectedKey == channel?.key
             val colors = MaterialTheme.colorScheme
             val description = channel?.let { "ID ${it.device.id} · 通道 ${it.index} · ${it.typeLabel}" }
@@ -127,6 +224,9 @@ private fun CompactDeviceList(
                 shapes = ListItemDefaults.shapes(shape = MaterialTheme.shapes.large,
                     selectedShape = MaterialTheme.shapes.large),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = sideInset)
+                    .focusRequester(itemFocus[index])
+                    .onFocusChanged { if (it.isFocused) focusedIndex = index }
+                    .keyboardFocus(enabled, MaterialTheme.shapes.large)
                     .semantics {
                         contentDescription = description
                         if (!enabled) disabled()
@@ -138,22 +238,36 @@ private fun CompactDeviceList(
 
 /** A small independent footer, always outside the page content. */
 @Composable
-internal fun CompactPageIndicator(currentPage: Int) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+internal fun CompactPageIndicator(currentPage: Int, focus: List<FocusRequester>,
+    bottomInset: Dp = 0.dp, enabled: Boolean = true,
+    onEnterPage: (Boolean) -> Unit, onPage: (Int) -> Unit) {
+    Surface(modifier = Modifier.padding(bottom = bottomInset), color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Row(
-            Modifier.fillMaxWidth().height(32.dp)
+            Modifier.fillMaxWidth().height(48.dp).selectableGroup()
                 .semantics { contentDescription = "页面指示器" },
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             repeat(3) { index ->
                 val current = currentPage == index
-                Box(Modifier.size(8.dp).clip(CircleShape)
-                    .background(if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+                Box(Modifier.size(48.dp).focusRequester(focus[index])
+                    .onPreviewKeyEvent { event ->
+                        val last = index == 0 && event.key == Key.DirectionUp
+                        val first = index == 2 && event.key == Key.DirectionDown
+                        if (!enabled || (!last && !first)) false else {
+                            if (event.type == KeyEventType.KeyDown) onEnterPage(last)
+                            true
+                        }
+                    }
+                    .keyboardFocus(enabled, shape = CircleShape)
+                    .selectable(selected = current, enabled = enabled, role = Role.Tab, onClick = { onPage(index) })
                     .semantics {
                         contentDescription = "第 ${index + 1} 页"
-                        selected = current
-                    })
+                        stateDescription = listOf("输入通道", "输出通道", "任务控制")[index]
+                    }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(
+                        if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant))
+                }
             }
         }
     }
@@ -163,7 +277,10 @@ internal fun CompactPageIndicator(currentPage: Int) {
 @Composable
 private fun CompactStartPage(
     activity: MainActivity, session: MonitorSession,
-    sideInset: Dp, infoTopInset: Dp,
+    sideInset: Dp, infoTopInset: Dp, footerFocus: List<FocusRequester>,
+    round: Boolean,
+    active: Boolean,
+    onEnterReady: (((Boolean) -> Unit)?) -> Unit,
 ) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
     val row = session.model.compactRow
@@ -172,6 +289,17 @@ private fun CompactStartPage(
     val status = taskStatus(session)
     val inputStats = routeStats(session, row, true)
     val outputStats = routeStats(session, row, false)
+    val infoScroll = rememberScrollState()
+    val infoFocus = remember { FocusRequester() }
+    val buttonFocus = remember { FocusRequester() }
+    val buttonEnabled = active && !session.operationsBlockedPublic && (running || count > 0)
+    val infoFocusable = active && infoScroll.maxValue > 0 && infoScroll.maxValue != Int.MAX_VALUE
+    DisposableEffect(buttonEnabled, infoFocusable, active) {
+        onEnterReady(if (buttonEnabled || infoFocusable) { last ->
+            (if (!last && infoFocusable) infoFocus else if (buttonEnabled) buttonFocus else infoFocus).requestFocus()
+        } else null)
+        onDispose { onEnterReady(null) }
+    }
     Column(Modifier.fillMaxSize()) {
         Surface(
             modifier = Modifier.weight(1f).fillMaxWidth()
@@ -179,12 +307,19 @@ private fun CompactStartPage(
             color = MaterialTheme.colorScheme.surface,
         ) {
             Column(Modifier.fillMaxSize().padding(horizontal = sideInset + 12.dp)
-                .padding(top = infoTopInset, bottom = 8.dp),
+                .padding(top = infoTopInset),
                 horizontalAlignment = Alignment.CenterHorizontally) {
-                StatusBadge(status)
-                Column(Modifier.weight(1f).fillMaxWidth().padding(top = 8.dp)
-                    .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.fillMaxSize()
+                    .focusRequester(infoFocus)
+                    .focusProperties {
+                        previous = footerFocus.last()
+                        next = if (buttonEnabled) buttonFocus else footerFocus.first()
+                    }
+                    .keyboardScroll(infoScroll, enabled = active && !session.loadingPublic)
+                    .verticalScroll(infoScroll),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    StatusBadge(status)
                     listOf("输入" to inputStats, "输出" to outputStats).forEach { (label, stats) ->
                         if (stats.isNotEmpty()) {
                             Text("$label\n$stats",
@@ -196,7 +331,8 @@ private fun CompactStartPage(
             }
         }
         BoxWithConstraints(
-            Modifier.fillMaxWidth().padding(horizontal = sideInset + 8.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = sideInset + 8.dp,
+                vertical = if (round) 2.dp else 8.dp),
             contentAlignment = Alignment.Center,
         ) {
             val buttonHeight = ButtonDefaults.MediumContainerHeight
@@ -205,12 +341,16 @@ private fun CompactStartPage(
             val showIcon = maxWidth >= 200.dp
             Button(
                 onClick = { activity.safe { if (running) session.stop(null, false) else activity.startForwarding() } },
-                enabled = !session.operationsBlockedPublic && (running || count > 0),
+                enabled = buttonEnabled,
                 shape = ButtonDefaults.shape,
                 colors = ActionStyle.primaryColors(),
                 elevation = ActionStyle.buttonElevation(),
                 contentPadding = ButtonDefaults.contentPaddingFor(buttonHeight, hasStartIcon = showIcon),
-                modifier = Modifier.heightIn(min = buttonHeight),
+                modifier = Modifier.heightIn(min = buttonHeight)
+                    .focusRequester(buttonFocus)
+                    .focusProperties { previous = if (infoFocusable) infoFocus else footerFocus.last(); next = footerFocus.first() }
+                    .keyboardFocus(buttonEnabled,
+                        ButtonDefaults.shape, MaterialTheme.colorScheme.onPrimary),
             ) {
                 if (showIcon) {
                     Icon(if (running) Icons.Filled.Close else Icons.Filled.PlayArrow,

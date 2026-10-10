@@ -28,6 +28,9 @@ import androidx.compose.material3.SplitButtonDefaults
 import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -66,7 +69,7 @@ private data class RouteCardState(
  * toolbar clearance lets every row scroll fully above the controls.
  */
 @Composable
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun TaskPage(
     activity: MainActivity,
     session: MonitorSession,
@@ -85,22 +88,32 @@ fun TaskPage(
     val density = LocalDensity.current
     var controlsHeightPx by remember { mutableIntStateOf(0) }
     val controlsHeight = with(density) { controlsHeightPx.toDp() }
+    // Focus scrolling must use the unobscured viewport, while the floating
+    // toolbar and the list's visible background retain their existing layout.
+    val focusScroll = remember(controlsHeightPx) {
+        object : BringIntoViewSpec {
+            override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
+                super.calculateScrollDistance(offset, size, (containerSize - controlsHeightPx).coerceAtLeast(1f))
+        }
+    }
     Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().testTag("task-route-list"),
-            contentPadding = PaddingValues(
-                start = 16.dp, top = 16.dp, end = 16.dp,
-                // Each route already contributes 12dp below its card. Reserve
-                // the toolbar and its bottom gap without counting that twice.
-                bottom = (controlsHeight - 12.dp).coerceAtLeast(0.dp),
-            ),
-        ) {
-            item(key = "heading", contentType = "heading") {
-                PageHeading("音频转发", "配对已启用的输入与输出通道，即可开始转发。", status)
-            }
-            itemsIndexed(cards, key = { _, card -> card.row.id }, contentType = { _, _ -> "route" }) { index, card ->
-                RouteCard(card, index, inputChannels, outputChannels, editable) { input, value ->
-                    activity.safe { session.setRouteSide(card.row, input, value) }
+        CompositionLocalProvider(LocalBringIntoViewSpec provides focusScroll) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().passiveScroll().testTag("task-route-list"),
+                contentPadding = PaddingValues(
+                    start = 16.dp, top = 16.dp, end = 16.dp,
+                    // Each route already contributes 12dp below its card. Reserve
+                    // the toolbar and its bottom gap without counting that twice.
+                    bottom = (controlsHeight - 12.dp).coerceAtLeast(0.dp),
+                ),
+            ) {
+                item(key = "heading", contentType = "heading") {
+                    PageHeading("音频转发", "配对已启用的输入与输出通道，即可开始转发。", status)
+                }
+                itemsIndexed(cards, key = { _, card -> card.row.id }, contentType = { _, _ -> "route" }) { index, card ->
+                    RouteCard(card, index, inputChannels, outputChannels, editable) { input, value ->
+                        activity.safe { session.setRouteSide(card.row, input, value) }
+                    }
                 }
             }
         }
@@ -259,6 +272,7 @@ fun SplitStartButton(
             SplitButtonDefaults.LeadingButton(
                 onClick = { activity.safe { activity.launchBatterySettings() } },
                 enabled = batteryEnabled,
+                modifier = Modifier.keyboardFocus(batteryEnabled, ButtonDefaults.shape),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
                     contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -272,6 +286,8 @@ fun SplitStartButton(
             SplitButtonDefaults.TrailingButton(
                 onClick = { activity.safe { if (running) session.stop(null, false) else activity.startForwarding() } },
                 enabled = startEnabled,
+                modifier = Modifier.keyboardFocus(startEnabled, ButtonDefaults.shape,
+                    MaterialTheme.colorScheme.onPrimary),
             ) {
                 Icon(if (running) Icons.Filled.Close else Icons.Filled.PlayArrow,
                     contentDescription = null, modifier = Modifier.size(20.dp))

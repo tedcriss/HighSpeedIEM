@@ -1,8 +1,6 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
@@ -18,12 +16,16 @@ import androidx.compose.material3.SnackbarData
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.input.pointer.pointerInput
 
 /** A shared heading hierarchy for the three standard destinations. */
 @Composable
@@ -32,7 +34,8 @@ fun PageHeading(title: String, description: String, status: String) {
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            Text(title, style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f).semantics { heading() })
             StatusBadge(status)
         }
         Text(description, style = MaterialTheme.typography.bodyMedium,
@@ -47,7 +50,8 @@ fun StatusBadge(status: String) {
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         shape = MaterialTheme.shapes.extraLarge) {
         Text(status, style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                .semantics { liveRegion = LiveRegionMode.Polite },
             maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -62,11 +66,11 @@ fun LoadingOverlay(showHint: Boolean) {
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = {},
-            ),
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) awaitPointerEvent().changes.forEach { it.consume() }
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Surface(
@@ -102,6 +106,7 @@ fun NoticeSnackbar(data: SnackbarData) {
         action = {
             data.visuals.actionLabel?.let { label ->
                 androidx.compose.material3.TextButton(onClick = { data.performAction() },
+                    modifier = Modifier.keyboardFocus(focusColor = MaterialTheme.colorScheme.inversePrimary),
                     colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.inversePrimary)) {
                     Text(label)

@@ -19,14 +19,23 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
@@ -42,9 +51,22 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DeviceCapabilityTooltip(channel: Channel) {
+internal fun DeviceCapabilityTooltip(channel: Channel, enabled: Boolean = true) {
     val state = rememberTooltipState(isPersistent = true)
     val scope = rememberCoroutineScope()
+    val anchorFocus = remember { FocusRequester() }
+    val closeFocus = remember { FocusRequester() }
+    val inputMode = LocalInputModeManager.current
+    val contentScroll = rememberScrollState()
+    var wasVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(state.isVisible, enabled) {
+        if (!enabled) state.dismiss()
+        if (state.isVisible) wasVisible = true
+        else if (wasVisible && enabled) {
+            wasVisible = false
+            if (inputMode.inputMode == InputMode.Keyboard) anchorFocus.requestFocus()
+        }
+    }
     val windowSize = LocalWindowInfo.current.containerSize
     val density = LocalDensity.current
     val insets = WindowInsets.safeDrawing
@@ -84,24 +106,35 @@ internal fun DeviceCapabilityTooltip(channel: Channel) {
         positionProvider = positionProvider,
         state = state,
         focusable = true,
+        enableUserInput = false,
         onDismissRequest = { state.dismiss() },
         tooltip = {
             RichTooltip(
                 caretShape = TooltipDefaults.caretShape(),
                 maxWidth = maxWidth,
+                action = {
+                    TextButton(onClick = { state.dismiss() },
+                        modifier = Modifier.focusRequester(closeFocus).keyboardFocus()) { Text("关闭") }
+                    LaunchedEffect(Unit) {
+                        if (inputMode.inputMode == InputMode.Keyboard) closeFocus.requestFocus()
+                    }
+                },
             ) {
                 CapabilityTable(
                     entries = channel.capabilities,
                     modifier = Modifier
                         .heightIn(max = maxContentHeight)
-                        .verticalScroll(rememberScrollState()),
+                        .keyboardScroll(contentScroll)
+                        .verticalScroll(contentScroll),
                 )
             }
         },
     ) {
         TextButton(
+            enabled = enabled,
             onClick = { scope.launch { state.show() } },
-            modifier = Modifier.semantics { contentDescription = "查看设备能力" },
+            modifier = Modifier.focusRequester(anchorFocus).keyboardFocus(enabled)
+                .semantics { contentDescription = "查看 ID ${channel.device.id} 通道 ${channel.index} 的设备能力" },
         ) {
             Text("设备能力", style = MaterialTheme.typography.labelLarge)
             Icon(Icons.Outlined.Info, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -116,9 +149,11 @@ private fun CapabilityTable(entries: List<Pair<String, String>>, modifier: Modif
         modifier = modifier,
         content = {
             entries.forEach { (name, value) ->
-                Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clearAndSetSemantics {})
                 Text(value.ifEmpty { "（空）" }, style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Normal)
+                    fontWeight = FontWeight.Normal,
+                    modifier = Modifier.clearAndSetSemantics { contentDescription = "$name，${value.ifEmpty { "空" }}" })
             }
         },
     ) { measurables, constraints ->

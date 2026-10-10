@@ -1,6 +1,9 @@
 package cn.xiaotao29.HighSpeedIEM.test
 
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.unit.dp
 import cn.xiaotao29.HighSpeedIEM.ui.MonitorApp
 import cn.xiaotao29.HighSpeedIEM.ui.CompactFlow
 import cn.xiaotao29.HighSpeedIEM.ui.HighSpeedIEMTheme
@@ -84,6 +87,10 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 "compact-mode" to ::scenarioCompactMode,
                 "compact-routes" to ::scenarioCompactRoutes,
                 "compact-binding-phone" to ::scenarioCompactBindingPhone,
+                "keyboard-phone" to ::scenarioKeyboardPhone,
+                "keyboard-compact-phone" to ::scenarioKeyboardCompactPhone,
+                "keyboard-overflow-phone" to ::scenarioKeyboardOverflowPhone,
+                "keyboard-compact-small-phone" to ::scenarioKeyboardCompactSmallPhone,
             )
             val names = if (requested.isEmpty() || requested.contains("all")) {
                 scenarios.keys.toList()
@@ -198,6 +205,18 @@ class UnifiedTestInstrumentation : Instrumentation() {
     }
 
     private fun hasText(fragment: String): Boolean = dumpTextsGuarded().any { it.contains(fragment) }
+
+    /** Native selection can belong to the same-bounds selectable parent of
+     * the descriptive node exported by Compose accessibility. */
+    private fun actionSelected(node: androidx.test.uiautomator.UiObject2?): Boolean {
+        val bounds = node?.visibleBounds ?: return false
+        var item = node
+        while (item != null && item.visibleBounds == bounds) {
+            if (item.isSelected || item.isChecked) return true
+            item = item.parent
+        }
+        return false
+    }
 
     private fun clickText(fragment: String): Boolean {
         repeat(3) {
@@ -388,31 +407,34 @@ class UnifiedTestInstrumentation : Instrumentation() {
             }
             expect(waitUntil(10000) { s.selectedInput == channel.key && !s.previewOpeningPublic &&
                 s.spectrum.value.size > 2 }, "preview did not start")
-            expect(waitUntil(5000) { hasText("实时频谱") }, "tooltip missing")
+            expect(waitUntil(5000) { device.hasObject(By.text("实时频谱")) }, "tooltip missing")
         }
         try {
-            expect(!hasText("实时频谱"), "idle spectrum still visible")
+            expect(!device.hasObject(By.text("实时频谱")), "idle spectrum still visible")
             device.takeScreenshot(File(targetContext.getExternalFilesDir(null), "spectrum-idle.png"))
             // Select through the actual card and retain its UI-derived bounds
             // for an outside tap after the popup appears above/below it.
-            val cardTitle = "ID ${channel.device.id} · 通道 ${channel.index}"
-            val anchor = device.findObject(By.text(cardTitle)) ?: error("input anchor missing")
+            val anchor = device.findObject(By.descContains("ID ${channel.device.id}，通道 ${channel.index}，"))
+                ?: error("input anchor missing")
             val anchorBounds = anchor.visibleBounds
-            anchor.click()
+            val header = device.findObject(By.desc("允许 ID ${channel.device.id} 通道 ${channel.index} 用于转发"))
+                ?: error("input header missing")
+            val headerY = header.visibleBounds.centerY()
+            device.click(anchorBounds.centerX(), headerY)
             expect(waitUntil(10000) { s.selectedInput == channel.key && s.spectrum.value.size > 2 }, "card tap failed")
-            expect(hasText("实时频谱"), "card did not show rich tooltip")
+            expect(device.hasObject(By.text("实时频谱")), "card did not show rich tooltip")
             device.takeScreenshot(File(targetContext.getExternalFilesDir(null), "spectrum-tooltip.png"))
             // Persistence: a native non-persistent tooltip would time out here.
             SystemClock.sleep(2500)
-            expect(s.selectedInput == channel.key && hasText("实时频谱"), "tooltip timed out")
+            expect(s.selectedInput == channel.key && device.hasObject(By.text("实时频谱")), "tooltip timed out")
             device.pressBack()
             expect(waitUntil(8000) { released() }, "back failed to release input")
-            expect(!hasText("实时频谱"), "graph survived back")
+            expect(!device.hasObject(By.text("实时频谱")), "graph survived back")
             expect(channel.key !in s.disabled, "normal dismissal disabled input")
             checks.add("card/back/persistence")
 
             open()
-            device.click(anchorBounds.centerX(), anchorBounds.centerY())
+            device.click(anchorBounds.centerX(), headerY)
             expect(waitUntil(8000) { released() }, "outside tap failed to release input")
             checks.add("outside-tap")
 
@@ -447,7 +469,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 "stale tooltip dismissed a newer selection")
             runOnMainSync { s.switchTab(1) }
             expect(waitUntil(8000) { released() }, "tab exit leaked")
-            expect(!hasText("实时频谱"), "graph survived tab exit")
+            expect(!device.hasObject(By.text("实时频谱")), "graph survived tab exit")
             checks.add("stale-disposal/tab-exit")
 
             open()
@@ -455,13 +477,13 @@ class UnifiedTestInstrumentation : Instrumentation() {
             expect(waitUntil(8000) { !s.visible && released() }, "background leaked")
             bringToFront()
             expect(waitUntil(8000) { s.visible }, "foreground not restored")
-            expect(s.selectedInput == null && !hasText("实时频谱"), "preview restored after background")
+            expect(s.selectedInput == null && !device.hasObject(By.text("实时频谱")), "preview restored after background")
             checks.add("background")
 
             open()
             NativeAudio.injectError(-899) // oboe Result::ErrorDisconnected
             expect(waitUntil(8000) { released() }, "delayed error leaked")
-            expect(!hasText("实时频谱"), "graph survived error")
+            expect(!device.hasObject(By.text("实时频谱")), "graph survived error")
             expect(channel.key in s.disabled, "failed input still enabled")
             expect(s.notices.value?.contains("ErrorDisconnected") == true, "raw error missing")
             expect(siblings.all { (key, disabled) -> (key in s.disabled) == disabled }, "error changed sibling channels")
@@ -475,7 +497,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 s.updatePreview()
             }
             expect(waitUntil(10000) { released() && channel.key in s.disabled }, "open error did not close preview")
-            expect(!hasText("实时频谱"), "graph survived open failure")
+            expect(!device.hasObject(By.text("实时频谱")), "graph survived open failure")
             checks.add("open-error")
             return true to checks.joinToString(", ") + "; native stats and spectrum empty after every release"
         } finally {
@@ -535,12 +557,15 @@ class UnifiedTestInstrumentation : Instrumentation() {
             repeat(8) {
                 device.waitForIdle(1000)
                 // Different audio devices can share productName and channel index.
-                // The title includes the device ID and uniquely identifies this endpoint.
-                val heading = device.findObject(By.text("ID ${output.device.id} · 通道 ${output.index}"))
-                if (heading != null) {
+                // The accessible card identity includes the device ID. The
+                // header's checkbox supplies visible bounds without repeating
+                // the decorative title in the accessibility tree.
+                val card = device.findObject(By.descContains("ID ${output.device.id}，通道 ${output.index}，"))
+                val header = device.findObject(By.desc("允许 ID ${output.device.id} 通道 ${output.index} 用于转发"))
+                if (card != null && header != null) {
                     try {
-                        if (!s.outputSelectionLockedPublic && heading.visibleBounds.height() > 0) {
-                            heading.click()
+                        if (!s.outputSelectionLockedPublic && header.visibleBounds.height() > 0) {
+                            device.click(card.visibleBounds.centerX(), header.visibleBounds.centerY())
                             device.waitForIdle(1000)
                             return
                         }
@@ -569,7 +594,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
             val startedAt = SystemClock.uptimeMillis()
             clickOutput()
             check(waitUntil(5000) { s.testingPublic && active() }) { diagnostics(s) }
-            check(!hasText("测试选中通道") && !hasText("停止测试")) { "old test button remains" }
+            check(!device.hasObject(By.text("测试选中通道")) && !device.hasObject(By.text("停止测试"))) { "old test button remains" }
             check(!s.outputSelectionLockedPublic) { "output cards locked during playback" }
             while (SystemClock.uptimeMillis() - startedAt < 21500) {
                 check(s.testingPublic && s.selectedOutput == channel.key) { "early completion; " + diagnostics(s) }
@@ -598,8 +623,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(waitUntil(5000) { s.testingPublic && active() && s.selectedOutput == other.key }) { "switch failed; " + diagnostics(s) }
             check(channel.key !in s.disabled && other.key !in s.disabled)
             check(waitUntil(3000) {
-                device.hasObject(By.desc("${other.device.productName}，通道 ${other.index}，已选中")) &&
-                    !device.hasObject(By.desc("${channel.device.productName}，通道 ${channel.index}，已选中"))
+                actionSelected(device.findObject(By.descContains("ID ${other.device.id}，通道 ${other.index}，"))) &&
+                    !actionSelected(device.findObject(By.descContains("ID ${channel.device.id}，通道 ${channel.index}，")))
             }) { "selection highlight did not switch to the second card" }
             clickOutput(other)
             check(waitUntil(2000) { released() }) { "switched channel cancellation leaked" }
@@ -1057,10 +1082,12 @@ class UnifiedTestInstrumentation : Instrumentation() {
     }
 
     private fun compactPage(index: Int): Boolean {
+        fun selected(page: Int): Boolean {
+            val item = device.findObject(By.desc("第 ${page + 1} 页")) ?: return false
+            return actionSelected(item)
+        }
         repeat(5) {
-            val current = (0..2).firstOrNull {
-                device.findObject(By.desc("第 ${it + 1} 页"))?.isChecked == true
-            } ?: return false
+            val current = (0..2).firstOrNull(::selected) ?: return false
             if (current == index) return true
             // UiDevice reports physical dimensions even after a wm size override.
             // Derive gesture coordinates from the actual indicator's UI bounds.
@@ -1073,7 +1100,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 if (current < index) left else right, (h * 0.45f).toInt(), 55)
             SystemClock.sleep(700)
         }
-        return device.findObject(By.desc("第 ${index + 1} 页"))?.isChecked == true
+        return selected(index)
     }
 
     private fun scenarioCompactMode(): Pair<Boolean, String> {
@@ -1125,9 +1152,224 @@ class UnifiedTestInstrumentation : Instrumentation() {
         }
     }
 
-    /** Exercise the actual compact components on a normal phone, without a
-     * resolution/device-mode override. Production layout selection is unchanged.
-     */
+    /** Traverse and activate phone controls using real remote-control key events. */
+    private fun scenarioKeyboardPhone(): Pair<Boolean, String> {
+        val s = session()
+        if (!awaitDiscovery(s) || !waitUntil(10000) { !s.forwardingLockedPublic }) return false to "session busy"
+        val activity = s.listener as? MainActivity ?: return false to "activity missing"
+        val keys = KeyboardAudit(this, device, activity, ::publish)
+        runOnMainSync { s.model.clear(); s.consumeNotice() }
+        // A previous scenario may still have an expiring Snackbar. Let it leave
+        // before auditing stable controls; audit its close action separately.
+        SystemClock.sleep(10000)
+        for (tab in 0..2) {
+            runOnMainSync {
+                s.switchTab(tab)
+                activity.setContent { MonitorApp(activity, s) }
+            }
+            SystemClock.sleep(700)
+            keys.sweep("phone-tab-$tab")
+            if (tab < 2) {
+                keys.seek("设备能力")
+                val anchor = keys.focused()?.id
+                keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+                check(waitUntil(3000) { keys.focused()?.label == "关闭" }) { "capability close unreachable" }
+                keys.screenshot("phone-$tab-capability")
+                keys.press(android.view.KeyEvent.KEYCODE_BACK)
+                check(waitUntil(3000) { keys.focused()?.id == anchor }) { "capability did not restore focus" }
+                for (label in if (tab == 0) listOf("采样率", "采样深度", "录音预设") else listOf("采样率", "采样深度")) {
+                    keys.seek(label)
+                    val field = keys.focused()?.id
+                    keys.press(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+                    val channel = (if (tab == 0) s.inputs else s.outputs).values.first()
+                    val count = when (label) {
+                        "采样率" -> cn.xiaotao29.HighSpeedIEM.audio.DeviceSettings.rates(channel.device).size
+                        "采样深度" -> cn.xiaotao29.HighSpeedIEM.audio.DeviceSettings.formats(channel.device).size
+                        else -> cn.xiaotao29.HighSpeedIEM.audio.DeviceSettings.PRESET_VALUES.size
+                    }
+                    keys.menu("$tab-$label", count)
+                    keys.press(android.view.KeyEvent.KEYCODE_BACK)
+                    check(waitUntil(3000) { keys.focused()?.id == field }) { "$label Back lost anchor" }
+                }
+                if (tab == 0) {
+                    val input = firstEnabledInput(s) ?: error("no input")
+                    keys.seek("ID ${input.device.id}，通道 ${input.index}，")
+                    val card = keys.focused()?.id
+                    keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+                    check(waitUntil(10000) { s.spectrumBinsPublic > 0 }) { "key preview failed" }
+                    check(waitUntil(3000) { keys.focused()?.label == "关闭" }) { "spectrum close unreachable" }
+                    keys.screenshot("phone-spectrum")
+                    keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+                    check(waitUntil(10000) { s.selectedInputPublic == null && !s.previewOpeningPublic }) { "spectrum key close failed" }
+                    check(waitUntil(3000) { keys.focused()?.id == card }) { "spectrum lost anchor" }
+                } else {
+                    val output = firstEnabledOutput(s) ?: error("no output")
+                    keys.seek("ID ${output.device.id}，通道 ${output.index}，")
+                    keys.press(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+                    check(waitUntil(5000) { s.testingPublic }) { "key ringtone start failed" }
+                    keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+                    check(waitUntil(10000) { !s.testingPublic && s.selectedOutputPublic == null }) { "key ringtone cancel failed" }
+                }
+            }
+        }
+        keys.seek("输入转发通道")
+        keys.press(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+        check(waitUntil(3000) { device.findObjects(By.checkable(true)).isNotEmpty() }) { "menu missing" }
+        keys.menu("route-input", s.enabledChannels(s.inputs).size + 1)
+        keys.press(android.view.KeyEvent.KEYCODE_BACK)
+        keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+        keys.press(android.view.KeyEvent.KEYCODE_DPAD_DOWN)
+        keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+        check(s.model.rows.any { it.input != null }) { "input menu selection failed" }
+        check(waitUntil(3000) { keys.focused()?.label?.contains("输入转发通道") == true }) { "menu did not restore anchor focus: ${keys.focused()}" }
+        keys.press(android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
+        check(keys.focused()?.label?.contains("输出转发通道") == true) { "right did not reach output" }
+        keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+        keys.press(android.view.KeyEvent.KEYCODE_DPAD_DOWN)
+        keys.press(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+        check(s.model.validCount() == 1) { "output menu selection failed" }
+        keys.seek("启动 1 个转发")
+        keys.screenshot("phone-start-focused")
+        keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+        check(waitUntil(15000) { s.runningPublic }) { "key start failed: ${diagnostics(s)}" }
+        keys.sweep("phone-running")
+        keys.seek("停止转发")
+        keys.press(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+        check(waitUntil(15000) { !s.runningPublic && !s.operationsBlockedPublic }) { "key stop failed" }
+        keys.seek("后台运行保护")
+        keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+        SystemClock.sleep(600)
+        keys.press(android.view.KeyEvent.KEYCODE_BACK)
+        check(waitUntil(5000) { s.visible }) { "return from system settings failed" }
+        keys.press(android.view.KeyEvent.KEYCODE_HOME)
+        check(waitUntil(3000) { !s.visible }) { "home did not background activity" }
+        bringToFront()
+        check(s.visible && s.selectedInputPublic == null && s.selectedOutputPublic == null) { "stale preview after Home" }
+        runOnMainSync { s.floatingNotice("按键提示关闭测试") }
+        check(waitUntil(3000) { device.hasObject(By.text("按键提示关闭测试")) })
+        keys.seek("关闭")
+        keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+        check(waitUntil(3000) { !device.hasObject(By.text("按键提示关闭测试")) }) { "Snackbar key close failed" }
+        return true to "all phone controls, dropdown selection/restore, left/right, real start/stop, settings Back, Home"
+    }
+
+    private fun scenarioKeyboardOverflowPhone(): Pair<Boolean, String> {
+        val s = session()
+        if (!awaitDiscovery(s) || !waitUntil(10000) { !s.forwardingLockedPublic }) return false to "session busy"
+        val activity = s.listener as? MainActivity ?: return false to "activity missing"
+        val original = s.model.rows
+        val keys = KeyboardAudit(this, device, activity, ::publish)
+        try {
+            val input = firstEnabledInput(s) ?: error("no input")
+            runOnMainSync {
+                s.model.clear()
+                repeat(12) { s.setRouteSide(s.model.rows.last(), true, input.key) }
+                s.switchTab(2)
+                activity.setContent { MonitorApp(activity, s) }
+            }
+            SystemClock.sleep(700)
+            keys.seek("输出转发通道，第 13 行")
+            SystemClock.sleep(600)
+            val last = device.findObject(By.descContains("输出转发通道，第 13 行")) ?: error("last field missing")
+            val toolbar = device.findObject(By.res("task-forwarding-toolbar")) ?: error("toolbar missing")
+            check(last.visibleBounds.bottom < toolbar.visibleBounds.top) { "keyboard-focused field obscured by toolbar: ${last.visibleBounds} / ${toolbar.visibleBounds}" }
+            keys.screenshot("phone-keyboard-last-row")
+            // Large fonts stack the two fields vertically; use their actual
+            // visual relationship instead of assuming a horizontal row.
+            keys.press(if (activity.resources.configuration.fontScale > 1.2f)
+                android.view.KeyEvent.KEYCODE_DPAD_UP else android.view.KeyEvent.KEYCODE_DPAD_LEFT)
+            check(keys.focused()?.label?.contains("输入转发通道，第 13 行") == true) { "last row adjacent field failed" }
+            repeat(24) { keys.press(android.view.KeyEvent.KEYCODE_DPAD_UP) }
+            check(keys.focused()?.label?.contains("输入转发通道，第 1 行；") == true) { "reverse long-list traversal failed: ${keys.focused()}" }
+            return true to "26 dropdowns across 13 rows reached using keys; reverse traversal; focused last field above floating toolbar"
+        } finally {
+            runOnMainSync {
+                s.model.clear()
+                original.filter { !it.blank() }.forEach { saved ->
+                    val row = s.model.rows.last()
+                    s.setRouteSide(row, true, saved.input)
+                    s.model.rows.firstOrNull { it.id == row.id }?.let { s.setRouteSide(it, false, saved.output) }
+                }
+                activity.setContent { MonitorApp(activity, s) }
+            }
+        }
+    }
+
+    private fun scenarioKeyboardCompactPhone(): Pair<Boolean, String> = keyboardCompact(small = false)
+
+    private fun scenarioKeyboardCompactSmallPhone(): Pair<Boolean, String> = keyboardCompact(small = true)
+
+    private fun keyboardCompact(small: Boolean): Pair<Boolean, String> {
+        val s = session()
+        if (!awaitDiscovery(s) || !waitUntil(10000) { !s.forwardingLockedPublic }) return false to "session busy"
+        val activity = s.listener as? MainActivity ?: return false to "activity missing"
+        val keys = KeyboardAudit(this, device, activity, ::publish)
+        try {
+            runOnMainSync {
+                s.model.clear()
+                s.switchTab(0)
+                activity.setContent {
+                    HighSpeedIEMTheme {
+                        if (small) {
+                            val roundConfiguration = android.content.res.Configuration(activity.resources.configuration).apply {
+                                screenLayout = (screenLayout and android.content.res.Configuration.SCREENLAYOUT_ROUND_MASK.inv()) or
+                                    android.content.res.Configuration.SCREENLAYOUT_ROUND_YES
+                            }
+                            androidx.compose.runtime.CompositionLocalProvider(
+                                androidx.compose.ui.platform.LocalConfiguration provides roundConfiguration) {
+                                androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize(),
+                                    contentAlignment = androidx.compose.ui.Alignment.Center) {
+                                    androidx.compose.material3.Surface(androidx.compose.ui.Modifier.size(220.dp),
+                                        shape = androidx.compose.foundation.shape.CircleShape) { CompactFlow(activity, s) }
+                                }
+                            }
+                        } else androidx.compose.material3.Surface { CompactFlow(activity, s) }
+                    }
+                }
+            }
+            SystemClock.sleep(700)
+            keys.sweep("compact-input")
+            val input = firstEnabledInput(s) ?: error("no input")
+            keys.seek("ID ${input.device.id} · 通道 ${input.index}")
+            keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+            check(s.model.compactRow.input == input.key) { "compact input key pick failed" }
+            keys.press(android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
+            keys.sweep("compact-output")
+            val output = firstEnabledOutput(s) ?: error("no output")
+            keys.seek("ID ${output.device.id} · 通道 ${output.index}")
+            keys.press(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+            check(s.model.compactRow.output == output.key) { "compact output key pick failed" }
+            keys.press(android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
+            keys.sweep("compact-task")
+            keys.seek("启动 1 个转发")
+            keys.screenshot("compact-start-focused")
+            keys.press(android.view.KeyEvent.KEYCODE_ENTER)
+            check(waitUntil(15000) { s.runningPublic }) { "compact key start failed: ${diagnostics(s)}" }
+            if (small) {
+                check(waitUntil(5000) { s.actualStats.isNotEmpty() }) { "compact stats missing" }
+                keys.seek("输入\n")
+                val info = keys.focused() ?: error("information scroll target missing")
+                keys.press(android.view.KeyEvent.KEYCODE_DPAD_DOWN)
+                SystemClock.sleep(400)
+                check((keys.focused()?.scrollValue ?: 0f) > (info.scrollValue ?: 0f)) { "small information cannot scroll using keys" }
+                keys.screenshot("compact-round-small-scrolled")
+            }
+            keys.press(android.view.KeyEvent.KEYCODE_DPAD_LEFT)
+            keys.sweep("compact-running-locked")
+            keys.press(android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
+            keys.seek("停止转发")
+            keys.press(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+            check(waitUntil(15000) { !s.runningPublic && !s.operationsBlockedPublic }) { "compact key stop failed" }
+            return true to "actual CompactFlow on phone; every list action and page tab, left/right, Enter/Center, locked selections, real audio start/stop"
+        } finally {
+            runOnMainSync {
+                s.stop(null, false)
+                activity.setContent { MonitorApp(activity, s) }
+            }
+            waitUntil(10000) { !s.operationsBlockedPublic }
+        }
+    }
+
     private fun scenarioCompactBindingPhone(): Pair<Boolean, String> {
         val s = session()
         if (!awaitDiscovery(s) || !waitUntil(10000) { !s.forwardingLockedPublic }) return false to "session busy"

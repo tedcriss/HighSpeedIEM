@@ -140,10 +140,12 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
                                             activity.safe { session.switchTab(tabs.indexOf(tab)) }
                                         }
                                     },
+                                    enabled = !session.loadingPublic,
+                                    modifier = Modifier.keyboardFocus(!session.loadingPublic, MaterialTheme.shapes.large),
                                     icon = {
                                         Icon(
                                             if (tab == selectedTab) tab.selectedIcon else tab.icon,
-                                            contentDescription = tab.label,
+                                            contentDescription = null,
                                         )
                                     },
                                     label = { Text(tab.label) },
