@@ -1,0 +1,442 @@
+package cn.xiaotao29.HighSpeedIEM.ui
+
+import androidx.compose.foundation.border
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.OutputTransformation
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.ExposedDropdownMenu
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SelectableDropdownMenuItem
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import cn.xiaotao29.HighSpeedIEM.MainActivity
+import cn.xiaotao29.HighSpeedIEM.audio.Channel
+import cn.xiaotao29.HighSpeedIEM.audio.DeviceSettings
+import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlin.math.roundToInt
+
+// Every composable below that renders plain (non-snapshot) MonitorSession state
+// subscribes to session.version in its OWN composition scope. Do not replace
+// this with a forwarded `version: Int` parameter: under strong skipping an
+// unused parameter drops out of the call-site comparison, the composable is
+// skipped forever, and stale enabled/selected states wedge the UI (this was
+// the real root cause of the "selected card can never be clicked again" bug —
+// a disabled clickable consumes taps without emitting them).
+
+/**
+ * Input tab: channel cards (Filled), capability details, per-device parameter
+ * dropdowns, and a spectrum tooltip anchored to the selected channel.
+ */
+@Composable
+fun InputPage(activity: MainActivity, session: MonitorSession) {
+    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
+    val channels = session.inputs.values.toList()
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+        ) {
+            PageHeading("输入通道", "选择通道查看频谱，勾选后可用于转发。",
+                "${channels.count { it.key !in session.disabled }} / ${channels.size} 已启用")
+            channels.forEach { channel ->
+                key(channel.key) { DeviceCard(activity, session, channel) }
+            }
+        }
+    }
+}
+
+/**
+ * Output tab: selecting a card plays the ringtone; clicking it again cancels.
+ */
+@Composable
+fun OutputPage(activity: MainActivity, session: MonitorSession) {
+    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
+    val channels = session.outputs.values.toList()
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+        ) {
+            PageHeading("输出通道", "选择通道自动播放铃声，再次点击可停止；勾选后可用于转发。",
+                "${channels.count { it.key !in session.disabled }} / ${channels.size} 已启用")
+            channels.forEach { channel ->
+                key(channel.key) { DeviceCard(activity, session, channel) }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DeviceCard(
+    activity: MainActivity,
+    session: MonitorSession,
+    channel: Channel,
+) {
+    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
+    val selected = (if (channel.input) session.selectedInput else session.selectedOutput) == channel.key
+    val cfg = session.config(channel)
+    val locked = session.forwardingLockedPublic
+    val selectionLocked = if (channel.input) locked else session.outputSelectionLockedPublic
+    val enabled = channel.key !in session.disabled
+    var focused by remember { mutableStateOf(false) }
+
+    val cardShape = MaterialTheme.shapes.large
+    SpectrumTooltip(session, channel) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+                // Ring sources: selected or keyboard focus only. A lingering
+                // "last tapped" ring was removed on purpose: after deselecting a
+                // channel the card must look untouched again.
+                .onFocusChanged { focused = it.hasFocus }
+                .clickable(enabled = !selectionLocked) {
+                    activity.safe {
+                        // Live re-check (as in the original implementation): the
+                        // composed `locked` can be one frame behind a state flip.
+                        if (!(if (channel.input) session.forwardingLockedPublic else session.outputSelectionLockedPublic)) {
+                            if (channel.input) {
+                                session.selectInput(channel.key)
+                                if (session.selectedInput != null) activity.previewPermissions(channel)
+                                else session.updatePreview()
+                            } else {
+                                session.selectOutput(channel.key)
+                                if (session.selectedOutput != null) {
+                                    if (activity.isBluetooth(channel)) activity.permissionTestFor(channel)
+                                    else session.ringtone()
+                                }
+                            }
+                        }
+                    }
+                }
+                .then(
+                    if (selected || focused) {
+                        Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
+                    } else Modifier
+                )
+                .semantics {
+                    contentDescription = channel.device.productName.toString() + "，通道 " + channel.index +
+                        if (selected) "，已选中" else ""
+                },
+            colors = if (selected) {
+                CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
+            } else {
+                CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+            },
+            shape = cardShape,
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Surface(shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                            Icon(if (channel.input) Icons.Filled.Mic else Icons.Filled.Speaker,
+                                contentDescription = null, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "ID ${channel.device.id} · 通道 ${channel.index}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "${deviceTypeLabel(channel)} · ${channel.device.productName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Normal,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Checkbox(
+                        checked = enabled,
+                        onCheckedChange = { on -> activity.safe { session.enable(channel, on) } },
+                        enabled = !locked,
+                        modifier = Modifier.semantics { contentDescription = "允许在任务控制中选择该通道" },
+                    )
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween) {
+                    DeviceCapabilityTooltip(channel)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "独占",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (cfg.exclusiveSupport == 1) MaterialTheme.colorScheme.onSurface
+                            else ActionStyle.disabledContent,
+                        )
+                        Checkbox(
+                            checked = cfg.exclusiveSupport == 1 && cfg.exclusive,
+                            onCheckedChange = { on ->
+                                activity.safe {
+                                    session.updateSettings(channel) { it.copyOf(exclusive = on) }
+                                    session.parameterChanged(channel)
+                                }
+                            },
+                            enabled = cfg.exclusiveSupport == 1 && channel.index == 0 && !locked,
+                            modifier = Modifier.semantics {
+                                contentDescription = if (cfg.exclusiveSupport == 1)
+                                    "请求设备独占，实际结果取决于系统；由通道 0 设置"
+                                else "系统未提供可用独占模式"
+                            },
+                        )
+                    }
+                }
+                ParameterRow(activity, session, channel, cfg, locked)
+            }
+        }
+    }
+}
+
+/** Parameters editable on channel 0 only; sibling channels show inherited values. */
+@Composable
+private fun ParameterRow(
+    activity: MainActivity,
+    session: MonitorSession,
+    channel: Channel,
+    cfg: DeviceSettings,
+    locked: Boolean,
+) {
+    val editable = channel.index == 0 && !locked
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val rates = DeviceSettings.rates(channel.device)
+            val rateLabels = rates.map { if (it == 0) "自动" else "$it Hz" }
+            OptionDropdown(
+                label = "采样率",
+                options = rateLabels,
+                selectedIndex = rates.indexOf(cfg.rate).coerceAtLeast(0),
+                enabled = editable,
+                hint = "采样率，自动由系统选择；同一设备由通道 0 设置",
+                modifier = Modifier.weight(1f),
+            ) { index ->
+                activity.safe {
+                    session.updateSettings(channel) { it.copyOf(rate = rates[index]) }
+                    session.parameterChanged(channel)
+                }
+            }
+            val formats = DeviceSettings.formats(channel.device)
+            val formatLabels = formats.map { DeviceSettings.formatName(it) }
+            OptionDropdown(
+                label = "采样深度",
+                options = formatLabels,
+                selectedIndex = formats.indexOf(cfg.format).coerceAtLeast(0),
+                enabled = editable,
+                hint = "采样深度，自动由系统选择；同一设备由通道 0 设置",
+                modifier = Modifier.weight(1f),
+            ) { index ->
+                activity.safe {
+                    session.updateSettings(channel) { it.copyOf(format = formats[index]) }
+                    session.parameterChanged(channel)
+                }
+            }
+        }
+        if (channel.input) {
+            OptionDropdown(
+                label = "录音预设",
+                options = DeviceSettings.PRESET_LABELS.toList(),
+                selectedIndex = DeviceSettings.PRESET_VALUES.indexOf(cfg.preset).coerceAtLeast(0),
+                enabled = editable,
+                hint = "录音预设，自动由系统选择；同一设备由通道 0 设置",
+                modifier = Modifier.fillMaxWidth(),
+            ) { index ->
+                activity.safe {
+                    session.updateSettings(channel) { it.copyOf(preset = DeviceSettings.PRESET_VALUES[index]) }
+                    session.parameterChanged(channel)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Native exposed dropdown: an outlined text field anchor with the label
+ * floating on the outline (the outline notch around the label is drawn by
+ * the control itself), and a popup of selectable items. The current value is
+ * highlighted with a filled background; long item text wraps, and an
+ * over-long selected value scrolls inside the native single-line anchor.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun OptionDropdown(
+    label: String,
+    options: List<String>,
+    selectedIndex: Int,
+    enabled: Boolean,
+    hint: String,
+    modifier: Modifier = Modifier,
+    selectedValue: AnnotatedString? = null,
+    optionText: @Composable (String) -> Unit = {
+        Text(it, style = MaterialTheme.typography.bodyMedium)
+    },
+    onSelected: (Int) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val value = selectedValue?.text ?: options.getOrElse(selectedIndex) { options.firstOrNull() ?: "" }
+    // Native presentation-only styling keeps the text, selection and scrolling unchanged.
+    val valueStyling = remember(selectedValue) {
+        selectedValue?.let { styled ->
+            OutputTransformation {
+                styled.spanStyles.forEach { range ->
+                    addStyle(range.item, range.start, range.end)
+                }
+            }
+        }
+    }
+    val textState = remember(value) {
+        TextFieldState(initialText = value, initialSelection = TextRange.Zero)
+    }
+    val valueScroll = remember(value) { ScrollState(0) }
+    val scrollSpeed = with(LocalDensity.current) { 30.dp.toPx() }
+    // Scroll only the native text viewport; the outline, label and arrow stay fixed.
+    // A changed value/width restarts at the beginning, and opening the menu pauses it.
+    LaunchedEffect(value, valueScroll.maxValue, expanded, scrollSpeed) {
+        valueScroll.scrollTo(0)
+        val overflow = valueScroll.maxValue
+        if (expanded || overflow <= 0 || overflow == Int.MAX_VALUE) return@LaunchedEffect
+        val duration = (overflow / scrollSpeed * 1000).roundToInt().coerceAtLeast(500)
+        while (isActive) {
+            delay(1500)
+            valueScroll.animateScrollTo(overflow, tween(duration, easing = LinearEasing))
+            delay(1500)
+            valueScroll.scrollTo(0)
+        }
+    }
+    // The anchor must not keep its focused outline after the menu closes:
+    // clear focus on every dismissal path.
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(enabled) {
+        if (!enabled && expanded) {
+            expanded = false
+            focusManager.clearFocus()
+        }
+    }
+    // Hoisted out of the item loop: theme reads once per composition, not per
+    // item, so opening the menu stays cheap.
+    // Use the same rounded rectangle for ordinary and selected item fills.
+    val itemShape = MenuDefaults.selectedItemShape
+    val itemShapes = MenuDefaults.itemShapes(shape = itemShape, selectedShape = itemShape)
+    val itemColors = MenuDefaults.selectableItemColors(
+        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+        selectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    )
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it && enabled },
+        modifier = modifier.semantics { contentDescription = hint },
+    ) {
+        OutlinedTextField(
+            state = textState,
+            readOnly = true,
+            enabled = enabled,
+            label = { Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            textStyle = MaterialTheme.typography.bodyMedium,
+            outputTransformation = valueStyling,
+            shape = MaterialTheme.shapes.small,
+            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                disabledBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+            ),
+            lineLimits = TextFieldLineLimits.SingleLine,
+            scrollState = valueScroll,
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded,
+            matchAnchorWidth = false,
+            modifier = Modifier.widthIn(min = 240.dp, max = 360.dp),
+            onDismissRequest = {
+            expanded = false
+            focusManager.clearFocus()
+        }) {
+            options.forEachIndexed { index, option ->
+                val chosen = index == selectedIndex
+                SelectableDropdownMenuItem(
+                    selected = chosen,
+                    onClick = {
+                        expanded = false
+                        focusManager.clearFocus()
+                        if (enabled) onSelected(index)
+                    },
+                    text = {
+                        optionText(option)
+                    },
+                    shapes = itemShapes,
+                    colors = itemColors,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Presentation labels only; device identity and audio configuration stay unchanged. */
+internal fun deviceTypeLabel(channel: Channel): String = channel.typeLabel
+
+internal fun channelLabel(channel: Channel): String =
+    "ID ${channel.device.id} · 通道 ${channel.index}\n${deviceTypeLabel(channel)} · ${channel.device.productName}"

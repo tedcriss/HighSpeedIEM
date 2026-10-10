@@ -1,0 +1,285 @@
+package cn.xiaotao29.HighSpeedIEM.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Battery5Bar
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.HorizontalFloatingToolbar
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.zIndex
+import cn.xiaotao29.HighSpeedIEM.MainActivity
+import cn.xiaotao29.HighSpeedIEM.audio.Channel
+import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
+import cn.xiaotao29.HighSpeedIEM.audio.RouteModel
+
+// Container elevation is independent of forwarding, availability and interaction state.
+private val TaskToolbarShadowElevation = 6.dp
+
+private data class RouteCardState(
+    val row: RouteModel.Row,
+    val inputStats: String,
+    val outputStats: String,
+)
+
+/**
+ * A single route list underneath a compact, fixed floating toolbar. Measured
+ * toolbar clearance lets every row scroll fully above the controls.
+ */
+@Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+fun TaskPage(
+    activity: MainActivity,
+    session: MonitorSession,
+    onControlsHeightChanged: (Dp) -> Unit = {},
+) {
+    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
+    val status = taskStatus(session)
+    // Capture values in this subscribed scope. Lazy content and child cards
+    // receive immutable snapshots instead of reading a mutable session later.
+    val cards = session.model.rows.map { row ->
+        RouteCardState(row, routeStats(session, row, true), routeStats(session, row, false))
+    }
+    val inputChannels = session.inputs.values.filter { it.key !in session.disabled }
+    val outputChannels = session.outputs.values.filter { it.key !in session.disabled }
+    val editable = !session.forwardingLockedPublic
+    val density = LocalDensity.current
+    var controlsHeightPx by remember { mutableIntStateOf(0) }
+    val controlsHeight = with(density) { controlsHeightPx.toDp() }
+    Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().testTag("task-route-list"),
+            contentPadding = PaddingValues(
+                start = 16.dp, top = 16.dp, end = 16.dp,
+                // Each route already contributes 12dp below its card. Reserve
+                // the toolbar and its bottom gap without counting that twice.
+                bottom = (controlsHeight - 12.dp).coerceAtLeast(0.dp),
+            ),
+        ) {
+            item(key = "heading", contentType = "heading") {
+                PageHeading("音频转发", "配对已启用的输入与输出通道，即可开始转发。", status)
+            }
+            itemsIndexed(cards, key = { _, card -> card.row.id }, contentType = { _, _ -> "route" }) { index, card ->
+                RouteCard(card, index, inputChannels, outputChannels, editable) { input, value ->
+                    activity.safe { session.setRouteSide(card.row, input, value) }
+                }
+            }
+        }
+        // Scaffold already keeps this page above the NavigationBar. Only this
+        // wrap-content toolbar is drawn above the list, visible around its sides.
+        HorizontalFloatingToolbar(
+            expanded = true,
+            expandedShadowElevation = TaskToolbarShadowElevation,
+            collapsedShadowElevation = TaskToolbarShadowElevation,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .zIndex(1f)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .onSizeChanged {
+                    // Include the outer top/bottom gap in list and notice clearance.
+                    controlsHeightPx = it.height + with(density) { 24.dp.roundToPx() }
+                    onControlsHeightChanged(with(density) { controlsHeightPx.toDp() })
+                }
+                .testTag("task-forwarding-toolbar"),
+        ) {
+            SplitStartButton(activity, session)
+        }
+    }
+}
+
+/** One forwarding row: input dropdown, output dropdown, live stream stats. */
+@Composable
+private fun RouteCard(
+    state: RouteCardState,
+    index: Int,
+    inputChannels: List<Channel>,
+    outputChannels: List<Channel>,
+    editable: Boolean,
+    onPick: (Boolean, String?) -> Unit,
+) {
+    val row = state.row
+    val largeText = LocalDensity.current.fontScale > 1.2f
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).testTag("task-route-$index"),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(if (row.blank()) "添加转发" else "转发 ${index + 1}",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp))
+            if (largeText) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    RouteSide(row.input, inputChannels, state.inputStats, index, true, editable,
+                        Modifier.fillMaxWidth(), onPick)
+                    RouteSide(row.output, outputChannels, state.outputStats, index, false, editable,
+                        Modifier.fillMaxWidth(), onPick)
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    RouteSide(row.input, inputChannels, state.inputStats, index, true, editable,
+                        Modifier.weight(1f), onPick)
+                    RouteSide(row.output, outputChannels, state.outputStats, index, false, editable,
+                        Modifier.weight(1f), onPick)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteSide(
+    current: String?,
+    channels: List<Channel>,
+    stats: String,
+    index: Int,
+    input: Boolean,
+    editable: Boolean,
+    modifier: Modifier = Modifier,
+    onPick: (Boolean, String?) -> Unit,
+) {
+    val keys = listOf<String?>(null) + channels.map { it.key }
+    val labels = listOf(" ") + channels.map(::channelLabel)
+    val selected = keys.indexOf(current).coerceAtLeast(0)
+
+    Column(modifier) {
+        OptionDropdown(
+            label = if (input) "输入通道" else "输出通道",
+            options = labels,
+            selectedIndex = selected,
+            enabled = editable,
+            hint = (if (input) "输入" else "输出") + "转发通道，第 " + (index + 1) + " 行；选择空白可清除",
+            // Keep channel identity visible in the narrow, native anchor.
+            // The menu retains the full device name and type.
+            selectedValue = channels.firstOrNull { it.key == current }?.let { channel ->
+                buildAnnotatedString {
+                    append("ID ")
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                        append(channel.device.id.toString())
+                    }
+                    append(" · 通道 ")
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                        append(channel.index.toString())
+                    }
+                }
+            },
+            optionText = { option ->
+                val lines = option.split('\n', limit = 2)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(lines[0], style = MaterialTheme.typography.bodyMedium)
+                    if (lines.size > 1) {
+                        Text(lines[1], style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Normal)
+                    }
+                }
+            },
+        ) { position ->
+            if (position in keys.indices) onPick(input, keys[position])
+        }
+        if (stats.isNotEmpty()) Text(
+            stats,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+internal fun taskStatus(session: MonitorSession): String =
+    if (session.runningPublic) "正在转发" else if (session.model.validCount() > 0) "已就绪" else "待配置"
+
+internal fun routeStats(session: MonitorSession, row: RouteModel.Row, input: Boolean): String {
+    val channel = if (input) session.inputs[row.input] else session.outputs[row.output]
+    return if (session.runningPublic && row.complete() && channel != null)
+        session.actualStats[channel.deviceKey].orEmpty() else ""
+}
+
+/**
+ * Battery settings entry + start/stop forwarding as one split button. Its
+ * containing toolbar owns placement and clearance. Both halves use the native
+ * filled split-button defaults; only the enabled color roles differ.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun SplitStartButton(
+    activity: MainActivity,
+    session: MonitorSession,
+    modifier: Modifier = Modifier,
+) {
+    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
+    val running = session.runningPublic
+    val blocked = session.operationsBlockedPublic
+    val count = session.model.validCount()
+    val batteryEnabled = !blocked && activity.openBatterySettings()
+    val startEnabled = !blocked && (running || count > 0)
+    SplitButtonLayout(
+        modifier = modifier,
+        leadingButton = {
+            SplitButtonDefaults.LeadingButton(
+                onClick = { activity.safe { activity.launchBatterySettings() } },
+                enabled = batteryEnabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ),
+            ) {
+                Icon(Icons.Filled.Battery5Bar, contentDescription = "打开系统后台运行保护设置",
+                    modifier = Modifier.size(20.dp))
+            }
+        },
+        trailingButton = {
+            SplitButtonDefaults.TrailingButton(
+                onClick = { activity.safe { if (running) session.stop(null, false) else activity.startForwarding() } },
+                enabled = startEnabled,
+            ) {
+                Icon(if (running) Icons.Filled.Close else Icons.Filled.PlayArrow,
+                    contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (running) "停止转发" else "启动 $count 个转发",
+                )
+            }
+        },
+    )
+}

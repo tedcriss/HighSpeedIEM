@@ -1,0 +1,29 @@
+# Gradle/Kotlin caches and generated build output.
+.gradle/
+.kotlin/
+build/
+.cxx/
+.externalNativeBuild/
+captures/
+*.apk
+*.aab
+
+# Machine-specific SDK/IDE configuration.
+local.properties
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Local signing keys and credentials.
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+.env
+.env.*
+
+# Maven/Gradle dependencies are downloaded during the build and stay in caches.
+# Keep gradle/wrapper/gradle-wrapper.jar: it bootstraps a fresh checkout.
+# Keep app/src/main/cpp/oboe/: CMake requires these bundled sources and does
+# not download them. Any local changes to bundled upstream code must be tracked.
