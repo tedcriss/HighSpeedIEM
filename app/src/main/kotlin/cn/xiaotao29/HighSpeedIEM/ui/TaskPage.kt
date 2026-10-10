@@ -376,14 +376,7 @@ private fun VerticalTaskControls(activity: MainActivity, session: MonitorSession
                         MaterialTheme.colorScheme.onPrimary)
                         .semantics { contentDescription = startLabel },
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ForwardingIcon(running, Modifier.size(20.dp))
-                        // Keep a multi-digit count together. Accessibility reads the natural label.
-                        Text(if (running) "停\n止\n转\n发" else "启\n动\n$count\n个\n转\n发",
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.clearAndSetSemantics {})
-                    }
+                    ForwardingIcon(running, Modifier.size(20.dp))
                 }
             }
         }

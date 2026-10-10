@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.6`（versionCode 17），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.7`（versionCode 18），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -139,8 +139,8 @@ LazyVerticalGrid / GridCells.Adaptive，最小卡片宽度 320dp 并随字体比
 设备卡片的参数按实测宽度和字体比例改为单列；设备能力与独占控件可原生换行，标签保留自然换行。
 
 横屏任务页的工具栏使用原生 VerticalFloatingToolbar，左侧全高度区域独占宽度，
-转发对列表在其右侧布局，卡片无法滑到工具栏下方。电池键在上、转发键在下，图标在文字上方，
-启动/停止文字竖排，多位计数保持完整；辅助功能读取自然语序。原生 Button 自适应内容宽度，
+转发对列表在其右侧布局，卡片无法滑到工具栏下方。电池键在上、转发键在下，仅显示图标，
+启动/停止键保留完整辅助功能说明及启动配对数。原生 Button 自适应内容宽度，
 极矮窗口或大字体时工具栏可独立滚动。Compose 的 SplitButtonLayout 仅提供横排，
 因此竖向键组采用两个原生 Button 和相邻圆角组成；竖屏仍保留原 SplitButtonLayout。
 
