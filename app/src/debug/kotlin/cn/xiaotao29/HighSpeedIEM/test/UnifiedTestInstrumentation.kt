@@ -72,6 +72,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
             val scenarios = linkedMapOf<String, () -> Pair<Boolean, String>>(
                 "native-selftest" to ::scenarioNativeSelfTest,
+                "audio-latency" to ::scenarioAudioLatency,
+                "forward-background" to ::scenarioForwardBackground,
                 "launch-tabs" to ::scenarioLaunchTabs,
                 "device-validity" to ::scenarioDeviceValidity,
                 "device-lifecycle" to { true to DeviceLifecycleAudit(this, session()).run() },
@@ -996,6 +998,130 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 }
                 s.switchTab(2)
             }
+        }
+    }
+
+    /** Real AAudio streams: read-driven input, PCM paths, sustained progress and cleanup. */
+    private fun scenarioAudioLatency(): Pair<Boolean, String> {
+        val s = session()
+        check(awaitDiscovery(s) && waitUntil(15000) { !s.operationsBlockedPublic }) { "session busy" }
+        val input = firstEnabledInput(s) ?: error("no enabled input")
+        val output = firstEnabledOutput(s) ?: error("no enabled output")
+        val evidence = ArrayList<String>()
+        runOnMainSync { s.switchTab(2); s.stop(null, false) }
+        check(waitUntil(15000) { !s.operationsBlockedPublic })
+        try {
+            for (format in listOf(0, 1, 2)) {
+                val spec = intArrayOf(input.device.id, input.index, input.total, 0, format, 0, 0,
+                    output.device.id, output.index, output.total, 0, format, 0, 0)
+                val openError = NativeAudio.startConfigured(spec)
+                check(openError.isEmpty()) { "open failed for format=$format: $openError" }
+                val duration = if (format == 0) 35000L else 5000L
+                val startedAt = SystemClock.uptimeMillis()
+                val deadline = SystemClock.uptimeMillis() + duration
+                var lastInput = 0L
+                var lastOutput = 0L
+                var lastProgress = SystemClock.uptimeMillis()
+                var warmFrames = 0L
+                var warmGaps = 0L
+                var measured = false
+                fun counter(stats: String, name: String) =
+                    Regex("$name=(\\d+)").find(stats)!!.groupValues[1].toLong()
+                while (SystemClock.uptimeMillis() < deadline) {
+                    Thread.sleep(200)
+                    val nativeError = NativeAudio.pollError()
+                    check(nativeError.isEmpty()) { nativeError }
+                    val ins = NativeAudio.endpointStats(input.device.id, true)
+                    val outs = NativeAudio.endpointStats(output.device.id, false)
+                    check(ins.contains("transfer=output-pull") && ins.contains("appQueue=0")) { ins }
+                    check(ins.contains("preset=10")) { "automatic performance preset not active: $ins" }
+                    check(!outs.contains("routeQueue=")) { "unnecessary application queue: $outs" }
+                    val nextInput = counter(ins, "frames")
+                    val nextOutput = counter(outs, "frames")
+                    if (!measured && SystemClock.uptimeMillis() - startedAt >= 2000) {
+                        warmFrames = nextOutput
+                        warmGaps = counter(outs, "gap")
+                        measured = true
+                    }
+                    if (nextInput > lastInput && nextOutput > lastOutput) lastProgress = SystemClock.uptimeMillis()
+                    check(SystemClock.uptimeMillis() - lastProgress < 2000) { "audio stalled: $ins / $outs" }
+                    lastInput = nextInput
+                    lastOutput = nextOutput
+                }
+                val ins = NativeAudio.endpointStats(input.device.id, true)
+                val outs = NativeAudio.endpointStats(output.device.id, false)
+                check(lastInput > 0 && lastOutput > 0)
+                val missing = counter(outs, "gap") - warmGaps
+                val rendered = lastOutput - warmFrames
+                check(measured && rendered > 0 && missing.toDouble() / rendered < .001) {
+                    "steady missing frames=$missing/$rendered; $ins / $outs"
+                }
+                check(NativeAudio.spectrum(input.device.id, input.index).isNotEmpty()) { "pull input spectrum empty" }
+                evidence.add("format=$format: steady gap=$missing/$rendered; $ins / $outs".replace("\n", "; "))
+                NativeAudio.stop()
+                check(NativeAudio.endpointStats(input.device.id, true).isEmpty())
+                check(NativeAudio.endpointStats(output.device.id, false).isEmpty())
+            }
+            // Explicit preset remains effective. A mismatched rate still returns
+            // the actual native error and leaves no streams behind.
+            val spec = intArrayOf(input.device.id, input.index, input.total, 0, 0, 0, 6,
+                output.device.id, output.index, output.total, 0, 0, 0, 0)
+            check(NativeAudio.startConfigured(spec).isEmpty())
+            Thread.sleep(500)
+            check(NativeAudio.endpointStats(input.device.id, true).contains("preset=6"))
+            NativeAudio.stop()
+            spec[3] = 16000
+            val error = NativeAudio.startConfigured(spec)
+            check(error.isNotEmpty()) { "mismatched rates accepted" }
+            check(NativeAudio.endpointStats(input.device.id, true).isEmpty()) { "error leaked streams" }
+            evidence.add("explicit preset=6; rate rejection=$error; cleanup verified")
+            return true to evidence.joinToString(" | ")
+        } finally {
+            NativeAudio.stop()
+        }
+    }
+
+    private fun scenarioForwardBackground(): Pair<Boolean, String> {
+        val s = session()
+        check(awaitDiscovery(s) && waitUntil(15000) { !s.operationsBlockedPublic })
+        val input = firstEnabledInput(s) ?: error("no enabled input")
+        val output = firstEnabledOutput(s) ?: error("no enabled output")
+        setPair(s, input.key, output.key)
+        try {
+            runOnMainSync {
+                s.prepareForwarding {
+                    targetContext.startForegroundService(Intent(targetContext, ForwardingService::class.java))
+                }
+            }
+            check(waitUntil(25000) { s.runningPublic && s.service != null }) { diagnostics(s) }
+            val rows = s.model.rows
+            runOnMainSync {
+                s.setRouteSide(rows.first(), true, null)
+                s.updateSettings(input) { it.copyOf(rate = 16000) }
+            }
+            check(s.model.rows == rows && s.config(input).rate == 0) { "running controls changed backend" }
+            val before = NativeAudio.endpointStats(input.device.id, true)
+            device.pressHome()
+            check(waitUntil(5000) { !s.visible }) { "not backgrounded" }
+            Thread.sleep(8000)
+            check(s.runningPublic && s.service != null) { diagnostics(s) }
+            val after = NativeAudio.endpointStats(input.device.id, true)
+            fun frames(stats: String) = Regex("frames=(\\d+)").find(stats)!!.groupValues[1].toLong()
+            check(frames(after) > frames(before)) { "background audio stalled" }
+            bringToFront()
+            check(waitUntil(5000) { s.visible })
+            NativeAudio.injectError(-899)
+            check(waitUntil(15000) { !s.runningPublic && !s.operationsBlockedPublic && s.service == null })
+            check(NativeAudio.endpointStats(input.device.id, true).isEmpty())
+            check(NativeAudio.endpointStats(output.device.id, false).isEmpty())
+            check((s.notices.value ?: s.consumePendingMessages()).orEmpty().contains("ErrorDisconnected")) {
+                "raw disconnect error missing"
+            }
+            return true to "native pull continued in background; edit/parameter lock and raw-error cleanup passed"
+        } finally {
+            bringToFront()
+            runOnMainSync { s.stop(null, false) }
+            check(waitUntil(20000) { !s.operationsBlockedPublic })
         }
     }
 

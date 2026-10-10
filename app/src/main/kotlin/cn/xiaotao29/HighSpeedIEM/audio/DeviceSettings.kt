@@ -4,8 +4,8 @@ import android.media.AudioDeviceInfo
 
 /**
  * Per-device recording/playback parameters. A value of 0 means "automatic" and
- * lets the system choose; the native engine then negotiates with unspecified
- * parameters.
+ * lets the system choose the rate/format. Automatic input preset prefers the
+ * native VoicePerformance path, with VoiceRecognition compatibility fallback.
  */
 data class DeviceSettings(
     val rate: Int = 0,

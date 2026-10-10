@@ -3,8 +3,8 @@
 // Design constraints:
 // - The audio callback performs no allocation, no locking, no JNI and no disk I/O.
 // - Each physical device gets exactly one multi-channel stream; routes share it.
-// - Routes carry mono samples through single-producer single-consumer lock-free
-//   rings; a starving route primes itself again and adapts its cushion.
+// - Each input with one output device is read directly by that output callback.
+//   Only cross-output fanout uses SPSC rings, published/consumed once per block.
 // - Input and output rates must match after the system negotiates both streams;
 //   this engine never performs application-level sample-rate conversion.
 
@@ -32,6 +32,14 @@ constexpr int kMaxChannels = 32;
 constexpr int kMaxRoutes = 128;
 constexpr int kSpectrumFft = 512;
 
+int captureFramesToDiscard(int available, int callbackFrames, int inputBurst, int outputBurst,
+                           int cushion = 1) {
+    // The input/output driver periods may differ. A burst of scheduling headroom
+    // prevents repeatedly dropping the very frames needed by the next callback.
+    const int keep = callbackFrames + std::max(inputBurst, outputBurst) * cushion;
+    return std::min(static_cast<int>(kRingCapacity), std::max(0, available - keep));
+}
+
 // Single-producer single-consumer wait-free ring of mono float samples.
 struct Ring {
     std::array<float, kRingCapacity> data{};
@@ -54,8 +62,27 @@ struct Ring {
         return true;
     }
 
+    // One publication per block instead of per sample. Only the consumer owns read.
+    uint32_t pushChannel(const float *samples, uint32_t frames, int channels, int channel) {
+        const auto w = write.load(std::memory_order_relaxed);
+        const auto space = kRingCapacity - (w - read.load(std::memory_order_acquire));
+        const auto count = std::min(frames, space);
+        for (uint32_t f = 0; f < count; ++f) data[(w + f) % kRingCapacity] = samples[f * channels + channel];
+        write.store(w + count, std::memory_order_release);
+        return count;
+    }
+
+    uint32_t mix(float *samples, uint32_t frames, int channels, int channel) {
+        const auto r = read.load(std::memory_order_relaxed);
+        const auto count = std::min(frames, write.load(std::memory_order_acquire) - r);
+        for (uint32_t f = 0; f < count; ++f) samples[f * channels + channel] += data[(r + f) % kRingCapacity];
+        read.store(r + count, std::memory_order_release);
+        return count;
+    }
+
     uint32_t available() const {
-        return write.load(std::memory_order_acquire) - read.load(std::memory_order_relaxed);
+        const auto r = read.load(std::memory_order_acquire);
+        return std::min(kRingCapacity, write.load(std::memory_order_acquire) - r);
     }
 
     // Drop the oldest samples so a scheduling stall cannot become permanent delay.
@@ -67,6 +94,7 @@ struct Ring {
 };
 
 struct Engine;
+struct Route;
 
 // Error threads can outlive Engine::stop(). Never let them dereference Engine.
 struct EngineSignal {
@@ -92,6 +120,18 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
     int exclusive = 0;
     int inputPreset = 0;
     std::vector<float> scratch;
+    std::vector<uint8_t> capture;
+    Endpoint *pullOwner = nullptr;
+    // Fixed before start; callbacks never traverse a control-thread-mutated vector.
+    std::vector<Endpoint *> pulledInputs;
+    std::vector<Route *> inputRoutes;
+    std::vector<Route *> outputRoutes;
+    std::atomic<uint64_t> dropped{0};
+    std::atomic<int32_t> queued{0};
+    std::atomic<int> pullCushion{1};
+    bool pullPrimed = false;
+    uint64_t stableInputFrames = 0;
+    int minimumPullHeadroom = INT32_MAX;
     Ring testRing; // ringtone playback only
     std::atomic<int> testChannel{0};
     int64_t testDrainFrame = -1; // controlMutex only; snapshot after the last test write
@@ -102,6 +142,8 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
     std::atomic<int32_t> xruns{0};
     std::atomic<uint64_t> gaps{0};
     std::unique_ptr<oboe::LatencyTuner> tuner;
+    int32_t previousXRuns = 0;
+    uint64_t stableOutputFrames = 0;
     uint64_t lastFrames = 0;
     std::chrono::steady_clock::time_point lastProgress = std::chrono::steady_clock::now();
 
@@ -110,37 +152,48 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *stream, void *audioData, int32_t numFrames) override;
     bool onError(oboe::AudioStream *stream, oboe::Result error) override;
+    bool capturePcm(const void *buffer, int numFrames);
+    int pull(int numFrames);
 };
 
-// One forwarding pair: input channel -> output channel through a private ring.
+// One forwarding pair. A private ring is needed only for cross-output fanout.
 struct Route {
     Endpoint *in;
     Endpoint *out;
     int inChannel;
     int outChannel;
-    Ring ring;
+    std::unique_ptr<Ring> ring;
     bool primed = false;
-    std::atomic<int> cushion{1};
+    std::atomic<int> cushion{0};
     std::atomic<uint64_t> underflows{0};
+    uint64_t stableFrames = 0;
 
     Route(Endpoint *i, Endpoint *o, int ic, int oc) : in(i), out(o), inChannel(ic), outChannel(oc) {}
 
-    bool sample(float &value) {
-        const int target = std::max(2, in->stream->getFramesPerBurst() *
-                                          cushion.load(std::memory_order_relaxed) +
-                                      out->stream->getFramesPerBurst());
+    uint32_t mix(float *samples, uint32_t numFrames, int inputBurst, int sampleRate) {
+        const auto burst = static_cast<uint32_t>(std::max(1, inputBurst));
+        int extra = cushion.load(std::memory_order_relaxed);
+        // Recover after a transient stall, gradually, rather than retaining it forever.
+        if (extra > 0 && stableFrames >= static_cast<uint64_t>(sampleRate) * 10) {
+            cushion.store(--extra, std::memory_order_relaxed);
+            stableFrames = 0;
+        }
+        const auto target = std::min(kRingCapacity, numFrames + burst * extra);
+        ring->trim(std::min(kRingCapacity, target + burst));
         if (!primed) {
-            if (ring.available() < static_cast<uint32_t>(target)) return false;
+            if (ring->available() < target) return 0;
             primed = true;
         }
-        if (!ring.pop(value)) {
+        const auto count = ring->mix(samples, numFrames, out->channels, outChannel);
+        if (count < numFrames) {
             primed = false;
             underflows.fetch_add(1, std::memory_order_relaxed);
-            cushion.store(std::min(8, cushion.load(std::memory_order_relaxed) + 1),
-                          std::memory_order_relaxed);
-            return false;
+            cushion.store(std::min(8, extra + 1), std::memory_order_relaxed);
+            stableFrames = 0;
+        } else {
+            stableFrames += count;
         }
-        return true;
+        return count;
     }
 };
 
@@ -153,6 +206,25 @@ struct Engine {
 
     void fail(oboe::Result result) {
         signal->fail(result);
+    }
+
+    void prepareRoutes() {
+        for (auto &r : routes) {
+            r->in->inputRoutes.push_back(r.get());
+            r->out->outputRoutes.push_back(r.get());
+        }
+        for (auto &e : endpoints) {
+            if (!e->input || e->inputRoutes.empty()) continue;
+            auto *owner = e->inputRoutes.front()->out;
+            const bool singleOutput = std::all_of(e->inputRoutes.begin(), e->inputRoutes.end(),
+                [owner](const Route *r) { return r->out == owner; });
+            if (singleOutput) {
+                e->pullOwner = owner;
+                owner->pulledInputs.push_back(e.get());
+            } else {
+                for (auto *r : e->inputRoutes) r->ring = std::make_unique<Ring>();
+            }
+        }
     }
 
     Endpoint *endpoint(int deviceId, int channels, bool input) {
@@ -215,11 +287,26 @@ struct Engine {
             ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::None)
             ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
             ->setSharingMode(e.exclusive ? oboe::SharingMode::Exclusive : oboe::SharingMode::Shared)
-            ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(e.shared_from_this()))
             ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(e.shared_from_this()))
             ->setUsage(oboe::Usage::Game)
-            ->setInputPreset(static_cast<oboe::InputPreset>(e.inputPreset));
+            ->setInputPreset(e.input && e.inputPreset == 0 ? oboe::InputPreset::VoicePerformance
+                                                         : static_cast<oboe::InputPreset>(e.inputPreset));
+        if (!e.pullOwner) {
+            builder.setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(e.shared_from_this()));
+        } else {
+            // Capacity is headroom for driver scheduling, not queued latency.
+            builder.setBufferCapacityInFrames(std::min(static_cast<int>(kRingCapacity),
+                e.pullOwner->stream->getBufferCapacityInFrames() * 2));
+        }
         oboe::Result result = builder.openStream(e.stream);
+        if (result != oboe::Result::OK && e.input && e.inputPreset == 0) {
+            // Some vendor policies reject the performance preset. Automatic
+            // mode can use the speech-recognition path; explicit choices stay strict.
+            if (e.stream) e.stream->close();
+            e.stream.reset();
+            builder.setInputPreset(oboe::InputPreset::VoiceRecognition);
+            result = builder.openStream(e.stream);
+        }
         if (result != oboe::Result::OK) return oboe::convertToText(result);
         if (e.stream->getDeviceId() != e.deviceId) {
             std::ostringstream message;
@@ -249,6 +336,7 @@ struct Engine {
                    oboe::convertToText(e.stream->getSharingMode());
         }
         e.scratch.resize(kRingCapacity * e.channels);
+        if (e.pullOwner) e.capture.resize(kRingCapacity * e.channels * sizeof(float));
         if (!e.input) {
             auto size = e.stream->setBufferSizeInFrames(e.stream->getFramesPerBurst() * 2);
             if (!size) return oboe::convertToText(size.error());
@@ -304,6 +392,93 @@ bool Endpoint::onError(oboe::AudioStream *, oboe::Result result) {
     return true;
 }
 
+bool Endpoint::capturePcm(const void *buffer, int numFrames) {
+    const auto format = stream->getFormat();
+    for (int k = 0; k < numFrames * channels; ++k) {
+        scratch[k] = readPcm(buffer, k, format);
+        if (!std::isfinite(scratch[k])) {
+            signal->fail(oboe::Result::ErrorInvalidFormat);
+            return false;
+        }
+    }
+    const auto position = historyWrite.load(std::memory_order_relaxed);
+    // A large input block only needs its most recent spectrum window copied.
+    for (int f = std::max(0, numFrames - static_cast<int>(kSpectrumHistory)); f < numFrames; ++f) {
+        for (int c = 0; c < channels; ++c) {
+            (*history[c])[(position + f) % kSpectrumHistory].store(scratch[f * channels + c],
+                                                                  std::memory_order_relaxed);
+        }
+    }
+    historyWrite.store(position + numFrames, std::memory_order_release);
+    frames.fetch_add(numFrames, std::memory_order_relaxed);
+    return true;
+}
+
+int Endpoint::pull(int numFrames) {
+    if (stream->getDeviceId() != deviceId) {
+        signal->fail(oboe::Result::ErrorDisconnected);
+        return 0;
+    }
+    auto available = stream->getAvailableFrames();
+    if (!available) {
+        signal->fail(available.error());
+        return 0;
+    }
+    // One driver burst normally suffices. Poor driver scheduling can require
+    // more; build that headroom in the native buffer, not an application FIFO.
+    const int burst = std::max(stream->getFramesPerBurst(), pullOwner->stream->getFramesPerBurst());
+    const int capacity = stream->getBufferCapacityInFrames();
+    const int limit = std::clamp((capacity - numFrames) / std::max(1, burst), 1, 4);
+    int cushion = std::min(pullCushion.load(std::memory_order_relaxed), limit);
+    if (cushion > 1 && stableInputFrames >= static_cast<uint64_t>(stream->getSampleRate()) * 30) {
+        // Do not trade regular dropouts for a smaller number on the screen:
+        // only shrink when the entire stable window had spare native headroom.
+        if (minimumPullHeadroom >= burst + std::max(numFrames, burst / 4)) --cushion;
+        stableInputFrames = 0;
+        minimumPullHeadroom = INT32_MAX;
+    }
+    pullCushion.store(cushion, std::memory_order_relaxed);
+    if (!pullPrimed) {
+        if (available.value() < std::min(capacity, numFrames + burst * cushion)) {
+            queued.store(available.value(), std::memory_order_relaxed);
+            gaps.fetch_add(numFrames, std::memory_order_relaxed);
+            return 0;
+        }
+        pullPrimed = true;
+    }
+    const int discard = captureFramesToDiscard(available.value(), numFrames,
+        stream->getFramesPerBurst(), pullOwner->stream->getFramesPerBurst(), cushion);
+    int discarded = 0;
+    if (discard > 0) {
+        auto read = stream->read(capture.data(), discard, 0);
+        if (!read) {
+            signal->fail(read.error());
+            return 0;
+        }
+        discarded = read.value();
+        dropped.fetch_add(read.value(), std::memory_order_relaxed);
+    }
+    auto read = stream->read(capture.data(), numFrames, 0); // Never block a real-time callback.
+    if (!read) {
+        signal->fail(read.error());
+        return 0;
+    }
+    const int count = read.value();
+    if (count < numFrames) {
+        pullCushion.store(std::min(limit, cushion + 1), std::memory_order_relaxed);
+        stableInputFrames = 0;
+        minimumPullHeadroom = INT32_MAX;
+        pullPrimed = false;
+    } else {
+        stableInputFrames += count;
+    }
+    const int headroom = std::max(0, available.value() - discarded - count);
+    if (count == numFrames) minimumPullHeadroom = std::min(minimumPullHeadroom, headroom);
+    queued.store(headroom, std::memory_order_relaxed);
+    gaps.fetch_add(numFrames - count, std::memory_order_relaxed);
+    return capturePcm(capture.data(), count) ? count : 0;
+}
+
 oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buffer, int32_t numFrames) {
     float *samples = scratch.data();
     if (numFrames < 0 || static_cast<uint32_t>(numFrames) > kRingCapacity) {
@@ -319,54 +494,52 @@ oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buff
         return oboe::DataCallbackResult::Stop;
     }
     if (input) {
-        for (int k = 0; k < numFrames * channels; ++k) {
-            samples[k] = readPcm(buffer, k, s->getFormat());
-            if (!std::isfinite(samples[k])) {
-                engine->fail(oboe::Result::ErrorInvalidFormat);
-                return oboe::DataCallbackResult::Stop;
-            }
+        if (!capturePcm(buffer, numFrames)) return oboe::DataCallbackResult::Stop;
+        for (auto *r : inputRoutes) {
+            const auto count = r->ring->pushChannel(samples, numFrames, channels, r->inChannel);
+            dropped.fetch_add(numFrames - count, std::memory_order_relaxed);
         }
-        const auto position = historyWrite.load(std::memory_order_relaxed);
-        for (int f = 0; f < numFrames; ++f) {
-            for (int c = 0; c < channels; ++c) {
-                (*history[c])[(position + f) % kSpectrumHistory].store(
-                    samples[f * channels + c], std::memory_order_relaxed);
+    } else {
+        const auto gapsBefore = gaps.load(std::memory_order_relaxed);
+        std::fill(samples, samples + numFrames * channels, 0.f);
+        testRing.mix(samples, numFrames, channels, testChannel.load(std::memory_order_relaxed));
+        for (auto *in : pulledInputs) {
+            const int count = in->pull(numFrames);
+            for (auto *r : in->inputRoutes) {
+                for (int f = 0; f < count; ++f) {
+                    samples[f * channels + r->outChannel] += in->scratch[f * in->channels + r->inChannel];
+                }
             }
+            gaps.fetch_add(numFrames - count, std::memory_order_relaxed);
         }
-        historyWrite.store(position + numFrames, std::memory_order_release);
-        for (auto &r : engine->routes) {
-            if (r->in != this) continue;
-            for (int f = 0; f < numFrames; ++f) {
-                if (!r->ring.push(samples[f * channels + r->inChannel])) {
-                    engine->fail(oboe::Result::ErrorOutOfRange);
-                    return oboe::DataCallbackResult::Stop;
+        for (auto *r : outputRoutes) {
+            if (!r->ring) continue;
+            const auto count = r->mix(samples, numFrames, r->in->stream->getFramesPerBurst(), s->getSampleRate());
+            gaps.fetch_add(numFrames - count, std::memory_order_relaxed);
+        }
+        writePcm(buffer, samples, numFrames * channels, s->getFormat());
+        if (tuner) {
+            const auto result = tuner->tune();
+            if (result != oboe::Result::OK && result != oboe::Result::ErrorUnimplemented) signal->fail(result);
+            const auto count = s->getXRunCount();
+            if (count) {
+                xruns.store(count.value(), std::memory_order_relaxed);
+                if (count.value() != previousXRuns || gaps.load(std::memory_order_relaxed) != gapsBefore) {
+                    previousXRuns = count.value();
+                    stableOutputFrames = 0;
+                } else {
+                    stableOutputFrames += numFrames;
+                }
+                if (stableOutputFrames >= static_cast<uint64_t>(s->getSampleRate()) * 30) {
+                    stableOutputFrames = 0;
+                    // Use Oboe's own reset path, only after prolonged stable playback.
+                    if (s->getBufferSizeInFrames() > tuner->getMinimumBufferSize()) tuner->requestReset();
                 }
             }
         }
-    } else {
-        std::fill(samples, samples + numFrames * channels, 0.f);
-        for (int f = 0; f < numFrames; ++f) {
-            float value = 0;
-            if (testRing.pop(value)) {
-                samples[f * channels + testChannel.load(std::memory_order_relaxed)] = value;
-            }
-        }
-        for (auto &r : engine->routes) {
-            if (r->out != this) continue;
-            const auto burst = std::max(2, r->in->stream->getFramesPerBurst());
-            const auto needed = static_cast<uint32_t>(numFrames + s->getFramesPerBurst()) +
-                                burst * (r->cushion.load(std::memory_order_relaxed) + 1);
-            r->ring.trim(needed);
-            for (int f = 0; f < numFrames; ++f) {
-                float value = 0;
-                if (!r->sample(value)) gaps.fetch_add(1, std::memory_order_relaxed);
-                samples[f * channels + r->outChannel] += value;
-            }
-        }
-        writePcm(buffer, samples, numFrames * channels, s->getFormat());
+        frames.fetch_add(numFrames, std::memory_order_relaxed);
     }
-    frames.fetch_add(numFrames, std::memory_order_relaxed);
-    return oboe::DataCallbackResult::Continue;
+    return signal->active.load() ? oboe::DataCallbackResult::Continue : oboe::DataCallbackResult::Stop;
 }
 
 std::mutex controlMutex;
@@ -420,6 +593,7 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startConfigured(JNIEnv *env, jc
                 return toJString(env, "ErrorIllegalArgument");
             }
         }
+        engine->prepareRoutes();
         for (bool input : {false, true}) {
             for (auto &e : engine->endpoints) {
                 if (e->input != input) continue;
@@ -479,13 +653,6 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_pollError(JNIEnv *env, jclass) 
                 engine->fail(oboe::Result::ErrorTimeout);
                 break;
             }
-            if (e->tuner) {
-                auto r = e->tuner->tune();
-                if (r != oboe::Result::OK && r != oboe::Result::ErrorUnimplemented) {
-                    engine->fail(r);
-                    break;
-                }
-            }
             auto count = e->stream->getXRunCount();
             if (count) e->xruns.store(count.value());
         }
@@ -505,7 +672,16 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_endpointStats(JNIEnv *env, jcla
                      << s->getChannelCount() << " ch · " << oboe::convertToText(s->getSharingMode()) << " / "
                      << oboe::convertToText(s->getPerformanceMode()) << "\nburst=" << s->getFramesPerBurst()
                      << " · buffer=" << s->getBufferSizeInFrames() << " · frames=" << e->frames.load()
-                     << " · xrun=" << e->xruns.load();
+                     << " · xrun=" << e->xruns.load() << " · gap=" << e->gaps.load()
+                     << " · dropped=" << e->dropped.load();
+                text << "\ntransfer=" << (e->pullOwner ? "output-pull" : e->input ? "input-callback" : "output-callback");
+                if (e->input) text << " · preset=" << static_cast<int>(s->getInputPreset());
+                if (e->pullOwner) text << " · queued=" << e->queued.load()
+                                      << " · cushion=" << e->pullCushion.load() << " · appQueue=0";
+                for (auto *r : e->outputRoutes) {
+                    if (r->ring) text << "\nrouteQueue=" << r->ring->available()
+                                      << " · cushion=" << r->cushion.load();
+                }
                 if (s->getHardwareSampleRate() > 0) {
                     text << "\nhardware: " << s->getHardwareSampleRate() << " Hz · "
                          << oboe::convertToText(s->getHardwareFormat()) << " · "
@@ -822,5 +998,86 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
             }
         }
     }
-    return toJString(env, "PASS native FIFO, PCM16/24/32/Float and late error callback lifetime");
+    // Block publication, channel extraction, additive mixing and counter wrap.
+    if (captureFramesToDiscard(1152, 192, 768, 960) != 0 ||
+        captureFramesToDiscard(4096, 192, 768, 960) != 2944 ||
+        captureFramesToDiscard(384, 192, 192, 192) != 0 ||
+        captureFramesToDiscard(2112, 192, 768, 960, 2) != 0) {
+        return toJString(env, "FAIL mismatched driver periods/backlog");
+    }
+    Ring blocks;
+    blocks.write.store(UINT32_MAX - 127);
+    blocks.read.store(UINT32_MAX - 127);
+    std::array<float, 384 * 3> source;
+    std::array<float, 384 * 2> mixed;
+    for (int f = 0; f < 384; ++f) {
+        source[f * 3] = -1.f;
+        source[f * 3 + 1] = static_cast<float>(f);
+        source[f * 3 + 2] = 1.f;
+    }
+    for (int n = 0; n < 1000; ++n) {
+        mixed.fill(.5f);
+        if (blocks.pushChannel(source.data(), 384, 3, 1) != 384 ||
+            blocks.mix(mixed.data(), 384, 2, 1) != 384) return toJString(env, "FAIL block wrap/count");
+        for (int f = 0; f < 384; ++f) {
+            if (mixed[f * 2] != .5f || mixed[f * 2 + 1] != f + .5f) return toJString(env, "FAIL block channels/mix");
+        }
+    }
+    // Actual concurrent SPSC block traffic, without relying on scheduling order.
+    Ring concurrent;
+    std::atomic<bool> bad{false};
+    std::thread producer([&] {
+        std::array<float, 64> block;
+        for (int offset = 0; offset < 65536;) {
+            for (int i = 0; i < 64; ++i) block[i] = static_cast<float>(offset + i);
+            offset += concurrent.pushChannel(block.data(), 64, 1, 0);
+        }
+    });
+    for (int offset = 0; offset < 65536;) {
+        std::array<float, 64> block{};
+        const int count = concurrent.mix(block.data(), 64, 1, 0);
+        for (int i = 0; i < count; ++i) if (block[i] != offset + i) bad.store(true);
+        offset += count;
+    }
+    producer.join();
+    if (bad.load()) return toJString(env, "FAIL concurrent block order");
+    // Multiple channels on one output bypass rings; cross-output fanout does not.
+    Engine topology;
+    auto *single = topology.endpoint(10, 2, true);
+    auto *fanout = topology.endpoint(11, 1, true);
+    auto *out1 = topology.endpoint(20, 2, false);
+    auto *out2 = topology.endpoint(21, 1, false);
+    topology.routes.push_back(std::make_unique<Route>(single, out1, 0, 0));
+    topology.routes.push_back(std::make_unique<Route>(single, out1, 1, 1));
+    topology.routes.push_back(std::make_unique<Route>(fanout, out1, 0, 0));
+    topology.routes.push_back(std::make_unique<Route>(fanout, out2, 0, 0));
+    topology.prepareRoutes();
+    if (single->pullOwner != out1 || fanout->pullOwner || out1->pulledInputs.size() != 1 ||
+        topology.routes[0]->ring || topology.routes[1]->ring ||
+        !topology.routes[2]->ring || !topology.routes[3]->ring) return toJString(env, "FAIL transfer topology");
+    auto &route = *topology.routes[2];
+    std::array<float, 16> mono;
+    mono.fill(.25f);
+    std::array<float, 32> output{};
+    route.ring->pushChannel(mono.data(), 16, 1, 0);
+    if (route.mix(output.data(), 16, 16, 1000) != 16) return toJString(env, "FAIL extra startup queue");
+    output.fill(0);
+    if (route.mix(output.data(), 16, 16, 1000) != 0 || route.cushion.load() != 1) {
+        return toJString(env, "FAIL underflow adaptation");
+    }
+    route.ring->pushChannel(mono.data(), 16, 1, 0);
+    route.ring->pushChannel(mono.data(), 16, 1, 0);
+    for (int i = 0; i < 630; ++i) {
+        output.fill(0);
+        if (route.mix(output.data(), 16, 16, 1000) != 16) return toJString(env, "FAIL route recovery");
+        route.ring->pushChannel(mono.data(), 16, 1, 0);
+    }
+    if (route.cushion.load() != 0 || route.underflows.load() != 1) return toJString(env, "FAIL persistent cushion");
+    while (route.ring->pushChannel(mono.data(), 16, 1, 0) > 0) {}
+    output.fill(0);
+    if (route.mix(output.data(), 16, 16, 1000) != 16 || route.ring->available() > 16) {
+        return toJString(env, "FAIL stall backlog trim");
+    }
+    if (topology.routes[3]->ring->available() != 0) return toJString(env, "FAIL fanout block isolation");
+    return toJString(env, "PASS native FIFO, PCM16/24/32/Float, callback lifetime, block SPSC/wrap/mix, direct/fanout topology and stall recovery");
 }

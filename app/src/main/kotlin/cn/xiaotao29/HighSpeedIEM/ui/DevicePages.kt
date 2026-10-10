@@ -313,7 +313,7 @@ private fun ParameterRow(
                 options = DeviceSettings.PRESET_LABELS.toList(),
                 selectedIndex = DeviceSettings.PRESET_VALUES.indexOf(cfg.preset).coerceAtLeast(0),
                 enabled = editable,
-                hint = "ID ${channel.device.id} 通道 ${channel.index}，录音预设；自动由系统选择，同一设备由通道 0 设置",
+                hint = "ID ${channel.device.id} 通道 ${channel.index}，录音预设；自动优先系统实时返声预设，不支持时使用语音识别预设，同一设备由通道 0 设置",
                 modifier = Modifier.fillMaxWidth(),
             ) { index ->
                 activity.safe {

@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.9`（versionCode 20），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.0`（versionCode 21），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -29,7 +29,7 @@ adb shell am instrument -w -e scenarios native-selftest,launch-tabs,device-valid
     cn.xiaotao29.HighSpeedIEM/.test.UnifiedTestInstrumentation
 ```
 
-场景：`native-selftest, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
+场景：`native-selftest, audio-latency, forward-background, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
 route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, device-lifecycle, rotation, compact-mode, compact-routes, compact-binding-phone`。
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
 动效专项：`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
@@ -45,10 +45,22 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 ## 架构
 
 - `app/src/main/cpp/engine.cpp`：C++17 + Oboe 1.11.0（源码在 `cpp/oboe/`，已锁定版本）。
-  每台设备只开一条多声道流，转发对通过无锁环形队列传递单声道采样；
+  每台设备只开一条多声道流。一个输入只连接一个输出设备时，该输出回调直接用
+  AAudio 非阻塞 read 读取输入，多个通道/转发对共用一次读取，无应用转发队列或输入回调线程。
+  同一输入连接多个输出设备时才使用独立 SPSC 队列，按块发布/混合；不同输出互不抢读。
+  回调遍历开流前固定的端点/路由指针，不访问控制线程可扩容的端点容器。
   回调内无分配、无锁、无 JNI。输入输出由系统协商，应用层不做重采样：
   两端实际采样率不一致时关闭全部流并返回 `ErrorInvalidRate`。输出缓冲从
-  2 个 burst 起步并用 `LatencyTuner` 调整；积压时丢弃过期音频而不是累积延迟。
+  2 个 burst 起步并在输出回调中用 `LatencyTuner` 调整，输出无 xrun 30 秒后通过其原生
+  requestReset 重新尝试最小缓冲（应用缺帧同样打断稳定窗口）。直接读取通常保留一个较大的
+  输入/输出系统 burst 的余量，缺帧时在原生输入缓冲中自适应增加，最多四个且受实际容量限制；
+  连续 30 秒无缺帧并且整个窗口都有足够剩余帧时才降低一档。超出的过期音频有界丢弃，
+  避免不同驱动周期造成反复缺音。跨输出队列缺音后增加余量，
+  稳定消费 10 秒后逐 burst 降低；瞬时队列满计入丢帧而不把调度卡顿当作致命设备错误。
+  输入预设“自动”优先 VoicePerformance；Oboe 在 Android 8.1/9 自动兼容为 VoiceRecognition，
+  厂商拒绝自动开流时也尝试 VoiceRecognition。显式预设及共享/独占设置保持严格生效。
+  实际参数包含转发方式、预设、缺帧/丢帧与队列统计；appQueue=0 只表示无应用转发队列，
+  不表示系统/驱动/硬件零延迟。物理电视与系统返声的对比仍需真机测量，详见低延迟验收-3.0.md。
 - `audio/MonitorSession.kt`：会话状态机（设备枚举、探测、参数、转发表、后台错误）。
   只存在于内存，不持久化；Activity 重建时由 `MonitorApplication` 持有并复用。
 - `audio/DeviceValidator.kt`：输入和输出均只验证能否打开并关闭目标设备，不开始录音、
