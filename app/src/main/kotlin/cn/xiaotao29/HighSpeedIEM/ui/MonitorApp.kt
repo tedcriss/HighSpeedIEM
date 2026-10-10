@@ -1,12 +1,35 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.colorResource
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -41,6 +64,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
@@ -56,9 +82,8 @@ private enum class Tab(val label: String, val icon: ImageVector, val selectedIco
 }
 
 /**
- * Root composable. Standard layout: fixed small app bar over three navigation
- * destinations. Low-resolution screens and watch devices switch to the compact
- * swiped pager instead.
+ * Three window layouts share one session: portrait app bar/navigation bar,
+ * landscape rail/content, and a compact pager for low-resolution/watch windows.
  *
  * Session mutations are tracked through [MonitorSession.version]; the value is
  * read in this scope so navigation and page content stay in sync.
@@ -76,14 +101,9 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
 
     val configuration = LocalConfiguration.current
     val windowSize = LocalWindowInfo.current.containerSize
-    val isCompact = remember(configuration, windowSize) {
-        // Low-resolution devices: any screen dimension <= 600 physical pixels,
-        // plus every watch-class device regardless of resolution.
-        val uiMode = configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK
-        val watchType = uiMode == android.content.res.Configuration.UI_MODE_TYPE_WATCH
-        // Actual pixels avoid DP rounding classifying a 600px screen as 601px.
-        watchType || windowSize.width in 1..600 || windowSize.height in 1..600
-    }
+    val mode = appLayoutMode(windowSize.width, windowSize.height, configuration.uiMode)
+    val isCompact = mode == AppLayoutMode.Compact
+    val landscape = mode == AppLayoutMode.Landscape
 
     LaunchedEffect(notice) {
         val text = notice ?: return@LaunchedEffect
@@ -102,13 +122,13 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
                 snackbarHost = {
                     val noticeInset = when {
                         isCompact -> 96.dp
-                        selectedTab == Tab.TASK -> taskControlsHeight + 8.dp
+                        !landscape && selectedTab == Tab.TASK -> taskControlsHeight + 8.dp
                         else -> 8.dp
                     }
                     SnackbarHost(snackbar, Modifier.padding(bottom = noticeInset)) { data -> NoticeSnackbar(data) }
                 },
                 topBar = {
-                    if (!isCompact) {
+                    if (mode == AppLayoutMode.Portrait) {
                         TopAppBar(
                             colors = TopAppBarDefaults.topAppBarColors(
                                 containerColor = MaterialTheme.colorScheme.surface),
@@ -129,7 +149,7 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
                     }
                 },
                 bottomBar = {
-                    if (!isCompact) {
+                    if (mode == AppLayoutMode.Portrait) {
                         NavigationBar(
                             containerColor = MaterialTheme.colorScheme.surfaceContainer,
                             tonalElevation = 0.dp,
@@ -166,43 +186,95 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
             ) { padding ->
                 // The loading prompt is a full-size overlay centred on the page,
                 // in front of the tab content.
-                Box(Modifier.padding(padding).fillMaxSize()) {
-                    if (isCompact) {
-                        CompactFlow(activity, session)
-                    } else {
-                        // Dispose the old destination immediately: its tooltips,
-                        // focus targets and audio cleanup must not survive a fade.
-                        // Only the incoming page animates; native saved scroll
-                        // state survives navigation without retaining previews.
-                        key(selectedTab) {
-                            val entering = remember {
-                                MutableTransitionState(false).apply { targetState = true }
-                            }
-                            AnimatedVisibility(
-                                visibleState = entering,
-                                enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
-                                exit = ExitTransition.None,
-                                modifier = Modifier.fillMaxSize(),
-                                label = "destination",
-                            ) {
-                                pageState.SaveableStateProvider(selectedTab.name) {
-                                    when (selectedTab) {
-                                        Tab.INPUT -> InputPage(activity, session)
-                                        Tab.OUTPUT -> OutputPage(activity, session)
-                                        Tab.TASK -> TaskPage(activity, session) { taskControlsHeight = it }
+                Row(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()
+                    .semantics { testTagsAsResourceId = true }.testTag("layout-${mode.name.lowercase()}")) {
+                    if (landscape) {
+                        LandscapeNavigation(selectedTab, !session.loadingPublic) { tab ->
+                            if (tab != selectedTab) activity.safe { session.switchTab(tabs.indexOf(tab)) }
+                        }
+                    }
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        if (isCompact) {
+                            pageState.SaveableStateProvider("compact") { CompactFlow(activity, session) }
+                        } else {
+                            // Dispose the old destination immediately: its tooltips,
+                            // focus targets and audio cleanup must not survive a fade.
+                            // Only the incoming page animates; native saved scroll
+                            // state survives navigation without retaining previews.
+                            key(selectedTab) {
+                                val entering = remember {
+                                    MutableTransitionState(false).apply { targetState = true }
+                                }
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visibleState = entering,
+                                    enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
+                                    exit = ExitTransition.None,
+                                    modifier = Modifier.fillMaxSize(),
+                                    label = "destination",
+                                ) {
+                                    pageState.SaveableStateProvider(selectedTab.name) {
+                                        when (selectedTab) {
+                                            Tab.INPUT -> InputPage(activity, session, landscape)
+                                            Tab.OUTPUT -> OutputPage(activity, session, landscape)
+                                            Tab.TASK -> TaskPage(activity, session, landscape = landscape) { taskControlsHeight = it }
+                                        }
                                     }
                                 }
                             }
                         }
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = session.loadingPublic,
+                            enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
+                            exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
+                            label = "channel-loading",
+                        ) {
+                            LoadingOverlay(showHint = !isCompact, blockInput = session.loadingPublic)
+                        }
                     }
-                    AnimatedVisibility(
-                        visible = session.loadingPublic,
-                        enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
-                        exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
-                        label = "channel-loading",
-                    ) {
-                        LoadingOverlay(showHint = !isCompact, blockInput = session.loadingPublic)
-                    }
+                }
+            }
+        }
+    }
+}
+
+/** NavigationRail has no expansion action; destinations remain a compact vertical group. */
+@Composable
+private fun LandscapeNavigation(selected: Tab, enabled: Boolean, onSelect: (Tab) -> Unit) {
+    val density = LocalDensity.current
+    var brandHeightPx by remember { mutableIntStateOf(0) }
+    val brandClearance = with(density) { brandHeightPx.toDp() } + 8.dp
+    NavigationRail(
+        modifier = Modifier.fillMaxHeight().testTag("landscape-navigation"),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        windowInsets = WindowInsets(0, 0, 0, 0),
+    ) {
+        // Overlay independently positioned brand and destinations so the header
+        // never displaces the centre of the navigation group.
+        BoxWithConstraints(Modifier.width(96.dp).fillMaxHeight()) {
+            Column(Modifier.align(Alignment.TopCenter).onSizeChanged { brandHeightPx = it.height }
+                .padding(top = 12.dp, start = 4.dp, end = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Image(painterResource(R.drawable.icon_foreground), contentDescription = null,
+                    modifier = Modifier.size(40.dp)
+                        .clip(CircleShape).background(colorResource(R.color.icon_background)))
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.labelLarge,
+                    textAlign = TextAlign.Center)
+            }
+            Column(Modifier.align(Alignment.Center)
+                .heightIn(max = (maxHeight - brandClearance * 2).coerceAtLeast(48.dp))
+                .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Tab.entries.forEach { tab ->
+                    NavigationRailItem(
+                        selected = selected == tab,
+                        onClick = { onSelect(tab) },
+                        enabled = enabled,
+                        modifier = Modifier.keyboardFocus(enabled, MaterialTheme.shapes.large),
+                        icon = { Icon(if (selected == tab) tab.selectedIcon else tab.icon, null) },
+                        label = { Text(tab.label) },
+                    )
                 }
             }
         }

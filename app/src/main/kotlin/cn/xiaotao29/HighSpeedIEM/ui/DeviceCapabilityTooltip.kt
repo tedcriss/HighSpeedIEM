@@ -76,7 +76,7 @@ internal fun DeviceCapabilityTooltip(channel: Channel, enabled: Boolean = true) 
     val bottomInset = insets.getBottom(density)
     val edgeMargin = with(density) { 8.dp.roundToPx() }
     val maxWidth = with(density) {
-        ((windowSize.width - leftInset - rightInset).toDp() - 32.dp).coerceAtLeast(48.dp)
+        ((windowSize.width - leftInset - rightInset).toDp() - 32.dp).coerceIn(48.dp, 480.dp)
     }
     val maxContentHeight = with(density) {
         (windowSize.height - topInset - bottomInset).toDp() * 0.65f

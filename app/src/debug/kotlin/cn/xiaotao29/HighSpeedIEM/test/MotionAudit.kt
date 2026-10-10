@@ -25,11 +25,23 @@ internal class MotionAudit(
         for (tab in 0..1) {
             instrumentation.runOnMainSync { session.switchTab(tab) }
             SystemClock.sleep(900)
+            // Finish bounded scroll gestures before injecting a press; an ongoing
+            // fling would consume ACTION_DOWN to stop scrolling instead of pressing a card.
+            for (attempt in 0..10) {
+                val list = device.findObjects(By.scrollable(true)).maxByOrNull { it.visibleBounds.height() }
+                if (list == null || !list.scroll(Direction.UP, 1f)) break
+            }
+            SystemClock.sleep(900)
+            // A preceding keyboard audit may leave a focus ring. Enter touch mode
+            // through the non-action heading before taking the idle reference frame.
+            device.findObject(By.text(if (tab == 0) "输入通道" else "输出通道"))?.visibleBounds?.let {
+                device.click(it.centerX(), it.centerY())
+            }
+            SystemClock.sleep(400)
             val channel = (if (tab == 0) session.inputs else session.outputs).values.first()
             val description = "ID ${channel.device.id}，通道 ${channel.index}，${channel.device.productName}，" +
                 if (tab == 0) "查看实时频谱" else "播放或停止测试铃声"
-            val node = device.findObject(By.desc(description)) ?: error("channel card missing: $description")
-            val bounds = node.visibleBounds
+            val bounds = cardBounds(description)
             // Use UI bounds and the title region; stay away from nested actions.
             val header = Rect(bounds.left + bounds.width() / 4, bounds.top + bounds.width() / 12,
                 bounds.right - bounds.width() / 4, bounds.top + bounds.width() / 5)
@@ -77,32 +89,46 @@ internal class MotionAudit(
         SystemClock.sleep(700)
         val list = device.findObjects(By.scrollable(true)).maxByOrNull { it.visibleBounds.height() }
             ?: error("input scroll container missing")
-        val firstCard = device.findObjects(By.descStartsWith("ID "))
-            .first { it.contentDescription.endsWith("查看实时频谱") }
-        val firstDescription = firstCard.contentDescription
-        val originalBounds = firstCard.visibleBounds
+        val firstCard = visibleCards().first { it.first.endsWith("查看实时频谱") }
+        val firstDescription = firstCard.first
+        val originalBounds = firstCard.second
         val viewport = list.visibleBounds
         device.swipe(viewport.centerX(), viewport.bottom - viewport.height() / 10,
             viewport.centerX(), viewport.top + viewport.height() / 10, 30)
         SystemClock.sleep(700)
-        check(device.findObject(By.desc(firstDescription))?.visibleBounds != originalBounds) {
+        check(visibleCards().firstOrNull { it.first == firstDescription }?.second != originalBounds) {
             "input list did not scroll"
         }
-        val visibleCard = device.findObjects(By.descStartsWith("ID "))
-            .firstOrNull { it.contentDescription.endsWith("查看实时频谱") && it.visibleBounds.height() > 100 }
+        val visibleCard = visibleCards()
+            .firstOrNull { it.first.endsWith("查看实时频谱") && it.second.height() > 100 }
             ?: error("scrolled input card missing")
-        val savedDescription = visibleCard.contentDescription
-        val savedBounds = visibleCard.visibleBounds
+        val savedDescription = visibleCard.first
+        val savedBounds = visibleCard.second
         instrumentation.runOnMainSync { session.switchTab(1) }
         SystemClock.sleep(700)
         instrumentation.runOnMainSync { session.switchTab(0) }
         SystemClock.sleep(700)
-        check(device.findObject(By.desc(savedDescription))?.visibleBounds == savedBounds) {
+        check(cardBounds(savedDescription) == savedBounds) {
             "tab navigation did not preserve input scroll position"
         }
         checks.add("native input scroll restored on tab return")
         device.findObjects(By.scrollable(true)).maxByOrNull { it.visibleBounds.height() }?.scroll(Direction.UP, 1f)
         return checks.joinToString("; ")
+    }
+
+    private fun visibleCards(): List<Pair<String, Rect>> =
+        device.findObjects(By.descStartsWith("ID ")).mapNotNull { node ->
+            try { node.contentDescription to node.visibleBounds }
+            catch (_: androidx.test.uiautomator.StaleObjectException) { null }
+        }
+
+    private fun cardBounds(description: String): Rect {
+        repeat(5) {
+            try { device.findObject(By.desc(description))?.let { return it.visibleBounds } }
+            catch (_: androidx.test.uiautomator.StaleObjectException) { /* Requery a lazy item's new node. */ }
+            SystemClock.sleep(150)
+        }
+        error("channel card missing: $description")
     }
 
     private fun capture(directory: File, name: String): Bitmap {

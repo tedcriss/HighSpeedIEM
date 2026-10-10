@@ -37,6 +37,9 @@ internal class KeyboardAudit(
                         return (own + node.children.map { text(it) }).filter { it.isNotBlank() }.joinToString(" / ")
                     }
                     fun walk(node: SemanticsNode) {
+                        // Lazy grids retain prefetched/beyond-bounds nodes without placing them.
+                        // Their last coordinates do not describe a visible focus target.
+                        if (!node.layoutInfo.isPlaced) return
                         val focus = node.config.getOrNull(SemanticsProperties.Focused)
                         if (focus != null) result.add(Target(node.id, text(node).ifBlank { "node-${node.id}" },
                             focus, node.config.contains(SemanticsProperties.Disabled),

@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.4`（versionCode 15），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `2.5`（versionCode 16），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -33,6 +33,7 @@ adb shell am instrument -w -e scenarios native-selftest,launch-tabs,device-valid
 route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, rotation, compact-mode, compact-routes, compact-binding-phone`。
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
 动效专项：`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
+布局专项：`adaptive-layout`，同一手机上的横竖屏、1/2/3 列、150%/200% 字体、600px 模式切换与滚动锚点恢复。
 后两项均在手机上通过主线程 `Activity.setContent` 临时加载实际 `CompactFlow`，并在 `finally` 恢复手机界面；
 small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动手表模拟器，不更改手机系统分辨率。
 输出逐场景 `=== SCENARIO <名称>: PASS/FAIL - 说明` 与 `=== SUMMARY`。
@@ -95,13 +96,13 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 **任务页**：两列转发下拉框，轮廓上直接标“输入通道/输出通道”，只列出启用的通道
 并保留空白项；菜单项可折行、行距宽松、当前选中项高亮带勾。
 空白插入行始终保留；同一配对自动去重；只有完整配对参与启动。
-转发表使用 Kotlin 不可变行与列表，通过 Compose `mutableStateOf` 一次性发布整表；固定行 ID 同时用于编辑定位和 LazyColumn 的 key。
+转发表使用 Kotlin 不可变行与列表，通过 Compose `mutableStateOf` 一次性发布整表；固定行 ID 同时用于编辑定位和原生懒加载列表/网格的 key。
 新增、清空、去重与禁用/消失通道的剪枝统一由 RouteModel 维护，外部只能读取列表与字段，旧界面快照不会被原地改写。
 所有选择入口共用运行/准备/清理锁与启用通道检查；已经删除的行或失效菜单回调不会重新插入转发。
 `task-route-editing` 在正常手机直接操作下拉菜单，验证连续增删、单侧保留、前行删除、去重、展开菜单剪枝及实际启停；不通过切 tab 强制重建掩盖刷新问题。
-底部中央的 Material 3 横向悬浮工具栏包裹 Split 按钮：主键“启动 N 个转发”（N=0 时禁用），副键打开系统后台运行保护设置。
+竖屏底部中央的 Material 3 横向悬浮工具栏包裹 Split 按钮：主键“启动 N 个转发”（N=0 时禁用），副键打开系统后台运行保护设置。
 工具栏在任务页列表上方独立悬浮，尺寸按键组内容确定，与底部 Navigation bar 保持 12dp 间距，外侧露出列表。
-底层只有一个 LazyColumn，标题、状态和转发行均为列表项；列表底部留白按工具栏实测高度与间距计算，末行可完整滑到工具栏上方并操作。提示条也根据实测高度避让工具栏。
+底层使用 LazyColumn，标题、状态和转发行均为列表项；列表底部留白按工具栏实测高度与间距计算，末行可完整滑到工具栏上方并操作。提示条也根据实测高度避让工具栏。
 准备、运行和停止清理期间列表禁止编辑。
 每行显示已打开流的实际参数（采样率、编码、声道、共享模式、burst、xrun 等），约每 3 秒更新。
 
@@ -110,6 +111,46 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 
 **错误原则**：转发运行中发生致命错误时先停止全部转发、等待资源安全释放，
 再显示原始错误信息（不重写系统的错误文本）。
+
+## 三种自适应布局
+
+窗口实测像素决定模式，按以下优先级分派，应用不锁定设备方向：
+
+1. 任一窗口边长 ≤600px，或手表类型：低分辨率 CompactFlow。
+2. 其他宽度大于高度的窗口：横屏 NavigationRail + 内容区域。
+3. 其余窗口：竖屏固定 TopAppBar + 底部 NavigationBar。
+
+横屏导航使用原生 Material 3 NavigationRail / NavigationRailItem，无展开入口。
+左栏宽度 96dp，app 图标和名称靠顶部，三个导航目标整体居中；品牌高度实测后
+为导航组保留对称空间，大字体或矮窗口中的导航组可以独立滚动，避免与品牌重叠。
+横屏取消固定顶部标题和底部导航，右侧内容占满系统安全区内的剩余空间。
+
+输入、输出、任务三个标准页面共用卡片列表框架；竖屏设备页沿用滚动 Column，任务页使用 LazyColumn；横屏使用
+LazyVerticalGrid / GridCells.Adaptive，最小卡片宽度 320dp 并随字体比例增大。标题/副标题/状态提示跨满整行，
+卡片按原列表顺序从左到右、从上到下排列，内容和控件沿用竖屏组件。
+使用稳定 key、contentType 和原生保存的滚动状态，切页保留位置；横竖屏切换时同步可见项索引和偏移。
+设备页记录原生测量的标题/卡片高度，用于 ScrollState 与 LazyGridState 的滚动位置转换。
+设备能力和频谱仍使用绑定卡片/控件的原生 TooltipBox / RichTooltip，位置避开系统栏、
+刘海和窗口边缘；能力弹窗最大宽度 480dp，窄窗口继续收缩，长表格独立滚动。
+
+横屏任务页的工具栏使用原生 VerticalFloatingToolbar，左侧全高度区域独占宽度，
+转发对列表在其右侧布局，卡片无法滑到工具栏下方。电池键在上、转发键在下，图标在文字上方，
+启动/停止文字竖排，多位计数保持完整；辅助功能读取自然语序。原生 Button 自适应内容宽度，
+极矮窗口或大字体时工具栏可独立滚动。Compose 的 SplitButtonLayout 仅提供横排，
+因此竖向键组采用两个原生 Button 和相邻圆角组成；竖屏仍保留原 SplitButtonLayout。
+
+三种模式共享同一个 MonitorSession 和 RouteModel，路由与运行状态在配置变化中保留。
+标准页和 compact pager 的 UI 状态由同一 rememberSaveableStateHolder 保存；进入 compact
+模式遵循原有任务配置行为并释放设备预览/铃声测试。Scaffold 统一处理系统安全区，
+内容消费已应用的 inset，避免嵌套原生控件重复留白；横屏提示条无需避让底部工具栏。
+
+`adaptive-layout` 专项在一台手机模拟器上改变方向、像素密度、字体与窗口尺寸，验证三种
+模式、1/2/3 列布局、导航品牌/居中、第二列弹窗、工具栏全高留空、末行可访问和大字体控件。
+测试在 finally 中还原尺寸、密度、字体、方向和任务表。低分辨率实际交互另外通过
+`compact-binding-phone` 在主线程临时加载 CompactFlow、finally 恢复 MonitorApp 验证。
+
+组件依据：[Android NavigationRail](https://developer.android.com/develop/ui/compose/components/navigation-rail)、
+[原生自适应网格与跨列标题](https://developer.android.com/develop/ui/compose/lists)。
 
 ## 低分辨率与手表模式
 

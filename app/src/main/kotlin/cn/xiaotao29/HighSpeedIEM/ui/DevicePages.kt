@@ -89,48 +89,30 @@ import kotlin.math.roundToInt
  * dropdowns, and a spectrum tooltip anchored to the selected channel.
  */
 @Composable
-fun InputPage(activity: MainActivity, session: MonitorSession) {
+fun InputPage(activity: MainActivity, session: MonitorSession, landscape: Boolean = false) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
     val channels = session.inputs.values.toList()
-    Box(Modifier.fillMaxSize()) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .passiveScroll()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-        ) {
+    ChannelList(channels, landscape, Modifier.fillMaxSize(), tag = "input-channel-list",
+        itemKey = { it.key }, eagerPortrait = true, heading = {
             PageHeading("输入通道", "选择通道查看频谱，勾选后可用于转发。",
-                "${channels.count { it.key !in session.disabled }} / ${channels.size} 已启用")
-            channels.forEach { channel ->
-                key(channel.key) { DeviceCard(activity, session, channel) }
-            }
-        }
-    }
+                "${channels.count { it.key !in session.disabled } } / ${channels.size} 已启用")
+        },
+    ) { _, channel, _ -> DeviceCard(activity, session, channel) }
 }
 
 /**
  * Output tab: selecting a card plays the ringtone; clicking it again cancels.
  */
 @Composable
-fun OutputPage(activity: MainActivity, session: MonitorSession) {
+fun OutputPage(activity: MainActivity, session: MonitorSession, landscape: Boolean = false) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
     val channels = session.outputs.values.toList()
-    Box(Modifier.fillMaxSize()) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .passiveScroll()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-        ) {
+    ChannelList(channels, landscape, Modifier.fillMaxSize(), tag = "output-channel-list",
+        itemKey = { it.key }, eagerPortrait = true, heading = {
             PageHeading("输出通道", "选择通道自动播放铃声，再次点击可停止；勾选后可用于转发。",
-                "${channels.count { it.key !in session.disabled }} / ${channels.size} 已启用")
-            channels.forEach { channel ->
-                key(channel.key) { DeviceCard(activity, session, channel) }
-            }
-        }
-    }
+                "${channels.count { it.key !in session.disabled } } / ${channels.size} 已启用")
+        },
+    ) { _, channel, _ -> DeviceCard(activity, session, channel) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)

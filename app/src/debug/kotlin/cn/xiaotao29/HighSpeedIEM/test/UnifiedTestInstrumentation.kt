@@ -84,6 +84,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 "forward-start-stop" to ::scenarioForwardStartStop,
                 "error-stop" to ::scenarioErrorStop,
                 "rotation" to ::scenarioRotation,
+                "adaptive-layout" to { true to AdaptiveLayoutAudit(this, device, session()).run() },
                 "compact-mode" to ::scenarioCompactMode,
                 "compact-routes" to ::scenarioCompactRoutes,
                 "compact-binding-phone" to ::scenarioCompactBindingPhone,
@@ -430,7 +431,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
             val headerY = header.visibleBounds.centerY()
             device.click(anchorBounds.centerX(), headerY)
             expect(waitUntil(10000) { s.selectedInput == channel.key && s.spectrum.value.size > 2 }, "card tap failed")
-            expect(device.hasObject(By.text("实时频谱")), "card did not show rich tooltip")
+            expect(waitUntil(5000) { device.hasObject(By.text("实时频谱")) }, "card did not show rich tooltip")
             device.takeScreenshot(File(targetContext.getExternalFilesDir(null), "spectrum-tooltip.png"))
             // Persistence: a native non-persistent tooltip would time out here.
             SystemClock.sleep(2500)

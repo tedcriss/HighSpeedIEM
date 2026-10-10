@@ -17,8 +17,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.VerticalFloatingToolbar
+import androidx.compose.material3.Button
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
 import androidx.compose.material3.CardDefaults
@@ -71,14 +80,15 @@ private data class RouteCardState(
 )
 
 /**
- * A single route list underneath a compact, fixed floating toolbar. Measured
- * toolbar clearance lets every row scroll fully above the controls.
+ * One route list with a bottom toolbar in portrait or a reserved toolbar lane
+ * in landscape. Native measurement keeps all route controls unobscured.
  */
 @Composable
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun TaskPage(
     activity: MainActivity,
     session: MonitorSession,
+    landscape: Boolean = false,
     onControlsHeightChanged: (Dp) -> Unit = {},
 ) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
@@ -96,56 +106,53 @@ fun TaskPage(
     val controlsHeight = with(density) { controlsHeightPx.toDp() }
     // Focus scrolling must use the unobscured viewport, while the floating
     // toolbar and the list's visible background retain their existing layout.
-    val focusScroll = remember(controlsHeightPx) {
+    val focusScroll = remember(controlsHeightPx, landscape) {
         object : BringIntoViewSpec {
             override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
-                super.calculateScrollDistance(offset, size, (containerSize - controlsHeightPx).coerceAtLeast(1f))
+                super.calculateScrollDistance(offset, size, (containerSize - if (landscape) 0 else controlsHeightPx).coerceAtLeast(1f))
         }
     }
-    Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
-        CompositionLocalProvider(LocalBringIntoViewSpec provides focusScroll) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().passiveScroll().testTag("task-route-list"),
-                contentPadding = PaddingValues(
-                    start = 16.dp, top = 16.dp, end = 16.dp,
-                    // Each route already contributes 12dp below its card. Reserve
-                    // the toolbar and its bottom gap without counting that twice.
-                    bottom = (controlsHeight - 12.dp).coerceAtLeast(0.dp),
-                ),
-            ) {
-                item(key = "heading", contentType = "heading") {
-                    PageHeading("音频转发", "配对已启用的输入与输出通道，即可开始转发。", status)
-                }
-                itemsIndexed(cards, key = { _, card -> card.row.id }, contentType = { _, _ -> "route" }) { index, card ->
-                    RouteCard(card, index, inputChannels, outputChannels, editable,
-                        Modifier.animateItem(
-                            fadeInSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
-                            placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
-                            fadeOutSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
-                        )) { input, value ->
+    Row(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
+        if (landscape) {
+            VerticalTaskControls(activity, session)
+        }
+        Box(Modifier.weight(1f).fillMaxHeight()) {
+            CompositionLocalProvider(LocalBringIntoViewSpec provides focusScroll) {
+                ChannelList(cards, landscape,
+                    tag = "task-route-list",
+                    modifier = Modifier.fillMaxSize(),
+                    padding = PaddingValues(
+                        start = 16.dp, top = 16.dp, end = 16.dp,
+                        bottom = if (landscape) 16.dp else (controlsHeight - 12.dp).coerceAtLeast(0.dp),
+                    ),
+                    itemKey = { it.row.id },
+                    animateItems = true,
+                    heading = { PageHeading("音频转发", "配对已启用的输入与输出通道，即可开始转发。", status) },
+                ) { index, card, animation ->
+                    RouteCard(card, index, inputChannels, outputChannels, editable, animation) { input, value ->
                         activity.safe { session.setRouteSide(card.row, input, value) }
                     }
                 }
             }
-        }
-        // Scaffold already keeps this page above the NavigationBar. Only this
-        // wrap-content toolbar is drawn above the list, visible around its sides.
-        HorizontalFloatingToolbar(
-            expanded = true,
-            expandedShadowElevation = TaskToolbarShadowElevation,
-            collapsedShadowElevation = TaskToolbarShadowElevation,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .zIndex(1f)
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-                .onSizeChanged {
-                    // Include the outer top/bottom gap in list and notice clearance.
-                    controlsHeightPx = it.height + with(density) { 24.dp.roundToPx() }
-                    onControlsHeightChanged(with(density) { controlsHeightPx.toDp() })
-                }
-                .testTag("task-forwarding-toolbar"),
-        ) {
-            SplitStartButton(activity, session)
+            // Scaffold already keeps this page above the NavigationBar. Only this
+            // wrap-content toolbar is drawn above the list, visible around its sides.
+            if (!landscape) HorizontalFloatingToolbar(
+                expanded = true,
+                expandedShadowElevation = TaskToolbarShadowElevation,
+                collapsedShadowElevation = TaskToolbarShadowElevation,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .zIndex(1f)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .onSizeChanged {
+                        // Include the outer top/bottom gap in list and notice clearance.
+                        controlsHeightPx = it.height + with(density) { 24.dp.roundToPx() }
+                        onControlsHeightChanged(with(density) { controlsHeightPx.toDp() })
+                    }
+                    .testTag("task-forwarding-toolbar"),
+            ) {
+                SplitStartButton(activity, session)
+            }
         }
     }
 }
@@ -320,4 +327,65 @@ fun SplitStartButton(
             }
         },
     )
+}
+
+/** A full-height reserved lane keeps the toolbar completely outside the route viewport. */
+@Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+private fun VerticalTaskControls(activity: MainActivity, session: MonitorSession) {
+    @Suppress("UNUSED_VARIABLE") val version = session.version.collectAsState().value
+    val running = session.runningPublic
+    val blocked = session.operationsBlockedPublic
+    val count = session.model.validCount()
+    val batteryEnabled = !blocked && activity.openBatterySettings()
+    val startEnabled = !blocked && (running || count > 0)
+    val startLabel = if (running) "停止转发" else "启动 $count 个转发"
+    BoxWithConstraints(Modifier.fillMaxHeight().testTag("task-toolbar-lane")) {
+        val availableHeight = (maxHeight - 24.dp).coerceAtLeast(48.dp)
+        VerticalFloatingToolbar(
+            expanded = true,
+            expandedShadowElevation = TaskToolbarShadowElevation,
+            collapsedShadowElevation = TaskToolbarShadowElevation,
+            modifier = Modifier.align(Alignment.Center).padding(horizontal = 12.dp)
+                .heightIn(max = availableHeight).verticalScroll(rememberScrollState())
+                .testTag("task-forwarding-toolbar"),
+        ) {
+            Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                val batteryShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp,
+                    bottomStart = 4.dp, bottomEnd = 4.dp)
+                val startShape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp,
+                    bottomStart = 24.dp, bottomEnd = 24.dp)
+                Button(
+                    onClick = { activity.safe { activity.launchBatterySettings() } },
+                    enabled = batteryEnabled,
+                    shape = batteryShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxWidth().keyboardFocus(batteryEnabled, batteryShape)
+                        .semantics { contentDescription = "打开系统后台运行保护设置" },
+                ) { Icon(Icons.Filled.Battery5Bar, null, Modifier.size(20.dp)) }
+                Button(
+                    onClick = { activity.safe { if (running) session.stop(null, false) else activity.startForwarding() } },
+                    enabled = startEnabled,
+                    shape = startShape,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxWidth().keyboardFocus(startEnabled, startShape,
+                        MaterialTheme.colorScheme.onPrimary)
+                        .semantics { contentDescription = startLabel },
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ForwardingIcon(running, Modifier.size(20.dp))
+                        // Keep a multi-digit count together. Accessibility reads the natural label.
+                        Text(if (running) "停\n止\n转\n发" else "启\n动\n$count\n个\n转\n发",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.clearAndSetSemantics {})
+                    }
+                }
+            }
+        }
+    }
 }
