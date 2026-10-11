@@ -792,22 +792,33 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_checkDevice(JNIEnv *env, jclass
 // Returns [sampleRate, magnitudes in dBFS...] for the channel's recent history.
 extern "C" JNIEXPORT jfloatArray JNICALL
 Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_spectrum(JNIEnv *env, jclass, jint deviceId, jint channel) {
-    std::lock_guard<std::mutex> lock(controlMutex);
-    Endpoint *input = nullptr;
-    if (engine) {
-        for (auto &e : engine->endpoints) {
-            if (e->input && e->deviceId == deviceId && channel >= 0 && channel < e->channels) input = e.get();
-        }
-    }
-    if (!input) return env->NewFloatArray(0);
     constexpr int N = kSpectrumFft;
+    static const auto window = [] {
+        std::array<float, N> result{};
+        for (int k = 0; k < N; ++k)
+            result[k] = 0.5f - 0.5f * std::cos(2.f * 3.14159265f * k / (N - 1));
+        return result;
+    }();
     std::array<std::complex<float>, N> data;
-    const auto write = input->historyWrite.load(std::memory_order_acquire);
-    if (write < N) return env->NewFloatArray(0);
-    for (int k = 0; k < N; ++k) {
-        data[k] = (*input->history[channel])[(write - N + k) % kSpectrumHistory].load(
-                      std::memory_order_relaxed) *
-                  (0.5f - 0.5f * std::cos(2.f * 3.14159265f * k / (N - 1)));
+    float sampleRate;
+    {
+        // Copy the atomic history while its endpoint is owned. The FFT does not
+        // access the engine and must not hold up stop/start or other control APIs.
+        std::lock_guard<std::mutex> lock(controlMutex);
+        Endpoint *input = nullptr;
+        if (engine) {
+            for (auto &e : engine->endpoints) {
+                if (e->input && e->deviceId == deviceId && channel >= 0 && channel < e->channels) input = e.get();
+            }
+        }
+        if (!input) return env->NewFloatArray(0);
+        const auto write = input->historyWrite.load(std::memory_order_acquire);
+        if (write < N) return env->NewFloatArray(0);
+        for (int k = 0; k < N; ++k) {
+            data[k] = (*input->history[channel])[(write - N + k) % kSpectrumHistory].load(
+                          std::memory_order_relaxed) * window[k];
+        }
+        sampleRate = static_cast<float>(input->stream->getSampleRate());
     }
     for (int i = 1, j = 0; i < N; i++) {
         int bit = N >> 1;
@@ -829,7 +840,7 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_spectrum(JNIEnv *env, jclass, j
         }
     }
     std::array<float, N / 2 + 1> result;
-    result[0] = static_cast<float>(input->stream->getSampleRate());
+    result[0] = sampleRate;
     for (int k = 1; k <= N / 2; ++k) {
         result[k] = 20.f * std::log10(std::max(1e-6f, std::abs(data[k]) / (N / 4)));
     }

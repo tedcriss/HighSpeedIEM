@@ -303,11 +303,12 @@ private fun CompactStartPage(
 ) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
     val row = session.model.compactRow
+    val stats by session.streamStats.collectAsState()
     val running = session.runningPublic
     val count = session.model.validCount()
     val status = taskStatus(session)
-    val inputStats = routeStats(session, row, true)
-    val outputStats = routeStats(session, row, false)
+    val inputStats = routeStats(session, row, true, stats)
+    val outputStats = routeStats(session, row, false, stats)
     val infoScroll = rememberScrollState()
     val infoFocus = remember { FocusRequester() }
     val buttonFocus = remember { FocusRequester() }

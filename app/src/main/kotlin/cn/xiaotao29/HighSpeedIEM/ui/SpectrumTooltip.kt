@@ -7,7 +7,6 @@ import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -19,6 +18,8 @@ import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.dp
 import cn.xiaotao29.HighSpeedIEM.audio.Channel
 import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
+
+private data class PreviewTooltipState(val active: Boolean, val token: Int, val locked: Boolean, val visible: Boolean)
 
 /** The popup and its input preview have the same lifetime. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,17 +35,21 @@ internal fun SpectrumTooltip(
         content()
         return
     }
-    @Suppress("UNUSED_VARIABLE") val version = session.version.collectAsState().value
-    val active = session.selectedInput == channel.key && session.visible && session.tab == 0 &&
-        !session.runningPublic && !session.startingPublic
-    val token = session.inputSelectionToken
+    val preview by sessionState(session) {
+        PreviewTooltipState(session.selectedInput == channel.key && session.visible && session.tab == 0 &&
+            !session.runningPublic && !session.startingPublic,
+            if (session.selectedInput == channel.key) session.inputSelectionToken else 0,
+            session.forwardingLockedPublic, session.visible)
+    }
+    val active = preview.active
+    val token = preview.token
     val state = rememberTooltipState(isPersistent = true)
     val closeFocus = remember { FocusRequester() }
     val inputMode = LocalInputModeManager.current
     var wasActive by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-    LaunchedEffect(active, session.forwardingLockedPublic, session.visible) {
+    LaunchedEffect(active, preview.locked, preview.visible) {
         if (active) wasActive = true
-        else if (wasActive && !session.forwardingLockedPublic && session.visible) {
+        else if (wasActive && !preview.locked && preview.visible) {
             wasActive = false
             if (inputMode.inputMode == InputMode.Keyboard) {
                 androidx.compose.runtime.withFrameNanos { }

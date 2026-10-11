@@ -36,6 +36,9 @@ class MonitorSession(private val context: Context) {
     }
 
     private val main = Handler(Looper.getMainLooper())
+    private val audioManager: AudioManager by lazy {
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
     private val audio: ExecutorService = Executors.newSingleThreadExecutor()
     private val test: ExecutorService = Executors.newSingleThreadExecutor()
     private val validator = DeviceValidator()
@@ -46,7 +49,9 @@ class MonitorSession(private val context: Context) {
     val settings = HashMap<String, DeviceSettings>()
     val disabled = HashSet<String>()
     val model = RouteModel()
-    val actualStats = HashMap<String, String>()
+    private val _streamStats = kotlinx.coroutines.flow.MutableStateFlow<Map<String, String>>(emptyMap())
+    val streamStats: kotlinx.coroutines.flow.StateFlow<Map<String, String>> = _streamStats
+    val actualStats: Map<String, String> get() = _streamStats.value
     val disposedPublic: Boolean get() = disposed
     val runningPublic: Boolean get() = running
     val startingPublic: Boolean get() = starting
@@ -237,26 +242,27 @@ class MonitorSession(private val context: Context) {
             if (disposed) return
             watchdog(SystemClock.uptimeMillis())
             if (!operationsBlocked() && !polling && (running || previewKey != null)) {
-                try {
-                    requireMicrophone()
-                } catch (e: SecurityException) {
-                    stop(e.toString(), false)
-                    scheduleTick()
-                    return
-                }
                 polling = true
                 val token = generation
                 val selected = if (!running && visible && tab == 0) inputs[selectedInput] else null
+                val now = SystemClock.uptimeMillis()
+                val readStats = running && (actualStats.isEmpty() ||
+                    (visible && tab == 2 && now - statsUiAt >= 3000))
                 val endpoints = ArrayList<Channel>()
-                if (running) {
-                    endpoints.addAll(inputs.values)
-                    endpoints.addAll(outputs.values)
+                if (readStats) {
+                    // Only open endpoints belonging to complete routes need statistics.
+                    for (row in model.rows) if (row.complete()) {
+                        inputs[row.input]?.let { endpoints.add(it) }
+                        outputs[row.output]?.let { endpoints.add(it) }
+                    }
                 }
                 audio.execute {
                     var error = ""
                     var bins = FloatArray(0)
                     val stats = HashMap<String, String>()
                     try {
+                        // AppOps is a synchronous Binder call: never poll it on the UI thread.
+                        requireMicrophone()
                         error = NativeAudio.pollError()
                         if (error.isEmpty()) {
                             val seen = HashSet<String>()
@@ -281,18 +287,12 @@ class MonitorSession(private val context: Context) {
                             stop(e, false)
                             return@post
                         }
-                        val hadStats = actualStats.isNotEmpty()
-                        actualStats.clear()
-                        actualStats.putAll(stats)
-                        _spectrum.value = b
-                        // Running rows show live stream stats; refresh that text
-                        // immediately when it first arrives, then about every 3 s.
-                        if (running && stats.isNotEmpty()) {
-                            val now = SystemClock.uptimeMillis()
-                            if (!hadStats || now - statsUiAt >= 3000) {
-                                statsUiAt = now
-                                changed()
-                            }
+                        if (selected != null) _spectrum.value = b
+                        if (readStats && running && (actualStats.isEmpty() || (visible && tab == 2))) {
+                            statsUiAt = now
+                            // Telemetry has a separate immutable stream. It must not
+                            // recompose navigation, device controls or service state.
+                            _streamStats.value = stats
                         }
                     }
                 }
@@ -317,9 +317,6 @@ class MonitorSession(private val context: Context) {
             scheduleTick()
         }
     }
-
-    private val audioManager: AudioManager
-        get() = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private fun postError(text: String) {
         status = text
@@ -626,7 +623,7 @@ class MonitorSession(private val context: Context) {
         selectedOutput = null
         previewKey = null
         pendingFloatingMessage = null
-        actualStats.clear()
+        _streamStats.value = emptyMap()
         status = "正在结束测试并准备转发…"
         val token = ++generation
         changed()
@@ -673,12 +670,10 @@ class MonitorSession(private val context: Context) {
             return
         }
         try {
-            requireMicrophone()
             model.prune(enabledChannels(inputs), enabledChannels(outputs))
             if (model.validCount() == 0) {
                 throw IllegalStateException("请先选择至少一对有效输入与输出通道")
             }
-            configureCommunication()
             testGeneration.incrementAndGet()
             val spec = ArrayList<Int>()
             for (r in model.rows) {
@@ -689,7 +684,7 @@ class MonitorSession(private val context: Context) {
             busy = true
             busySince = SystemClock.uptimeMillis()
             previewKey = null
-            actualStats.clear()
+            _streamStats.value = emptyMap()
             status = "正在打开所选音频设备…"
             changed()
             val token = ++generation
@@ -697,6 +692,8 @@ class MonitorSession(private val context: Context) {
                 var error = ""
                 try {
                     runOnTestThread()
+                    requireMicrophone()
+                    configureCommunication()
                     error = NativeAudio.startConfigured(spec.toIntArray())
                 } catch (e: Exception) {
                     error = e.toString()
@@ -766,7 +763,7 @@ class MonitorSession(private val context: Context) {
         _spectrum.value = FloatArray(0)
         busy = true
         busySince = SystemClock.uptimeMillis()
-        actualStats.clear()
+        _streamStats.value = emptyMap()
         changed()
         // Keyed on stopOperation, not generation: only a newer stop() supersedes
         // this cleanup, and that newer stop owns the same reset — so busy can
@@ -774,6 +771,7 @@ class MonitorSession(private val context: Context) {
         val token = ++stopOperation
         audio.execute {
             var result = error
+            val cleanupFailures = ArrayList<String>()
             try {
                 if (NativeAudio.loadError == null) NativeAudio.stop()
                 runOnTestThread()
@@ -782,12 +780,20 @@ class MonitorSession(private val context: Context) {
             } catch (e: LinkageError) {
                 result = e.toString()
             }
+            // Audio routing also crosses Binder. Keep the resource lock until
+            // every reset completes, including when one reset throws.
+            fun reset(action: () -> Unit) {
+                try { action() } catch (e: RuntimeException) { cleanupFailures.add(e.toString()) }
+            }
+            reset { if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice() }
+            reset { audioManager.mode = AudioManager.MODE_NORMAL }
             val failure = result
             main.post {
                 if (disposed || token != stopOperation) return@post
                 busy = false
                 val failures = ArrayList<String>()
                 if (failure != null) failures.add(failure)
+                failures.addAll(cleanupFailures)
                 fun cleanup(action: () -> Unit) {
                     try {
                         action()
@@ -796,8 +802,6 @@ class MonitorSession(private val context: Context) {
                     }
                 }
                 // Failure in one cleanup must not skip the remaining owners.
-                cleanup { if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice() }
-                cleanup { audioManager.mode = AudioManager.MODE_NORMAL }
                 val old = service
                 service = null
                 cleanup { old?.closed(failures.takeIf { it.isNotEmpty() }?.joinToString("\n")) }
@@ -842,14 +846,6 @@ class MonitorSession(private val context: Context) {
         val channel = if (visible && tab == 0) inputs[selectedInput] else null
         val wanted = channel?.key
         if (wanted == previewKey) return
-        if (channel != null) {
-            try {
-                requireMicrophone()
-            } catch (e: SecurityException) {
-                channelError(channel.key, e.toString())
-                return
-            }
-        }
         previewKey = wanted
         previewOpening = true
         previewOpeningSince = SystemClock.uptimeMillis()
@@ -862,6 +858,7 @@ class MonitorSession(private val context: Context) {
             try {
                 NativeAudio.stop()
                 if (ep != null) {
+                    requireMicrophone()
                     val spec = IntArray(14)
                     System.arraycopy(ep, 0, spec, 0, 7)
                     spec[7] = -1
@@ -1033,7 +1030,14 @@ class MonitorSession(private val context: Context) {
     }
 
     private fun scheduleTick() {
-        main.postDelayed(tick, 150)
+        main.removeCallbacks(tick)
+        if (disposed || NativeAudio.loadError != null) return
+        val interval = when {
+            running || previewKey != null -> 150L
+            busy || previewOpening || scanInFlight -> 1000L
+            else -> return // No idle timer: mutations restart polling when required.
+        }
+        main.postDelayed(tick, interval)
     }
 
     // A slow/hung driver is never permission to unlock while it owns resources.
@@ -1061,6 +1065,7 @@ class MonitorSession(private val context: Context) {
     private fun changed() {
         _version.value = _version.value + 1
         listener?.onSessionChanged()
+        scheduleTick()
     }
 
     interface ForwardingOwner {

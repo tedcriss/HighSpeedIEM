@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.0`（versionCode 21），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.1`（versionCode 22），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -17,6 +17,8 @@
 ./gradlew --project-cache-dir C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/project-cache <任务>   # 避免项目内生成 .gradle
 # Kotlin 插件会重建空的 .kotlin/ 目录，可随时删除，不影响构建。
 ```
+
+Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.1.apk` 命名。
 
 Phone 平台统一测试（instrumentation，单一入口，场景可筛选）：
 
@@ -34,6 +36,7 @@ route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, d
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
 动效专项：`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
 布局专项：`adaptive-layout`，同一手机上的横竖屏、1/2/3 列、150%/200% 字体、600px 模式切换与滚动锚点恢复。
+性能诊断：`performance-flow`，记录空闲、18 次预热切页、任务页转发和输入页转发的 FrameMetrics、主线程 CPU 与全局状态更新次数；Debug 数值只用于机制对比，实际切页帧耗时另用正式包测量。3.1 的结果和限制见 [性能调优验收-3.1.md](性能调优验收-3.1.md)。
 浮层专项：`tooltip-compatibility`，测量真实频谱、输入/输出能力提示与整张卡片的交叠面积，覆盖横竖屏、1/2/3 列与 200% 字体；检查安全边界、正文滚动、固定关闭键及嵌套点击。
 `keyboard-compact-phone` 与 `keyboard-compact-small-phone` 均在手机上通过主线程 `Activity.setContent` 临时加载实际 `CompactFlow`，并在 `finally` 恢复手机界面；
 small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动手表模拟器，不更改手机系统分辨率。
@@ -63,6 +66,10 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   不表示系统/驱动/硬件零延迟。物理电视与系统返声的对比仍需真机测量，详见低延迟验收-3.0.md。
 - `audio/MonitorSession.kt`：会话状态机（设备枚举、探测、参数、转发表、后台错误）。
   只存在于内存，不持久化；Activity 重建时由 `MonitorApplication` 持有并复用。
+  AppOps 权限检查、通信路由设置/清理在串行音频线程执行，完成清理前保持操作锁。
+  原生错误和频谱仍以 150ms 间隔检查；空闲时不运行计时器，长操作用 1s 看门狗。
+  转发开始读取一次设备统计快照，随后仅在前台任务页约每 3s 读取实际使用的端点。
+  统计通过独立不可变 StateFlow 发布，不再触发全局版本更新。
 - `audio/DeviceValidator.kt`：输入和输出均只验证能否打开并关闭目标设备，不开始录音、
   不读取采样或检查静音。串行探测避免输入抢占，不为失败设备重复开流；
   能正常打开的实际通道默认启用，失败设备禁用但仍保留在列表并提示原始错误。
@@ -73,6 +80,10 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   从最近任务清除应用先停止转发并释放资源；进程被系统杀死后不自动重启。
 - `ui/`：Jetpack Compose + Material 3。固定顶部 Small app bar 与底部三等分
   Navigation bar；通过导航切页，不支持滑动切页。
+  导航、通道列表/卡片、频谱弹层按各自状态快照订阅并过滤重复值；频谱采样仅触发绘制，
+  FFT 窗口系数和图表渐变缓存。无障碍系统监听由主题统一持有，菜单焦点对象仅在弹出时创建。
+  下拉框保持原生 TextField/Menu，仅当前聚焦的长值滚动；系统设置入口在后台查询并复用结果。
+  横屏使用原生 LazyVerticalGrid，竖屏保留可靠的嵌套控件键盘遍历和滚动锚点。
 
 ## 功能逻辑要点
 

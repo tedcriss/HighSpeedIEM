@@ -72,6 +72,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
             val scenarios = linkedMapOf<String, () -> Pair<Boolean, String>>(
                 "native-selftest" to ::scenarioNativeSelfTest,
+                "performance-flow" to { true to PerformanceAudit(this, device, session()).run() },
                 "audio-latency" to ::scenarioAudioLatency,
                 "forward-background" to ::scenarioForwardBackground,
                 "launch-tabs" to ::scenarioLaunchTabs,

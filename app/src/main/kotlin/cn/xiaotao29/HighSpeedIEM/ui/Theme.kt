@@ -120,6 +120,6 @@ fun HighSpeedIEMTheme(content: @Composable () -> Unit) {
         shapes = AppShapes,
         typography = AppTypography,
         motionScheme = MotionScheme.standard(),
-        content = content,
+        content = { KeyboardFocusEnvironment(content) },
     )
 }

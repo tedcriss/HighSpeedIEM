@@ -37,7 +37,8 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DeviceCapabilityTooltip(channel: Channel, cardBounds: IntRect?, enabled: Boolean = true) {
+internal fun DeviceCapabilityTooltip(channel: Channel, cardBounds: IntRect?, enabled: Boolean = true,
+    modifier: Modifier = Modifier) {
     val state = rememberTooltipState(isPersistent = true)
     val scope = rememberCoroutineScope()
     val anchorFocus = remember { FocusRequester() }
@@ -78,7 +79,7 @@ internal fun DeviceCapabilityTooltip(channel: Channel, cardBounds: IntRect?, ena
         TextButton(
             enabled = enabled,
             onClick = { scope.launch { state.show() } },
-            modifier = Modifier.focusRequester(anchorFocus).keyboardFocus(enabled)
+            modifier = modifier.focusRequester(anchorFocus).keyboardFocus(enabled)
                 .semantics { contentDescription = "查看 ID ${channel.device.id} 通道 ${channel.index} 的设备能力" },
         ) {
             Text("设备能力", style = MaterialTheme.typography.labelLarge)

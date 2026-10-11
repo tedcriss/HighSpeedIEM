@@ -12,10 +12,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
@@ -33,18 +35,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.unit.dp
 
-/** Decorates the control's existing focus target; never adds a second focusable node.
- * Intercept arrows before read-only text fields use them to move their caret.
- * Only this target (not a focused descendant) receives a ring. */
-internal fun Modifier.keyboardFocus(
-    enabled: Boolean = true,
-    shape: Shape? = null,
-    focusColor: Color? = null,
-): Modifier = composed {
-    var focused by remember { mutableStateOf(false) }
-    val manager = LocalFocusManager.current
-    val inputMode = LocalInputModeManager.current
-    val windowFocused = LocalWindowInfo.current.isWindowFocused
+private val LocalReaderHighlights = staticCompositionLocalOf { false }
+
+/** One system listener per UI root, including the standalone compact debug host. */
+@Composable
+internal fun KeyboardFocusEnvironment(content: @Composable () -> Unit) {
     val context = LocalContext.current
     val accessibility = remember(context) { context.getSystemService(AccessibilityManager::class.java) }
     var readerHighlights by remember(accessibility) { mutableStateOf(accessibility?.isTouchExplorationEnabled == true) }
@@ -53,8 +48,25 @@ internal fun Modifier.keyboardFocus(
         accessibility?.addTouchExplorationStateChangeListener(listener)
         onDispose { accessibility?.removeTouchExplorationStateChangeListener(listener) }
     }
+    CompositionLocalProvider(LocalReaderHighlights provides readerHighlights, content = content)
+}
+
+/** Decorates the control's existing focus target; never adds a second focusable node.
+ * Intercept arrows before read-only text fields use them to move their caret.
+ * Only this target (not a focused descendant) receives a ring. */
+@Composable
+internal fun Modifier.keyboardFocus(
+    enabled: Boolean = true,
+    shape: Shape? = null,
+    focusColor: Color? = null,
+): Modifier {
+    var focused by remember { mutableStateOf(false) }
+    val manager = LocalFocusManager.current
+    val inputMode = LocalInputModeManager.current
+    val windowFocused = LocalWindowInfo.current.isWindowFocused
+    val readerHighlights = LocalReaderHighlights.current
     val outline = shape ?: MaterialTheme.shapes.small
-    this.onFocusChanged { focused = it.isFocused }
+    return this.onFocusChanged { focused = it.isFocused }
         .focusProperties { if (!enabled) canFocus = false }
         .onPreviewKeyEvent { event ->
             val direction = when (event.key) {
@@ -81,12 +93,13 @@ internal fun Modifier.passiveScroll(): Modifier = focusProperties { canFocus = f
 
 /** Overflowing information is itself a scroll action. Up/down reads it;
  * at either edge traversal continues. Left/right always leaves the region. */
-internal fun Modifier.keyboardScroll(state: ScrollState, enabled: Boolean = true): Modifier = composed {
+@Composable
+internal fun Modifier.keyboardScroll(state: ScrollState, enabled: Boolean = true): Modifier {
     var focused by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val manager = LocalFocusManager.current
     val step = with(LocalDensity.current) { 72.dp.toPx() }
-    this.onFocusChanged { focused = it.isFocused }
+    return this.onFocusChanged { focused = it.isFocused }
         .onPreviewKeyEvent { event ->
             if (focused && enabled && (event.key == Key.DirectionLeft || event.key == Key.DirectionRight)) {
                 if (event.type == KeyEventType.KeyDown) manager.moveFocus(

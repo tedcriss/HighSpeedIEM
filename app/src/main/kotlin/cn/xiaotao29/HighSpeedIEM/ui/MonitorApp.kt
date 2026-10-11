@@ -49,7 +49,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -86,19 +85,19 @@ private enum class Tab(val label: String, val icon: ImageVector, val selectedIco
     TASK("任务控制", Icons.Filled.PlayArrow, Icons.Filled.PlayArrow),
 }
 
+private data class NavigationState(val tab: Int, val loading: Boolean)
+
 /**
  * Three window layouts share one session: portrait app bar/navigation bar,
  * landscape rail/content, and a compact pager for low-resolution/watch windows.
  *
- * Session mutations are tracked through [MonitorSession.version]; the value is
- * read in this scope so navigation and page content stay in sync.
+ * Navigation observes only the destination and discovery lock. Each page owns
+ * its subscription; telemetry never invalidates the scaffold or navigation.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun MonitorApp(activity: MainActivity, session: MonitorSession) {
-    // Read in this composition scope (not inside a nested lambda) so every
-    // session mutation recomposes the tab selection along with the current page.
-    @Suppress("UNUSED_VARIABLE") val version = session.version.collectAsState().value
+    val navigation by sessionState(session) { NavigationState(session.tab, session.loadingPublic) }
     val notice = session.notices.collectAsState().value
     val snackbar = remember { SnackbarHostState() }
     val pageState = rememberSaveableStateHolder()
@@ -118,127 +117,125 @@ fun MonitorApp(activity: MainActivity, session: MonitorSession) {
     }
 
     val tabs = Tab.entries
-    val selectedTab = tabs.getOrElse(session.tab) { Tab.INPUT }
+    val selectedTab = tabs.getOrElse(navigation.tab) { Tab.INPUT }
 
     HighSpeedIEMTheme {
-        Surface(color = MaterialTheme.colorScheme.background) {
-            Scaffold(
-                containerColor = MaterialTheme.colorScheme.surface,
-                // Only the task page has floating action controls.
-                snackbarHost = {
-                    val noticeInset = when {
-                        isCompact -> 96.dp
-                        !landscape && selectedTab == Tab.TASK -> taskControlsHeight + 8.dp
-                        else -> 8.dp
-                    }
-                    SnackbarHost(snackbar, Modifier.padding(bottom = noticeInset)) { data -> NoticeSnackbar(data) }
-                },
-                topBar = {
-                    if (mode == AppLayoutMode.Portrait) {
-                        TopAppBar(
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = MaterialTheme.colorScheme.surface),
-                            title = {
-                                Column {
-                                    Text(
-                                        stringResource(R.string.app_name),
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    Text(
-                                        stringResource(R.string.developer_credit),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            },
-                        )
-                    }
-                },
-                bottomBar = {
-                    if (mode == AppLayoutMode.Portrait) {
-                        NavigationBar(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                            tonalElevation = 0.dp,
-                        ) {
-                            tabs.forEach { tab ->
-                                NavigationBarItem(
-                                    selected = tab == selectedTab,
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        selectedTextColor = MaterialTheme.colorScheme.primary,
-                                        indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    ),
-                                    onClick = {
-                                        if (tab != selectedTab) {
-                                            activity.safe { session.switchTab(tabs.indexOf(tab)) }
-                                        }
-                                    },
-                                    enabled = !session.loadingPublic,
-                                    modifier = Modifier.keyboardFocus(!session.loadingPublic, MaterialTheme.shapes.large),
-                                    icon = {
-                                        Icon(
-                                            if (tab == selectedTab) tab.selectedIcon else tab.icon,
-                                            contentDescription = null,
-                                        )
-                                    },
-                                    label = { Text(tab.label) },
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.surface,
+            // Only the task page has floating action controls.
+            snackbarHost = {
+                val noticeInset = when {
+                    isCompact -> 96.dp
+                    !landscape && selectedTab == Tab.TASK -> taskControlsHeight + 8.dp
+                    else -> 8.dp
+                }
+                SnackbarHost(snackbar, Modifier.padding(bottom = noticeInset)) { data -> NoticeSnackbar(data) }
+            },
+            topBar = {
+                if (mode == AppLayoutMode.Portrait) {
+                    TopAppBar(
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface),
+                        title = {
+                            Column {
+                                Text(
+                                    stringResource(R.string.app_name),
+                                    style = MaterialTheme.typography.titleLarge,
+                                )
+                                Text(
+                                    stringResource(R.string.developer_credit),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                        }
-                    }
-                },
-            ) { padding ->
-                // The loading prompt is a full-size overlay centred on the page,
-                // in front of the tab content.
-                Row(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()
-                    .semantics { testTagsAsResourceId = true }.testTag("layout-${mode.name.lowercase()}")) {
-                    if (landscape) {
-                        LandscapeNavigation(selectedTab, !session.loadingPublic) { tab ->
-                            if (tab != selectedTab) activity.safe { session.switchTab(tabs.indexOf(tab)) }
-                        }
-                    }
-                    Box(Modifier.weight(1f).fillMaxHeight().onGloballyPositioned {
-                        tooltipViewport = it.boundsInWindow().roundToIntRect()
-                    }) {
-                        CompositionLocalProvider(LocalTooltipViewport provides tooltipViewport) {
-                            if (isCompact) {
-                                pageState.SaveableStateProvider("compact") { CompactFlow(activity, session) }
-                            } else {
-                                // Dispose the old destination immediately: its tooltips,
-                                // focus targets and audio cleanup must not survive a fade.
-                                // Only the incoming page animates; native saved scroll
-                                // state survives navigation without retaining previews.
-                                key(selectedTab) {
-                                    val entering = remember {
-                                        MutableTransitionState(false).apply { targetState = true }
+                        },
+                    )
+                }
+            },
+            bottomBar = {
+                if (mode == AppLayoutMode.Portrait) {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        tonalElevation = 0.dp,
+                    ) {
+                        tabs.forEach { tab ->
+                            NavigationBarItem(
+                                selected = tab == selectedTab,
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
+                                onClick = {
+                                    if (tab != selectedTab) {
+                                        activity.safe { session.switchTab(tabs.indexOf(tab)) }
                                     }
-                                    androidx.compose.animation.AnimatedVisibility(
-                                        visibleState = entering,
-                                        enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
-                                        exit = ExitTransition.None,
-                                        modifier = Modifier.fillMaxSize(),
-                                        label = "destination",
-                                    ) {
-                                        pageState.SaveableStateProvider(selectedTab.name) {
-                                            when (selectedTab) {
-                                                Tab.INPUT -> InputPage(activity, session, landscape)
-                                                Tab.OUTPUT -> OutputPage(activity, session, landscape)
-                                                Tab.TASK -> TaskPage(activity, session, landscape = landscape) { taskControlsHeight = it }
-                                            }
+                                },
+                                enabled = !navigation.loading,
+                                modifier = Modifier.keyboardFocus(!navigation.loading, MaterialTheme.shapes.large),
+                                icon = {
+                                    Icon(
+                                        if (tab == selectedTab) tab.selectedIcon else tab.icon,
+                                        contentDescription = null,
+                                    )
+                                },
+                                label = { Text(tab.label) },
+                            )
+                        }
+                    }
+                }
+            },
+        ) { padding ->
+            // The loading prompt is a full-size overlay centred on the page,
+            // in front of the tab content.
+            Row(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()
+                .semantics { testTagsAsResourceId = true }.testTag("layout-${mode.name.lowercase()}")) {
+                if (landscape) {
+                    LandscapeNavigation(selectedTab, !navigation.loading) { tab ->
+                        if (tab != selectedTab) activity.safe { session.switchTab(tabs.indexOf(tab)) }
+                    }
+                }
+                Box(Modifier.weight(1f).fillMaxHeight().onGloballyPositioned {
+                    tooltipViewport = it.boundsInWindow().roundToIntRect()
+                }) {
+                    CompositionLocalProvider(LocalTooltipViewport provides tooltipViewport) {
+                        if (isCompact) {
+                            pageState.SaveableStateProvider("compact") { CompactFlow(activity, session) }
+                        } else {
+                            // Dispose the old destination immediately: its tooltips,
+                            // focus targets and audio cleanup must not survive a fade.
+                            // Only the incoming page animates; native saved scroll
+                            // state survives navigation without retaining previews.
+                            key(selectedTab) {
+                                val entering = remember {
+                                    MutableTransitionState(false).apply { targetState = true }
+                                }
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visibleState = entering,
+                                    enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
+                                    exit = ExitTransition.None,
+                                    modifier = Modifier.fillMaxSize(),
+                                    label = "destination",
+                                ) {
+                                    pageState.SaveableStateProvider(selectedTab.name) {
+                                        when (selectedTab) {
+                                            Tab.INPUT -> InputPage(activity, session, landscape)
+                                            Tab.OUTPUT -> OutputPage(activity, session, landscape)
+                                            Tab.TASK -> TaskPage(activity, session, landscape = landscape) { taskControlsHeight = it }
                                         }
                                     }
                                 }
                             }
-                            androidx.compose.animation.AnimatedVisibility(
-                                visible = session.loadingPublic,
-                                enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
-                                exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
-                                label = "channel-loading",
-                            ) {
-                                LoadingOverlay(showHint = !isCompact, blockInput = session.loadingPublic)
-                            }
+                        }
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = navigation.loading,
+                            enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
+                            exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
+                            label = "channel-loading",
+                        ) {
+                            LoadingOverlay(showHint = !isCompact, blockInput = navigation.loading)
                         }
                     }
                 }

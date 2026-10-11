@@ -43,7 +43,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.key
@@ -54,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.semantics.Role
@@ -82,13 +82,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.roundToInt
 
-// Every composable below that renders plain (non-snapshot) MonitorSession state
-// subscribes to session.version in its OWN composition scope. Do not replace
-// this with a forwarded `version: Int` parameter: under strong skipping an
-// unused parameter drops out of the call-site comparison, the composable is
-// skipped forever, and stale enabled/selected states wedge the UI (this was
-// the real root cause of the "selected card can never be clicked again" bug —
-// a disabled clickable consumes taps without emitting them).
+private data class ChannelPageState(val channels: List<Channel>, val enabledCount: Int)
+private data class DeviceCardState(
+    val selected: Boolean, val settings: DeviceSettings, val locked: Boolean,
+    val selectionLocked: Boolean, val enabled: Boolean, val loading: Boolean,
+)
+
+// Subscribe in the scope that consumes mutable session fields. sessionState
+// filters unchanged snapshots while preserving this requirement under strong
+// skipping; an unused forwarded version parameter cannot make children current.
 
 /**
  * Input tab: channel cards (Filled), capability details, per-device parameter
@@ -96,12 +98,14 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun InputPage(activity: MainActivity, session: MonitorSession, landscape: Boolean = false) {
-    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
-    val channels = session.inputs.values.toList()
+    val page by sessionState(session) {
+        ChannelPageState(session.inputs.values.toList(), session.inputs.keys.count { it !in session.disabled })
+    }
+    val channels = page.channels
     ChannelList(channels, landscape, Modifier.fillMaxSize(), tag = "input-channel-list",
         itemKey = { it.key }, eagerPortrait = true, heading = {
             PageHeading("输入通道", "选择通道查看频谱，勾选后可用于转发。",
-                "${channels.count { it.key !in session.disabled } } / ${channels.size} 已启用")
+                "${page.enabledCount} / ${channels.size} 已启用")
         },
     ) { _, channel, _ -> DeviceCard(activity, session, channel) }
 }
@@ -111,12 +115,14 @@ fun InputPage(activity: MainActivity, session: MonitorSession, landscape: Boolea
  */
 @Composable
 fun OutputPage(activity: MainActivity, session: MonitorSession, landscape: Boolean = false) {
-    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
-    val channels = session.outputs.values.toList()
+    val page by sessionState(session) {
+        ChannelPageState(session.outputs.values.toList(), session.outputs.keys.count { it !in session.disabled })
+    }
+    val channels = page.channels
     ChannelList(channels, landscape, Modifier.fillMaxSize(), tag = "output-channel-list",
         itemKey = { it.key }, eagerPortrait = true, heading = {
             PageHeading("输出通道", "选择通道自动播放铃声，再次点击可停止；勾选后可用于转发。",
-                "${channels.count { it.key !in session.disabled } } / ${channels.size} 已启用")
+                "${page.enabledCount} / ${channels.size} 已启用")
         },
     ) { _, channel, _ -> DeviceCard(activity, session, channel) }
 }
@@ -128,12 +134,19 @@ private fun DeviceCard(
     session: MonitorSession,
     channel: Channel,
 ) {
-    @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
-    val selected = (if (channel.input) session.selectedInput else session.selectedOutput) == channel.key
-    val cfg = session.config(channel)
-    val locked = session.forwardingLockedPublic
-    val selectionLocked = if (channel.input) locked else session.outputSelectionLockedPublic
-    val enabled = channel.key !in session.disabled
+    val state by sessionState(session) {
+        DeviceCardState(
+            (if (channel.input) session.selectedInput else session.selectedOutput) == channel.key,
+            session.config(channel), session.forwardingLockedPublic,
+            if (channel.input) session.forwardingLockedPublic else session.outputSelectionLockedPublic,
+            channel.key !in session.disabled, session.loadingPublic,
+        )
+    }
+    val selected = state.selected
+    val cfg = state.settings
+    val locked = state.locked
+    val selectionLocked = state.selectionLocked
+    val enabled = state.enabled
     val colors = MaterialTheme.colorScheme
     val containerColor by animateColorAsState(
         if (selected) colors.secondaryContainer else colors.surfaceContainerLow,
@@ -196,10 +209,8 @@ private fun DeviceCard(
                     Surface(shape = MaterialTheme.shapes.small,
                         color = MaterialTheme.colorScheme.primaryContainer,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
-                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                            Icon(if (channel.input) Icons.Filled.Mic else Icons.Filled.Speaker,
-                                contentDescription = null, modifier = Modifier.size(20.dp))
-                        }
+                        Icon(if (channel.input) Icons.Filled.Mic else Icons.Filled.Speaker,
+                            contentDescription = null, modifier = Modifier.padding(10.dp).size(20.dp))
                     }
                     Column(Modifier.weight(1f).clearAndSetSemantics {}, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
@@ -228,9 +239,8 @@ private fun DeviceCard(
                 FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     maxItemsInEachRow = 2,
                     horizontalArrangement = Arrangement.SpaceBetween) {
-                    Box(Modifier.align(Alignment.CenterVertically)) {
-                        DeviceCapabilityTooltip(channel, cardBounds, enabled = !session.loadingPublic)
-                    }
+                    DeviceCapabilityTooltip(channel, cardBounds, enabled = !state.loading,
+                        modifier = Modifier.align(Alignment.CenterVertically))
                     Row(Modifier.align(Alignment.CenterVertically), verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             "独占",
@@ -271,12 +281,14 @@ private fun ParameterRow(
     locked: Boolean,
 ) {
     val editable = channel.index == 0 && !locked
+    val rates = remember(channel.device) { DeviceSettings.rates(channel.device) }
+    val rateLabels = remember(rates) { rates.map { if (it == 0) "自动" else "$it Hz" } }
+    val formats = remember(channel.device) { DeviceSettings.formats(channel.device) }
+    val formatLabels = remember(formats) { formats.map { DeviceSettings.formatName(it) } }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             ParameterFields(stacked = maxWidth < 280.dp * fontScale) { fieldModifier ->
-                val rates = DeviceSettings.rates(channel.device)
-                val rateLabels = rates.map { if (it == 0) "自动" else "$it Hz" }
                 OptionDropdown(
                     label = "采样率",
                     options = rateLabels,
@@ -290,8 +302,6 @@ private fun ParameterRow(
                         session.parameterChanged(channel)
                     }
                 }
-                val formats = DeviceSettings.formats(channel.device)
-                val formatLabels = formats.map { DeviceSettings.formatName(it) }
                 OptionDropdown(
                     label = "采样深度",
                     options = formatLabels,
@@ -310,7 +320,7 @@ private fun ParameterRow(
         if (channel.input) {
             OptionDropdown(
                 label = "录音预设",
-                options = DeviceSettings.PRESET_LABELS.toList(),
+                options = remember { DeviceSettings.PRESET_LABELS.toList() },
                 selectedIndex = DeviceSettings.PRESET_VALUES.indexOf(cfg.preset).coerceAtLeast(0),
                 enabled = editable,
                 hint = "ID ${channel.device.id} 通道 ${channel.index}，录音预设；自动优先系统实时返声预设，不支持时使用语音识别预设，同一设备由通道 0 设置",
@@ -358,7 +368,7 @@ fun OptionDropdown(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val anchorFocus = remember { FocusRequester() }
-    val itemFocus = remember(options.size) { List(options.size) { FocusRequester() } }
+    // Menu-only focus targets are created with the popup, not for every closed anchor.
     val inputMode = LocalInputModeManager.current
     var restoreFocus by remember { mutableStateOf(false) }
     fun dismiss() {
@@ -380,14 +390,17 @@ fun OptionDropdown(
         TextFieldState(initialText = value, initialSelection = TextRange.Zero)
     }
     val valueScroll = remember(value) { ScrollState(0) }
+    var anchorFocused by remember { mutableStateOf(false) }
     val scrollSpeed = with(LocalDensity.current) { 30.dp.toPx() }
     // Scroll only the native text viewport; the outline, label and arrow stay fixed.
     // A changed value/width restarts at the beginning, and opening the menu pauses it.
-    LaunchedEffect(value, valueScroll.maxValue, expanded, scrollSpeed) {
+    LaunchedEffect(value, valueScroll.maxValue, expanded, scrollSpeed, anchorFocused) {
         val motionScale = coroutineContext[MotionDurationScale]
         valueScroll.scrollTo(0)
         val overflow = valueScroll.maxValue
-        if (expanded || overflow <= 0 || overflow == Int.MAX_VALUE) return@LaunchedEffect
+        // Only the user's focused value needs marquee motion. Unfocused/disabled
+        // anchors stay readable at the start instead of animating the entire page.
+        if (!anchorFocused || expanded || overflow <= 0 || overflow == Int.MAX_VALUE) return@LaunchedEffect
         val duration = (overflow / scrollSpeed * 1000).roundToInt().coerceAtLeast(500)
         while (isActive) {
             delay(1500)
@@ -447,6 +460,7 @@ fun OptionDropdown(
             scrollState = valueScroll,
             modifier = Modifier
                 .focusRequester(anchorFocus)
+                .onFocusChanged { anchorFocused = it.isFocused }
                 .keyboardFocus(enabled, MaterialTheme.shapes.small)
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled)
                 .fillMaxWidth()
@@ -462,6 +476,7 @@ fun OptionDropdown(
             onDismissRequest = {
             dismiss()
         }) {
+            val itemFocus = remember(options.size) { List(options.size) { FocusRequester() } }
             LaunchedEffect(expanded) {
                 if (expanded && itemFocus.isNotEmpty()) {
                     androidx.compose.runtime.withFrameNanos { }

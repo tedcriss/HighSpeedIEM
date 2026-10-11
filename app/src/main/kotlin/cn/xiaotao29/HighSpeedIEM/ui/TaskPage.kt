@@ -92,11 +92,12 @@ fun TaskPage(
     onControlsHeightChanged: (Dp) -> Unit = {},
 ) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
+    val stats by session.streamStats.collectAsState()
     val status = taskStatus(session)
     // Capture values in this subscribed scope. Lazy content and child cards
     // receive immutable snapshots instead of reading a mutable session later.
     val cards = session.model.rows.map { row ->
-        RouteCardState(row, routeStats(session, row, true), routeStats(session, row, false))
+        RouteCardState(row, routeStats(session, row, true, stats), routeStats(session, row, false, stats))
     }
     val inputChannels = session.inputs.values.filter { it.key !in session.disabled }
     val outputChannels = session.outputs.values.filter { it.key !in session.disabled }
@@ -271,10 +272,11 @@ private fun RouteSide(
 internal fun taskStatus(session: MonitorSession): String =
     if (session.runningPublic) "正在转发" else if (session.model.validCount() > 0) "已就绪" else "待配置"
 
-internal fun routeStats(session: MonitorSession, row: RouteModel.Row, input: Boolean): String {
+internal fun routeStats(session: MonitorSession, row: RouteModel.Row, input: Boolean,
+    stats: Map<String, String> = session.actualStats): String {
     val channel = if (input) session.inputs[row.input] else session.outputs[row.output]
     return if (session.runningPublic && row.complete() && channel != null)
-        session.actualStats[channel.deviceKey].orEmpty() else ""
+        stats[channel.deviceKey].orEmpty() else ""
 }
 
 /**
@@ -293,7 +295,8 @@ fun SplitStartButton(
     val running = session.runningPublic
     val blocked = session.operationsBlockedPublic
     val count = session.model.validCount()
-    val batteryEnabled = !blocked && activity.openBatterySettings()
+    val batteryAvailable by rememberBatterySettingsAvailable(activity, session)
+    val batteryEnabled = !blocked && batteryAvailable
     val startEnabled = !blocked && (running || count > 0)
     SplitButtonLayout(
         modifier = modifier,
@@ -337,7 +340,8 @@ private fun VerticalTaskControls(activity: MainActivity, session: MonitorSession
     val running = session.runningPublic
     val blocked = session.operationsBlockedPublic
     val count = session.model.validCount()
-    val batteryEnabled = !blocked && activity.openBatterySettings()
+    val batteryAvailable by rememberBatterySettingsAvailable(activity, session)
+    val batteryEnabled = !blocked && batteryAvailable
     val startEnabled = !blocked && (running || count > 0)
     val startLabel = if (running) "停止转发" else "启动 $count 个转发"
     BoxWithConstraints(Modifier.fillMaxHeight().testTag("task-toolbar-lane")) {
