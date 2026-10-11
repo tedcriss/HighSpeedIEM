@@ -80,6 +80,7 @@ import cn.xiaotao29.HighSpeedIEM.audio.DeviceSettings
 import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.roundToInt
 
 private data class ChannelPageState(val channels: List<Channel>, val enabledCount: Int)
@@ -402,18 +403,20 @@ fun OptionDropdown(
         // anchors stay readable at the start instead of animating the entire page.
         if (!anchorFocused || expanded || overflow <= 0 || overflow == Int.MAX_VALUE) return@LaunchedEffect
         val duration = (overflow / scrollSpeed * 1000).roundToInt().coerceAtLeast(500)
-        while (isActive) {
-            delay(1500)
-            // A marquee is optional motion: keep the start readable when the
-            // system disables animations, rather than jumping between ends.
-            if (motionScale?.scaleFactor == 0f) {
+        // Prime the framework getter outside snapshotFlow's read-only snapshot.
+        // Android Compose exposes its native animation-scale observer as state.
+        val initialScale = motionScale?.scaleFactor ?: 1f
+        androidx.compose.runtime.snapshotFlow { motionScale?.scaleFactor ?: initialScale }
+            .collectLatest { scale ->
                 valueScroll.scrollTo(0)
-                continue
+                if (scale == 0f) return@collectLatest
+                while (isActive) {
+                    delay(1500)
+                    valueScroll.animateScrollTo(overflow, tween(duration, easing = LinearEasing))
+                    delay(1500)
+                    valueScroll.animateScrollTo(0, tween(duration, easing = LinearEasing))
+                }
             }
-            valueScroll.animateScrollTo(overflow, tween(duration, easing = LinearEasing))
-            delay(1500)
-            valueScroll.animateScrollTo(0, tween(duration, easing = LinearEasing))
-        }
     }
     val focusManager = LocalFocusManager.current
     LaunchedEffect(enabled, expanded, restoreFocus) {

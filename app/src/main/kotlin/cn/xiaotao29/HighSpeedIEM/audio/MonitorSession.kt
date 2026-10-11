@@ -91,7 +91,19 @@ class MonitorSession(private val context: Context) {
     fun floatingNotice(text: String) { _notices.value = text }
     fun consumeNotice() { _notices.value = null }
 
-    fun bumpTestGeneration() { testGeneration.incrementAndGet() }
+    fun bumpTestGeneration() { cancelRingtoneWork() }
+    private fun cancelRingtoneWork(): Int {
+        val token = testGeneration.incrementAndGet()
+        RingtoneTest.cancel()
+        // Waking the native backpressure waiter may acquire the control lock;
+        // keep it off the UI thread, before any queued wait for worker cleanup.
+        if (NativeAudio.loadError == null && !disposed) audio.execute {
+            try { NativeAudio.cancelTestWaiters() }
+            catch (e: Exception) { main.post { if (!disposed) message(e.toString()) } }
+            catch (e: LinkageError) { main.post { if (!disposed) message(e.toString()) } }
+        }
+        return token
+    }
     fun resetPreview() { previewKey = null }
     fun clearSelectedInput() { selectedInput = null }
 
@@ -144,7 +156,16 @@ class MonitorSession(private val context: Context) {
     private var permissionWaiting = false
     private var permissionAsked = false
     private var previewOpening = false
-    private var polling = false
+    private var spectrumReading = false
+    private var healthReading = false
+    private var statsReading = false
+    private var pendingSettings = false
+    private var appOpsWatching = false
+    private var permissionChecking = false
+    private var permissionCheckPending = false
+    private val timeoutReported = HashMap<String, Long>()
+    private val _endpointSnapshots = kotlinx.coroutines.flow.MutableStateFlow<Map<String, NativeAudio.EndpointSnapshot>>(emptyMap())
+    val endpointSnapshots: kotlinx.coroutines.flow.StateFlow<Map<String, NativeAudio.EndpointSnapshot>> = _endpointSnapshots
     private var disposed = false
     private var deviceSnapshot = ""
     private var pendingInputs: Array<AudioDeviceInfo> = emptyArray()
@@ -168,7 +189,6 @@ class MonitorSession(private val context: Context) {
     private var devicesDirty = false
     private val refreshDevices = Runnable { refresh() }
     private var visibilityGeneration = 0
-    private var statsUiAt = 0L
     private var previewOpeningSince = 0L
     private var busySince = 0L
     private var scanSince = 0L
@@ -212,7 +232,7 @@ class MonitorSession(private val context: Context) {
             // Freeze lists/routes from preparation through resource cleanup.
             if (running || starting || (busy && ringtoneKey == null)) return
             loading = true
-            testGeneration.incrementAndGet()
+            cancelRingtoneWork()
             selectedInput = null
             selectedOutput = null
             changed()
@@ -237,73 +257,156 @@ class MonitorSession(private val context: Context) {
         }
     }
 
-    private val tick: Runnable = object : Runnable {
-        override fun run() {
-            if (disposed) return
-            watchdog(SystemClock.uptimeMillis())
-            if (!operationsBlocked() && !polling && (running || previewKey != null)) {
-                polling = true
-                val token = generation
-                val selected = if (!running && visible && tab == 0) inputs[selectedInput] else null
-                val now = SystemClock.uptimeMillis()
-                val readStats = running && (actualStats.isEmpty() ||
-                    (visible && tab == 2 && now - statsUiAt >= 3000))
-                val endpoints = ArrayList<Channel>()
-                if (readStats) {
-                    // Only open endpoints belonging to complete routes need statistics.
-                    for (row in model.rows) if (row.complete()) {
-                        inputs[row.input]?.let { endpoints.add(it) }
-                        outputs[row.output]?.let { endpoints.add(it) }
-                    }
+    private val appOpsManager by lazy { context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager }
+    private val appOpsListener = AppOpsManager.OnOpChangedListener { op, packageName ->
+        if (op == AppOpsManager.OPSTR_RECORD_AUDIO && (packageName == null || packageName == context.packageName)) {
+            main.post { checkMicrophoneAccess() }
+        }
+    }
+
+    /** AppOps/foreground/permission-result events are checked on the serial control thread. */
+    fun checkMicrophoneAccess() {
+        if (disposed || (!running && !starting && previewKey == null)) return
+        if (permissionChecking) { permissionCheckPending = true; return }
+        permissionChecking = true
+        val token = generation
+        audio.execute {
+            val error = try { requireMicrophone(); null } catch (e: Exception) { e.toString() }
+            main.post {
+                permissionChecking = false
+                if (!disposed && token == generation && error != null) stop(error, false)
+                if (permissionCheckPending) {
+                    permissionCheckPending = false
+                    checkMicrophoneAccess()
                 }
+            }
+        }
+    }
+
+    private fun onNativeEvent(event: NativeAudio.Event) {
+        if (disposed || event.sessionId != NativeAudio.currentSessionId) return
+        if (!running && !starting && previewKey == null && !testing) return
+        if (event.error.isNotEmpty()) {
+            stop(event.error, false)
+        } else if (event.settingsChanged && (running || starting)) {
+            pendingSettings = true
+            if (!operationsBlocked()) readStreamSnapshots(telemetry = false)
+        }
+    }
+
+    private fun readStreamSnapshots(telemetry: Boolean) {
+        if (disposed || !running || operationsBlocked()) return
+        if (statsReading) { pendingSettings = true; return }
+        statsReading = true
+        pendingSettings = false
+        val token = generation
+        val id = NativeAudio.currentSessionId
+        val endpoints = model.rows.filter { it.complete() }.flatMap {
+            listOfNotNull(inputs[it.input], outputs[it.output])
+        }.distinctBy { it.deviceKey }
+        val previous = _endpointSnapshots.value
+        audio.execute {
+            val snapshots = LinkedHashMap<String, NativeAudio.EndpointSnapshot>()
+            var error: String? = null
+            try {
+                for (c in endpoints) {
+                    val old = previous[c.deviceKey]?.takeIf { it.sessionId == id }
+                    val snapshot = NativeAudio.EndpointSnapshot(
+                        id,
+                        old?.config ?: NativeAudio.endpointPart(c.device.id, c.input, 0),
+                        NativeAudio.endpointPart(c.device.id, c.input, 1),
+                        if (telemetry || old == null) NativeAudio.endpointPart(c.device.id, c.input, 2) else old.telemetry,
+                    )
+                    snapshots[c.deviceKey] = if (old != null && snapshot.copy(revision = old.revision) == old) old
+                        else snapshot.copy(revision = (old?.revision ?: 0) + 1)
+                }
+            } catch (e: Exception) { error = e.toString() }
+              catch (e: LinkageError) { error = e.toString() }
+            main.post {
+                statsReading = false
+                if (disposed || !running) return@post
+                if (token != generation || id != NativeAudio.currentSessionId) {
+                    if (pendingSettings || _endpointSnapshots.value.isEmpty()) readStreamSnapshots(telemetry = false)
+                    return@post
+                }
+                if (error != null) { stop(error, false); return@post }
+                _endpointSnapshots.value = snapshots
+                _streamStats.value = snapshots.mapValues { it.value.display() }
+                if (pendingSettings) readStreamSnapshots(telemetry = false)
+            }
+        }
+    }
+
+    private val spectrumSample = object : Runnable {
+        override fun run() {
+            if (disposed || !visible || tab != 0 || running || previewKey == null) return
+            val selected = inputs[selectedInput]
+            if (!operationsBlocked() && !spectrumReading && selected != null) {
+                spectrumReading = true
+                val token = generation
+                val selection = inputSelectionToken
                 audio.execute {
-                    var error = ""
-                    var bins = FloatArray(0)
-                    val stats = HashMap<String, String>()
-                    try {
-                        // AppOps is a synchronous Binder call: never poll it on the UI thread.
-                        requireMicrophone()
-                        error = NativeAudio.pollError()
-                        if (error.isEmpty()) {
-                            val seen = HashSet<String>()
-                            for (c in endpoints) {
-                                if (seen.add(c.deviceKey)) {
-                                    stats[c.deviceKey] = NativeAudio.endpointStats(c.device.id, c.input)
-                                }
-                            }
-                            if (selected != null) bins = NativeAudio.spectrum(selected.device.id, selected.index)
-                        }
-                    } catch (e: Exception) {
-                        error = e.toString()
-                    } catch (e: LinkageError) {
-                        error = e.toString()
-                    }
-                    val e = error
-                    val b = bins
+                    var error: String? = null
+                    val bins = try { NativeAudio.spectrum(selected.device.id, selected.index) }
+                        catch (e: Exception) { error = e.toString(); FloatArray(0) }
+                        catch (e: LinkageError) { error = e.toString(); FloatArray(0) }
                     main.post {
-                        polling = false
-                        if (disposed || token != generation) return@post
-                        if (e.isNotEmpty()) {
-                            stop(e, false)
-                            return@post
-                        }
-                        if (selected != null) _spectrum.value = b
-                        if (readStats && running && (actualStats.isEmpty() || (visible && tab == 2))) {
-                            statsUiAt = now
-                            // Telemetry has a separate immutable stream. It must not
-                            // recompose navigation, device controls or service state.
-                            _streamStats.value = stats
-                        }
+                        spectrumReading = false
+                        if (disposed || token != generation || selection != inputSelectionToken) return@post
+                        if (error != null) stop(error, false) else _spectrum.value = bins
                     }
                 }
             }
-            scheduleTick()
+            main.postDelayed(this, 150)
         }
     }
+
+    private val telemetrySample = object : Runnable {
+        override fun run() {
+            if (disposed || !running || !visible || tab != 2) return
+            readStreamSnapshots(telemetry = true)
+            main.postDelayed(this, 3000)
+        }
+    }
+
+    private val healthWatchdog = object : Runnable {
+        override fun run() {
+            if (disposed || (!running && previewKey == null)) return
+            if (!operationsBlocked() && !healthReading) {
+                healthReading = true
+                val token = generation
+                audio.execute {
+                    var error: String? = null
+                    try {
+                        NativeAudio.checkHealth()
+                        // Explicit compatibility fallback only if callback registration failed.
+                        if (!appOpsWatching) requireMicrophone()
+                    } catch (e: Exception) { error = e.toString() }
+                      catch (e: LinkageError) { error = e.toString() }
+                    main.post {
+                        healthReading = false
+                        if (!disposed && token == generation && error != null) stop(error, false)
+                    }
+                }
+            }
+            main.postDelayed(this, 1000)
+        }
+    }
+    private val operationDeadline = Runnable { watchdog(SystemClock.uptimeMillis()); scheduleOperationDeadline() }
 
     // Runs last: every property above (including the state flows) is initialised.
     init {
         val manager = audioManager
+        NativeAudio.eventListener = { event -> main.post { onNativeEvent(event) } }
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                appOpsManager.startWatchingMode(AppOpsManager.OPSTR_RECORD_AUDIO, context.packageName,
+                    AppOpsManager.WATCH_FOREGROUND_CHANGES, appOpsListener)
+            } else {
+                appOpsManager.startWatchingMode(AppOpsManager.OPSTR_RECORD_AUDIO, context.packageName, appOpsListener)
+            }
+            appOpsWatching = true
+        } catch (e: RuntimeException) { postError(e.toString()) }
         try {
             manager.registerAudioDeviceCallback(deviceCallback, main)
             manager.registerAudioRecordingCallback(recordingCallback, main)
@@ -314,7 +417,7 @@ class MonitorSession(private val context: Context) {
             postError(NativeAudio.loadError!!)
         } else {
             refresh()
-            scheduleTick()
+            scheduleTimers()
         }
     }
 
@@ -618,12 +721,13 @@ class MonitorSession(private val context: Context) {
         testing = false
         busy = true
         busySince = SystemClock.uptimeMillis()
-        testGeneration.incrementAndGet()
+        cancelRingtoneWork()
         selectedInput = null
         selectedOutput = null
         previewKey = null
         pendingFloatingMessage = null
         _streamStats.value = emptyMap()
+        _endpointSnapshots.value = emptyMap()
         status = "正在结束测试并准备转发…"
         val token = ++generation
         changed()
@@ -674,7 +778,7 @@ class MonitorSession(private val context: Context) {
             if (model.validCount() == 0) {
                 throw IllegalStateException("请先选择至少一对有效输入与输出通道")
             }
-            testGeneration.incrementAndGet()
+            cancelRingtoneWork()
             val spec = ArrayList<Int>()
             for (r in model.rows) {
                 if (!r.complete()) continue
@@ -685,6 +789,7 @@ class MonitorSession(private val context: Context) {
             busySince = SystemClock.uptimeMillis()
             previewKey = null
             _streamStats.value = emptyMap()
+            _endpointSnapshots.value = emptyMap()
             status = "正在打开所选音频设备…"
             changed()
             val token = ++generation
@@ -753,7 +858,7 @@ class MonitorSession(private val context: Context) {
             rejectChannel(outputTest)
         }
         generation++
-        testGeneration.incrementAndGet()
+        cancelRingtoneWork()
         running = false
         starting = false
         testing = false
@@ -764,6 +869,7 @@ class MonitorSession(private val context: Context) {
         busy = true
         busySince = SystemClock.uptimeMillis()
         _streamStats.value = emptyMap()
+        _endpointSnapshots.value = emptyMap()
         changed()
         // Keyed on stopOperation, not generation: only a newer stop() supersedes
         // this cleanup, and that newer stop owns the same reset — so busy can
@@ -834,6 +940,12 @@ class MonitorSession(private val context: Context) {
         } catch (e: RuntimeException) {
             android.util.Log.e("Monitor", e.toString())
         }
+        if (appOpsWatching) {
+            try { appOpsManager.stopWatchingMode(appOpsListener) }
+            catch (e: RuntimeException) { android.util.Log.e("Monitor", e.toString()) }
+            appOpsWatching = false
+        }
+        NativeAudio.eventListener = null
         listener = null
         audio.shutdown()
         test.shutdown()
@@ -895,7 +1007,7 @@ class MonitorSession(private val context: Context) {
 
     fun parameterChanged(channel: Channel) {
         if (forwardingLocked()) return
-        testGeneration.incrementAndGet()
+        cancelRingtoneWork()
         previewKey = null
         changed()
         updatePreview()
@@ -935,7 +1047,7 @@ class MonitorSession(private val context: Context) {
 
     fun selectOutput(key: String?) {
         if (disposed || outputSelectionLockedPublic || (key != null && key !in outputs)) return
-        testGeneration.incrementAndGet()
+        cancelRingtoneWork()
         ringtoneRequested = false
         selectedOutput = if (key == selectedOutput) null else key
         if (ringtoneKey != null) {
@@ -952,12 +1064,12 @@ class MonitorSession(private val context: Context) {
     fun stopOutputTestAndDeselect() {
         if (disposed || running || starting) return
         ringtoneRequested = false
-        testGeneration.incrementAndGet()
+        cancelRingtoneWork()
         selectedOutput = null
         if (ringtoneKey != null) {
             testing = false
             busySince = SystemClock.uptimeMillis()
-            // The worker observes cancellation within its next short write/poll,
+            // Cancellation wakes the codec/playback/backpressure waiters;
             // releases every resource, then restores the pre-test UI state.
         }
         changed()
@@ -972,7 +1084,7 @@ class MonitorSession(private val context: Context) {
         if (ringtoneKey != null) return
         ringtoneKey = channel.key
         val s = config(channel).copyOf()
-        val token = testGeneration.incrementAndGet()
+        val token = cancelRingtoneWork()
         val operation = ++generation
         previewKey = null
         busy = true
@@ -993,10 +1105,12 @@ class MonitorSession(private val context: Context) {
             test.execute {
                 var error = ""
                 var missingRingtone = false
+                var missingNotice = ""
                 try {
                     RingtoneTest.play(context, channel.device, channel.total, channel.index, s, testGeneration, token)
                 } catch (e: RingtoneTest.MissingRingtone) {
                     missingRingtone = true
+                    missingNotice = e.message.orEmpty()
                 } catch (e: Exception) {
                     error = e.toString()
                 } catch (e: LinkageError) {
@@ -1020,7 +1134,7 @@ class MonitorSession(private val context: Context) {
                     }
                     changed()
                     if (testGeneration.get() == token && missing) {
-                        floatingMessage("系统没有可播放的默认电话铃声")
+                        floatingMessage(missingNotice.ifEmpty { "系统没有可播放的默认电话铃声" })
                     }
                     if (ringtoneRequested && selectedOutput != null) ringtone()
                     drainRefresh()
@@ -1029,20 +1143,35 @@ class MonitorSession(private val context: Context) {
         }
     }
 
-    private fun scheduleTick() {
-        main.removeCallbacks(tick)
+    private fun scheduleTimers() {
+        main.removeCallbacks(spectrumSample)
+        main.removeCallbacks(telemetrySample)
+        main.removeCallbacks(healthWatchdog)
         if (disposed || NativeAudio.loadError != null) return
-        val interval = when {
-            running || previewKey != null -> 150L
-            busy || previewOpening || scanInFlight -> 1000L
-            else -> return // No idle timer: mutations restart polling when required.
+        if (running || previewKey != null) main.postDelayed(healthWatchdog, 1000)
+        if (!running && previewKey != null && visible && tab == 0) main.postDelayed(spectrumSample, 150)
+        if (running) {
+            if (_endpointSnapshots.value.isEmpty() || pendingSettings) readStreamSnapshots(telemetry = false)
+            if (visible && tab == 2) main.postDelayed(telemetrySample, 3000)
         }
-        main.postDelayed(tick, interval)
+        scheduleOperationDeadline()
+    }
+
+    private fun scheduleOperationDeadline() {
+        main.removeCallbacks(operationDeadline)
+        if (disposed) return
+        val deadlines = ArrayList<Long>()
+        if (previewOpening && timeoutReported["audio preview open"] != previewOpeningSince)
+            deadlines.add(previewOpeningSince + 8001)
+        if (busy && !testing && timeoutReported["audio preparation/cleanup"] != busySince)
+            deadlines.add(busySince + 20001)
+        if (scanInFlight && timeoutReported["audio device discovery"] != scanSince)
+            deadlines.add(scanSince + 60001)
+        deadlines.minOrNull()?.let { main.postDelayed(operationDeadline, (it - SystemClock.uptimeMillis()).coerceAtLeast(1)) }
     }
 
     // A slow/hung driver is never permission to unlock while it owns resources.
     // Report once per operation and keep the same executor/lock until completion.
-    private val timeoutReported = HashMap<String, Long>()
     private fun watchdog(now: Long) {
         fun report(kind: String, active: Boolean, since: Long, timeout: Long) {
             if (active && now - since > timeout && timeoutReported[kind] != since) {
@@ -1058,14 +1187,14 @@ class MonitorSession(private val context: Context) {
     fun onVisible(visible: Boolean) {
         this.visible = visible
         visibilityGeneration++
-        if (!visible) dismissInputPreview(selectedInput)
+        if (!visible) dismissInputPreview(selectedInput) else checkMicrophoneAccess()
         changed()
     }
 
     private fun changed() {
         _version.value = _version.value + 1
         listener?.onSessionChanged()
-        scheduleTick()
+        scheduleTimers()
     }
 
     interface ForwardingOwner {

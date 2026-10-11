@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity(), MonitorSession.Listener {
                 else if (session.startingPublic) session.stop(error, false)
                 else session.errorNotice(error)
             }
+            session.checkMicrophoneAccess()
             session.refresh()
         }
 
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity(), MonitorSession.Listener {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             val done = discoveryAction
             discoveryAction = null
+            session.checkMicrophoneAccess()
             session.permissionWaitingPublic = false
             done?.invoke() ?: session.refresh()
         }

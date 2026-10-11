@@ -10,6 +10,7 @@ struct InputGuard {
     int step = 1;
     int limit = 0;
     int previous = 0;
+    int learnedFloor = 0; // failed lower guard is not retried until the stream reopens
     bool primed = false;
     bool received = false;
     bool probing = false;
@@ -27,9 +28,10 @@ struct InputGuard {
         limit = std::max(0, std::min(burst * 4, capacity - callbackFrames));
         frames = std::min(frames, limit);
         previous = std::min(previous, limit);
-        if (frames > 0 && !probing && stable >= static_cast<uint64_t>(rate) * cooldownSeconds) {
+        learnedFloor = std::min(learnedFloor, limit);
+        if (frames > learnedFloor && !probing && stable >= static_cast<uint64_t>(rate) * cooldownSeconds) {
             previous = frames;
-            frames = std::max(0, frames - step);
+            frames = std::max(learnedFloor, frames - step);
             probing = true;
             trial = stable = 0;
             ++probes;
@@ -59,6 +61,7 @@ struct InputGuard {
                 frames = std::min(limit, probing ? previous : isolated ? frames : frames + step);
                 if (probing) {
                     ++failedProbes;
+                    learnedFloor = std::max(learnedFloor, previous);
                     cooldownSeconds = std::min(120, std::max(30, cooldownSeconds * 2));
                 }
                 ++reprimes;
@@ -93,6 +96,7 @@ struct OutputProbe {
             stable = 0;
             if (rollback && xrun) {
                 const int restore = std::max(rollback, size);
+                floor = std::max(floor, restore); // retain the observed working lower bound
                 rollback = 0;
                 ++failedReductions;
                 cooldownSeconds = std::min(120, std::max(30, cooldownSeconds * 2));

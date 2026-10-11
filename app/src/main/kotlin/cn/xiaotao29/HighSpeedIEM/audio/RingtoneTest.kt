@@ -17,8 +17,17 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /** Streams the complete default phone ringtone into the selected output channel. */
 object RingtoneTest {
+    private sealed interface DecodeEvent {
+        data class Input(val index: Int) : DecodeEvent
+        data class Output(val index: Int, val info: MediaCodec.BufferInfo) : DecodeEvent
+        data class Format(val format: MediaFormat) : DecodeEvent
+        data class Failure(val error: Exception) : DecodeEvent
+        data object Cancel : DecodeEvent
+    }
+    @Volatile private var cancellation: android.os.CancellationSignal? = null
+    fun cancel() { cancellation?.cancel() }
     // Missing media is a completed test with a notice, not a failed channel.
-    class MissingRingtone(cause: Throwable? = null) : IOException("系统没有可播放的默认电话铃声", cause)
+    class MissingRingtone(cause: Throwable? = null) : IOException("系统没有可播放的默认电话铃声" + (cause?.let { "\n$it" } ?: ""), cause)
 
     fun play(
         context: Context,
@@ -33,12 +42,25 @@ object RingtoneTest {
         if (cancelled()) return
         val uri = RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
             ?: throw MissingRingtone()
-        val extractor = MediaExtractor()
+        val events = java.util.concurrent.LinkedBlockingQueue<DecodeEvent>()
+        val space = java.util.concurrent.Semaphore(0)
+        val drained = java.util.concurrent.CountDownLatch(1)
+        val signal = android.os.CancellationSignal()
+        signal.setOnCancelListener { events.offer(DecodeEvent.Cancel); space.release(); drained.countDown() }
+        cancellation = signal
+        if (cancelled()) signal.cancel()
+        val callbacks = android.os.HandlerThread("IEM-media-events")
+        val routingError = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        var routingListener: android.media.AudioRouting.OnRoutingChangedListener? = null
+        var extractorOwner: MediaExtractor? = null
         var codec: MediaCodec? = null
         var track: AudioTrack? = null
         var nativeOutput = false
         var position = 0L
         try {
+            val extractor = MediaExtractor().also { extractorOwner = it }
+            callbacks.start()
+            val callbackHandler = android.os.Handler(callbacks.looper)
             try {
                 extractor.setDataSource(context, uri, null)
             } catch (e: IOException) {
@@ -53,6 +75,21 @@ object RingtoneTest {
             val format = extractor.getTrackFormat(index)
             val decoder = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
             codec = decoder
+            decoder.setCallback(object : MediaCodec.Callback() {
+                override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                    events.offer(DecodeEvent.Input(index))
+                }
+                override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                    val copy = MediaCodec.BufferInfo().apply { set(info.offset, info.size, info.presentationTimeUs, info.flags) }
+                    events.offer(DecodeEvent.Output(index, copy))
+                }
+                override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+                    events.offer(DecodeEvent.Format(format))
+                }
+                override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
+                    events.offer(DecodeEvent.Failure(error))
+                }
+            }, callbackHandler)
             decoder.configure(format, null, null, 0)
             decoder.start()
             var rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
@@ -113,6 +150,26 @@ object RingtoneTest {
                         .setSpeed(ratio).setPitch(ratio)
                         .setAudioFallbackMode(PlaybackParams.AUDIO_FALLBACK_MODE_FAIL)
                 }
+                val routeListener = android.media.AudioRouting.OnRoutingChangedListener { routing ->
+                    val routed = routing.routedDevice
+                    if (routed != null && routed.id != device.id) {
+                        val error = "AudioTrack routing: requested deviceId=${device.id}, returned deviceId=${routed.id}"
+                        routingError.set(error)
+                        events.offer(DecodeEvent.Failure(IOException(error)))
+                        space.release()
+                        drained.countDown()
+                    }
+                }
+                routingListener = routeListener
+                output.addOnRoutingChangedListener(routeListener, callbackHandler)
+                output.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                    override fun onMarkerReached(track: AudioTrack) { drained.countDown() }
+                    override fun onPeriodicNotification(track: AudioTrack) {
+                        if (space.availablePermits() == 0) space.release()
+                    }
+                }, callbackHandler)
+                val period = output.setPositionNotificationPeriod(maxOf(1, output.sampleRate / 50))
+                if (period != AudioTrack.SUCCESS) throw IOException("AudioTrack.setPositionNotificationPeriod()=$period")
                 if (!cancelled()) output.play()
                 android.util.Log.i("RingtoneTest", "AudioTrack actual rate=${output.sampleRate} encoding=${output.audioFormat} channelCount=${output.channelCount}")
             }
@@ -142,14 +199,15 @@ object RingtoneTest {
                     if (nativeOutput) {
                         var offset = 0
                         while (offset < frames && !cancelled()) {
-                            val error = NativeAudio.pollError()
+                            val error = NativeAudio.currentError
                             if (error.isNotEmpty()) throw IOException(error)
                             val written = NativeAudio.writeTest(device.id, channel, mono, offset, frames - offset)
                             if (written < 0) throw IOException("AAudio writeTest=$written")
                             offset += written
                             if (written > 0) progressAt = System.nanoTime() else {
                                 if (System.nanoTime() - progressAt > STALL_TIMEOUT_NS) throw IOException("AAudio output timeout")
-                                Thread.sleep(5)
+                                val waitError = NativeAudio.awaitTestSpace(device.id)
+                                if (waitError.isNotEmpty() && !cancelled()) throw IOException(waitError)
                             }
                         }
                     } else {
@@ -160,81 +218,82 @@ object RingtoneTest {
                             if (written < 0) throw IOException("AudioTrack.write()=$written")
                             if (written > 0) progressAt = System.nanoTime() else {
                                 if (System.nanoTime() - progressAt > STALL_TIMEOUT_NS) throw IOException("AudioTrack.write timeout")
-                                Thread.sleep(5)
+                                if (!space.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS) && !cancelled()) {
+                                    throw IOException("AudioTrack.write timeout")
+                                }
                             }
-                            val routed = output.routedDevice
-                            if (routed != null && routed.id != device.id) {
-                                throw IOException("AudioTrack routing: requested deviceId=${device.id}, returned deviceId=${routed.id}")
-                            }
+                            routingError.get()?.let { throw IOException(it) }
                         }
                     }
                     position += frames
                 }
             }
 
-            val info = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
-            var decodeProgressAt = System.nanoTime()
             while (!outputDone && !cancelled()) {
-                if (System.nanoTime() - decodeProgressAt > STALL_TIMEOUT_NS) throw IOException("MediaCodec dequeue timeout")
-                if (!inputDone) {
-                    val inIndex = decoder.dequeueInputBuffer(10000)
-                    if (inIndex >= 0) {
-                        val bytes = extractor.readSampleData(decoder.getInputBuffer(inIndex)!!, 0)
+                when (val event = events.poll(5, java.util.concurrent.TimeUnit.SECONDS)
+                    ?: throw IOException("MediaCodec callback timeout")) {
+                    is DecodeEvent.Input -> if (!inputDone) {
+                        val bytes = extractor.readSampleData(decoder.getInputBuffer(event.index)!!, 0)
                         if (bytes < 0) {
-                            decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            decoder.queueInputBuffer(event.index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            decoder.queueInputBuffer(inIndex, 0, bytes, extractor.sampleTime, 0)
+                            decoder.queueInputBuffer(event.index, 0, bytes, extractor.sampleTime, 0)
                             extractor.advance()
                         }
-                        decodeProgressAt = System.nanoTime()
                     }
-                }
-                val outIndex = decoder.dequeueOutputBuffer(info, 10000)
-                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val decodedFormat = decoder.outputFormat
-                    rate = decodedFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    channels = decodedFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                    if (decodedFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
-                        encoding = decodedFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
-                    }
-                    decodeProgressAt = System.nanoTime()
-                } else if (outIndex >= 0) {
-                    try {
-                        if (info.size > 0) {
-                            val buffer = decoder.getOutputBuffer(outIndex)!!
-                            buffer.position(info.offset)
-                            buffer.limit(info.offset + info.size)
-                            writePcm(buffer)
+                    is DecodeEvent.Format -> {
+                        rate = event.format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        channels = event.format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        if (event.format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                            encoding = event.format.getInteger(MediaFormat.KEY_PCM_ENCODING)
                         }
-                        outputDone = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                    } finally {
-                        decoder.releaseOutputBuffer(outIndex, false)
                     }
-                    // Playback backpressure is normal progress, regardless of ringtone length.
-                    decodeProgressAt = System.nanoTime()
+                    is DecodeEvent.Output -> {
+                        try {
+                            if (event.info.size > 0) {
+                                val buffer = decoder.getOutputBuffer(event.index)!!
+                                buffer.position(event.info.offset)
+                                buffer.limit(event.info.offset + event.info.size)
+                                writePcm(buffer)
+                            }
+                            outputDone = (event.info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                        } finally { decoder.releaseOutputBuffer(event.index, false) }
+                    }
+                    is DecodeEvent.Failure -> throw event.error
+                    DecodeEvent.Cancel -> return
                 }
             }
             if (cancelled()) return
             if (position == 0L) throw MissingRingtone()
-            // End of decoding only means the last frames were queued. Wait for playback.
-            var previousPending = Long.MAX_VALUE
-            var drainProgressAt = System.nanoTime()
-            while (!cancelled()) {
-                val pending = if (nativeOutput) {
-                    val error = NativeAudio.pollError()
-                    if (error.isNotEmpty()) throw IOException(error)
-                    NativeAudio.testPending(device.id).toLong()
-                } else {
-                    position - (track!!.playbackHeadPosition.toLong() and 0xffffffffL)
+            // AudioTrack's marker is a native playback event, including its final tail.
+            if (!nativeOutput) {
+                val output = track!!
+                if (position > Int.MAX_VALUE) throw IOException("AudioTrack marker frame exceeds Int.MAX_VALUE: $position")
+                val result = output.setNotificationMarkerPosition(position.toInt())
+                if (result != AudioTrack.SUCCESS) throw IOException("AudioTrack.setNotificationMarkerPosition()=$result")
+                if ((output.playbackHeadPosition.toLong() and 0xffffffffL) < position &&
+                    !drained.await(5, java.util.concurrent.TimeUnit.SECONDS) && !cancelled()) {
+                    throw IOException("Ringtone playback drain timeout")
                 }
-                if (pending <= 0) break
-                if (pending < previousPending) drainProgressAt = System.nanoTime()
-                else if (System.nanoTime() - drainProgressAt > STALL_TIMEOUT_NS) throw IOException("Ringtone playback drain timeout")
-                previousPending = pending
-                Thread.sleep(10)
+                routingError.get()?.let { throw IOException(it) }
+            } else {
+                // AAudio has no played-frame marker callback. Retain bounded tail
+                // sampling on this worker; never wake JNI for every audio block.
+                var previousPending = Long.MAX_VALUE
+                var progressAt = System.nanoTime()
+                while (!cancelled()) {
+                    val error = NativeAudio.currentError
+                    if (error.isNotEmpty()) throw IOException(error)
+                    val pending = NativeAudio.testPending(device.id).toLong()
+                    if (pending <= 0) break
+                    if (pending < previousPending) progressAt = System.nanoTime()
+                    else if (System.nanoTime() - progressAt > STALL_TIMEOUT_NS) throw IOException("Ringtone playback drain timeout")
+                    previousPending = pending
+                    Thread.sleep(20)
+                }
             }
             android.util.Log.i("RingtoneTest", "${if (cancelled()) "cancelled" else "completed"} frames=$position rate=$rate")
         } finally {
@@ -244,7 +303,12 @@ object RingtoneTest {
             } finally {
                 try {
                     track?.let { output ->
-                        try { output.pause(); output.flush() } finally { output.release() }
+                        try {
+                            routingListener?.let { output.removeOnRoutingChangedListener(it) }
+                            output.setPlaybackPositionUpdateListener(null)
+                            output.pause()
+                            output.flush()
+                        } finally { output.release() }
                     }
                 } finally {
                     try {
@@ -252,7 +316,13 @@ object RingtoneTest {
                             try { decoder.stop() } finally { decoder.release() }
                         }
                     } finally {
-                        extractor.release()
+                        try { extractorOwner?.release() } finally {
+                            if (cancellation === signal) cancellation = null
+                            signal.setOnCancelListener(null)
+                            callbacks.quitSafely()
+                            callbacks.join(5000)
+                            check(!callbacks.isAlive) { "java.util.concurrent.TimeoutException: media event dispatcher exit" }
+                        }
                         android.util.Log.i("RingtoneTest", "resources released")
                     }
                 }

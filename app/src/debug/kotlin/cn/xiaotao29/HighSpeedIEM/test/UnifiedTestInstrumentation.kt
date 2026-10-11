@@ -72,6 +72,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
             val scenarios = linkedMapOf<String, () -> Pair<Boolean, String>>(
                 "native-selftest" to ::scenarioNativeSelfTest,
+                "event-driven" to { true to EventDrivenAudit(this, session()).run() },
+                "animation-scale-phone" to { true to AnimationScaleAudit(this, session()).run() },
                 "performance-flow" to { true to PerformanceAudit(this, device, session()).run() },
                 "audio-latency" to ::scenarioAudioLatency,
                 "forward-background" to ::scenarioForwardBackground,
@@ -142,7 +144,14 @@ class UnifiedTestInstrumentation : Instrumentation() {
     private fun ensureForeground(): Boolean {
         val s = session()
         if (s.visible) return true
+        val discoveryGate = java.util.concurrent.CountDownLatch(1)
         return try {
+            // Hold only the debug test's serial executor until the real loading
+            // overlay is observed. Fast device probes can otherwise finish
+            // between accessibility snapshots and make this check unreliable.
+            val audioField = MonitorSession::class.java.getDeclaredField("audio").apply { isAccessible = true }
+            val executor = audioField.get(s) as java.util.concurrent.ExecutorService
+            executor.execute { discoveryGate.await(30, java.util.concurrent.TimeUnit.SECONDS) }
             val intent = Intent(Intent.ACTION_MAIN)
                 .setClassName(targetContext, MainActivity::class.java.name)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -156,11 +165,13 @@ class UnifiedTestInstrumentation : Instrumentation() {
                     try {
                         if (dumpTextsGuarded(6000).any { it.contains("正在加载输入输出通道…") }) {
                             overlaySeen.set(true)
+                            discoveryGate.countDown()
                         }
                     } catch (e: Exception) {
                         // retry until the deadline
                     }
                 }
+                discoveryGate.countDown()
             }
             watcher.isDaemon = true
             watcher.start()
@@ -171,6 +182,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
         } catch (e: Exception) {
             publish("=== activity launch failed: $e")
             false
+        } finally {
+            discoveryGate.countDown()
         }
     }
 
@@ -580,9 +593,15 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 if (card != null && header != null) {
                     try {
                         if (!s.outputSelectionLockedPublic && header.visibleBounds.height() > 0) {
+                            val before = s.outputSelectionToken
                             device.click(card.visibleBounds.centerX(), header.visibleBounds.centerY())
                             device.waitForIdle(1000)
-                            return
+                            // Destination entry/scroll restoration can move a
+                            // card after the accessibility lookup. Confirm that
+                            // this tap reached selection before declaring success.
+                            if (waitUntil(700) { s.outputSelectionToken != before }) return
+                            android.util.Log.i("UnifiedTest", "ringtone tap missed; retry fresh bounds for ${output.key}")
+                            return@repeat
                         }
                     } catch (_: androidx.test.uiautomator.StaleObjectException) {
                         SystemClock.sleep(100)

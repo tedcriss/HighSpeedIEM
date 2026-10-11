@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.2`（versionCode 23），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.3`（versionCode 24），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -18,7 +18,7 @@
 # Kotlin 插件会重建空的 .kotlin/ 目录，可随时删除，不影响构建。
 ```
 
-Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.2.apk` 命名。
+Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.3.apk` 命名。
 
 Phone 平台统一测试（instrumentation，单一入口，场景可筛选）：
 
@@ -31,10 +31,10 @@ adb shell am instrument -w -e scenarios native-selftest,launch-tabs,device-valid
     cn.xiaotao29.HighSpeedIEM/.test.UnifiedTestInstrumentation
 ```
 
-场景：`native-selftest, audio-latency, forward-background, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
+场景：`native-selftest, event-driven, audio-latency, forward-background, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
 route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, device-lifecycle, rotation, compact-mode, compact-routes, compact-binding-phone`。
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
-动效专项：`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
+动效专项：`animation-scale-phone` 验证系统动画开关事件下原生文本滚动的停止、复位和恢复；`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
 布局专项：`adaptive-layout`，同一手机上的横竖屏、1/2/3 列、150%/200% 字体、600px 模式切换与滚动锚点恢复。
 性能诊断：`performance-flow`，记录空闲、18 次预热切页、任务页转发和输入页转发的 FrameMetrics、主线程 CPU 与全局状态更新次数；Debug 数值只用于机制对比，实际切页帧耗时另用正式包测量。3.1 的结果和限制见 [性能调优验收-3.1.md](性能调优验收-3.1.md)。
 浮层专项：`tooltip-compatibility`，测量真实频谱、输入/输出能力提示与整张卡片的交叠面积，覆盖横竖屏、1/2/3 列与 200% 字体；检查安全边界、正文滚动、固定关闭键及嵌套点击。
@@ -55,9 +55,9 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   回调内无分配、无锁、无 JNI。输入输出由系统协商，应用层不做重采样：
   两端实际采样率不一致时关闭全部流并返回 `ErrorInvalidRate`。转发输出缓冲尝试从
   1 个 burst 起步，由唯一的 `LatencyTuner` 根据 xrun 增加；连续 15 秒稳定后每次减少一个
-  burst，失败延长重试冷却，不直接重置到最小值。输入从零额外余量开始，部分读取的声音仍转发，
+  burst，失败事件记住本次开流的回退下限，不重复试探已失败值。输入从零额外余量开始，部分读取的声音仍转发，
   缺少的尾部补零；反复短读按较大系统 burst 的四分之一增加余量，上限为四个 burst 与
-  实际容量余量的较小值。稳定 10 秒后逐步降低，可降到零，试验失败恢复原值并冷却 30/60/120 秒。
+  实际容量余量的较小值。稳定 10 秒后逐步降低，可降到零；失败后恢复并记住当前流的下限，重新开流后重新学习。
   过期音频有界丢弃；跨输出队列各自独立使用同样的细粒度恢复与修剪，不额外保留一整个输入 burst。
   瞬时队列满仍计入丢帧，不把调度卡顿当作致命设备错误。铃声和独立探测保持两个 burst。
   JNI 开流参数提供原始 3.1、仅降低输入、同时降低输入输出三种对照策略，生产默认最后一种。
@@ -70,15 +70,20 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 - `audio/MonitorSession.kt`：会话状态机（设备枚举、探测、参数、转发表、后台错误）。
   只存在于内存，不持久化；Activity 重建时由 `MonitorApplication` 持有并复用。
   AppOps 权限检查、通信路由设置/清理在串行音频线程执行，完成清理前保持操作锁。
-  原生错误和频谱仍以 150ms 间隔检查；空闲时不运行计时器，长操作用 1s 看门狗。
-  转发开始读取一次设备统计快照，随后仅在前台任务页约每 3s 读取实际使用的端点。
-  统计通过独立不可变 StateFlow 发布，不再触发全局版本更新。
+  原生错误用 eventfd 唤醒 JNI 等待线程，按原生 sessionId 丢弃旧事件；停止时唤醒并等待线程退出。
+  AppOps 用原生变化监听，开流/权限结果/恢复前台仍核查权限；监听失败提示原文并保留低频兼容检查。
+  固定流配置开流后缓存，实际 buffer/guard/cushion/输出目标变化事件发布；计数仅前台任务页每 3s 采样。
+  独立频谱预览每 150ms 采样；无进展每 1s 检查；长操作按开始时间安排单次截止通知，空闲无定时器。
+  快照包含 sessionId/revision，使用独立不可变 StateFlow，不触发全局版本更新。
+  详见 [事件驱动设计](docs/event-driven.md) 和 [3.3 验收](事件驱动验收-3.3.md)。
 - `audio/DeviceValidator.kt`：输入和输出均只验证能否打开并关闭目标设备，不开始录音、
   不读取采样或检查静音。串行探测避免输入抢占，不为失败设备重复开流；
   能正常打开的实际通道默认启用，失败设备禁用但仍保留在列表并提示原始错误。
   结果按设备身份缓存，普通刷新保留未变化设备的验证结果、参数和手动启用状态。
 - `audio/RingtoneTest.kt`：系统默认铃声 → MediaExtractor/MediaCodec → AudioTrack
-  写入所选输出通道；独占测试走 AAudio 原生写路径。
+  写入所选输出通道；独占测试走 AAudio 原生写路径。解码采用 MediaCodec.Callback，
+  AudioTrack 用路由回调、播放进度通知与末帧 marker；AAudio 队列背压用按需 eventfd 唤醒。
+  取消信号主动唤醒等待，5s 无进展超时保护；仅 AAudio 硬件尾部保留 20ms 有界采样。
 - `service/ForwardingService.kt`：microphone + mediaPlayback 前台服务 + CPU 部分唤醒锁。
   从最近任务清除应用先停止转发并释放资源；进程被系统杀死后不自动重启。
 - `ui/`：Jetpack Compose + Material 3。固定顶部 Small app bar 与底部三等分
@@ -114,7 +119,7 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 默认铃声为空、不可读取或无音轨时显示提示，并按自然结束处理；离开本页或 Activity 离开前台时取消播放和选中，
 保留启用，返回页面不恢复铃声。手动测试报错清除失败通道的选中与启用。
 提示条靠近底部导航栏，输出列表无需为角落按钮保留空间。
-铃声按解码缓冲逐段写入所选通道；解码结束后等待 AudioTrack 播放位置或 AAudio 设备缓冲实际耗尽，
+铃声按解码回调逐段写入所选通道；解码结束后等待 AudioTrack 末帧 marker 或 AAudio 设备缓冲实际耗尽，
 再释放输出、解码器和提取器。解码/写入/尾部排空仅检查连续无进度超时，正常长铃声不触发会话超时。
 `ringtone-test` 使用 24.25 秒默认铃声验证点击自动播放、自然结束取消选中、再次点击取消、单选切换、连续切换、
 待播放选择取消、切页与后台资源释放、缺失资源提示及再次播放；
@@ -131,7 +136,7 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 工具栏在任务页列表上方独立悬浮，尺寸按键组内容确定，与底部 Navigation bar 保持 12dp 间距，外侧露出列表。
 底层使用 LazyColumn，标题、状态和转发行均为列表项；列表底部留白按工具栏实测高度与间距计算，末行可完整滑到工具栏上方并操作。提示条也根据实测高度避让工具栏。
 准备、运行和停止清理期间列表禁止编辑。
-每行显示已打开流的实际参数（采样率、编码、声道、共享模式、burst、xrun 等），约每 3 秒更新。
+每行显示已打开流的实际参数：固定配置开流后发布，缓冲/余量变化事件更新；xrun 等计数在前台本页每 3 秒更新。
 
 **参数**：采样率、采样深度、录音预设默认自动由系统协商；同一设备多声道共享一组设置，
 只有通道 0 可改。独占默认关闭并需实际开流探测支持，不接受静默降级为共享。

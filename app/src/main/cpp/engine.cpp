@@ -2,6 +2,7 @@
 //
 // Design constraints:
 // - The audio callback performs no allocation, no locking, no JNI and no disk I/O.
+//   Errors/settings and a waiting ringtone writer use coalesced nonblocking eventfd wakes.
 // - Each physical device gets exactly one multi-channel stream; routes share it.
 // - Each input with one output device is read directly by that output callback.
 //   Only cross-output fanout uses SPSC rings, published/consumed once per block.
@@ -24,6 +25,11 @@
 #include <sstream>
 #include <thread>
 #include <vector>
+#include <sys/eventfd.h>
+#include <unistd.h>
+#include <cerrno>
+#include <system_error>
+#include <poll.h>
 
 namespace {
 
@@ -101,12 +107,53 @@ struct Route;
 
 // Error threads can outlive Engine::stop(). Never let them dereference Engine.
 struct EngineSignal {
+    inline static std::atomic<int64_t> nextId{0};
+    const int64_t id = ++nextId;
+    const int waitFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    const int spaceFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    std::atomic<bool> spaceWaiting{false}, testCancelled{false};
+    std::atomic<int> pending{2}; // error=1, settings=2
+    std::atomic<bool> closed{false};
     std::atomic<int> error{0};
     std::atomic<bool> active{false};
+    EngineSignal() {
+        if (waitFd < 0 || spaceFd < 0) {
+            const int saved = errno;
+            if (waitFd >= 0) ::close(waitFd);
+            if (spaceFd >= 0) ::close(spaceFd);
+            throw std::system_error(saved, std::generic_category(), "eventfd");
+        }
+    }
+    ~EngineSignal() { ::close(waitFd); ::close(spaceFd); }
+    void wakeSpace() {
+        if (spaceWaiting.exchange(false)) {
+            const uint64_t one = 1;
+            while (::write(spaceFd, &one, sizeof(one)) < 0 && errno == EINTR) {}
+        }
+    }
+    void notify(int flags) {
+        // One bounded kernel wake only on the transition to pending. No JNI,
+        // heap allocation or user-space lock on the audio thread.
+        if (pending.fetch_or(flags, std::memory_order_release) == 0) {
+            const uint64_t one = 1;
+            while (::write(waitFd, &one, sizeof(one)) < 0 && errno == EINTR) {}
+        }
+    }
+    void finish() {
+        if (!closed.exchange(true)) {
+            testCancelled.store(true);
+            wakeSpace();
+            const uint64_t one = 1;
+            while (::write(waitFd, &one, sizeof(one)) < 0 && errno == EINTR) {}
+        }
+    }
     void fail(oboe::Result result) {
         int expected = 0;
-        error.compare_exchange_strong(expected, static_cast<int>(result));
         active.store(false);
+        if (error.compare_exchange_strong(expected, static_cast<int>(result))) {
+            notify(1);
+            wakeSpace();
+        }
     }
 };
 
@@ -156,6 +203,16 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
     std::atomic<int> outputMinimum{0}, outputCooldown{15};
     std::atomic<uint32_t> outputReductions{0}, outputFailures{0};
     uint64_t lastFrames = 0;
+    std::string configSnapshot;
+    std::array<int, 4> publishedSettings{{-1, -1, -1, -1}}; // callback-owned
+    void publishSettings() {
+        const std::array<int, 4> current{{stream->getBufferSizeInFrames(),
+            guardFrames.load(), pullCushion.load(), outputMinimum.load()}};
+        if (current != publishedSettings) {
+            publishedSettings = current;
+            signal->notify(2);
+        }
+    }
     std::chrono::steady_clock::time_point lastProgress = std::chrono::steady_clock::now();
 
     Endpoint(Engine *e, std::shared_ptr<EngineSignal> state, int device, int channelCount, bool isInput)
@@ -177,6 +234,14 @@ struct Route {
     std::unique_ptr<Ring> ring;
     bool primed = false;
     std::atomic<int> cushion{0};
+    int publishedCushion = -1, publishedGuard = -1; // output callback only
+    bool settingsChanged() {
+        const int nextCushion = cushion.load(), nextGuard = guardFrames.load();
+        const bool changed = publishedCushion != nextCushion || publishedGuard != nextGuard;
+        publishedCushion = nextCushion;
+        publishedGuard = nextGuard;
+        return changed;
+    }
     std::atomic<uint64_t> underflows{0};
     uint64_t stableFrames = 0;
     bool minimumLatency = false;
@@ -228,6 +293,9 @@ struct Route {
 };
 
 struct Engine {
+#ifndef NDEBUG
+    bool freezeProgressForTest = false; // serial control thread only
+#endif
     // 0 = 3.1 baseline, 1 = zero input guard/two output bursts,
     // 2 = minimum latency: zero input guard/one output burst (default).
     int latencyMode = 2;
@@ -293,6 +361,7 @@ struct Engine {
 
     void stop() {
         active.store(false);
+        signal->finish();
         // Streams must be quiescent before callbacks and rings are destroyed.
         for (auto &e : endpoints) {
             if (e->stream) e->stream->stop(1000000000);
@@ -602,8 +671,10 @@ oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buff
         const auto gapsBefore = gaps.load(std::memory_order_relaxed);
         std::fill(samples, samples + numFrames * channels, 0.f);
         testRing.mix(samples, numFrames, channels, testChannel.load(std::memory_order_relaxed));
+        if (outputRoutes.empty()) signal->wakeSpace(); // only a waiting ringtone writer
         for (auto *in : pulledInputs) {
             const int count = in->pull(numFrames);
+            in->publishSettings();
             for (auto *r : in->inputRoutes) {
                 for (int f = 0; f < count; ++f) {
                     samples[f * channels + r->outChannel] += in->scratch[f * in->channels + r->inChannel];
@@ -655,6 +726,10 @@ oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buff
         }
         frames.fetch_add(numFrames, std::memory_order_relaxed);
     }
+    for (auto *r : outputRoutes) {
+        if (r->ring && r->settingsChanged()) signal->notify(2);
+    }
+    publishSettings();
     return signal->active.load() ? oboe::DataCallbackResult::Continue : oboe::DataCallbackResult::Stop;
 }
 
@@ -677,7 +752,7 @@ std::string stopError() {
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startConfigured(JNIEnv *env, jclass, jintArray spec, jint latencyMode) {
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startNative(JNIEnv *env, jclass, jintArray spec, jint latencyMode) {
     std::lock_guard<std::mutex> lock(controlMutex);
     try {
         engine.reset();
@@ -751,78 +826,183 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startConfigured(JNIEnv *env, jc
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_stop(JNIEnv *, jclass) {
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_stopNative(JNIEnv *, jclass) {
     std::lock_guard<std::mutex> lock(controlMutex);
     engine.reset();
 }
 
+
+namespace {
+void checkProgress() {
+    if (!engine || engine->error.load() || !engine->active.load()) return;
+    const auto now = std::chrono::steady_clock::now();
+    for (auto &e : engine->endpoints) {
+        auto frames = e->frames.load();
+#ifndef NDEBUG
+        if (engine->freezeProgressForTest) frames = e->lastFrames;
+#endif
+        if (frames != e->lastFrames) {
+            e->lastFrames = frames;
+            e->lastProgress = now;
+        } else if (now - e->lastProgress > std::chrono::seconds(2)) {
+            engine->fail(oboe::Result::ErrorTimeout);
+            break;
+        }
+    }
+}
+
+// Fixed getters are evaluated once per opened endpoint. Runtime settings and
+// continuous counters have separate readers; the UI never parses this text.
+std::string endpointData(Endpoint &e, int part) {
+    auto *s = e.stream.get();
+    std::ostringstream text;
+    if (part == 0) {
+        if (e.configSnapshot.empty()) {
+            text << s->getSampleRate() << " Hz · " << oboe::convertToText(s->getFormat()) << " · "
+                 << s->getChannelCount() << " ch · " << oboe::convertToText(s->getSharingMode()) << " / "
+                 << oboe::convertToText(s->getPerformanceMode()) << "\nburst=" << s->getFramesPerBurst()
+                 << " · capacity=" << s->getBufferCapacityInFrames() << " · policy=" << engine->latencyMode
+                 << "\ntransfer=" << (e.pullOwner ? "output-pull" : e.input ? "input-callback" : "output-callback");
+            if (e.input) text << " · preset=" << static_cast<int>(s->getInputPreset());
+            if (e.pullOwner) text << " · appQueue=0";
+            if (s->getHardwareSampleRate() > 0) {
+                text << "\nhardware: " << s->getHardwareSampleRate() << " Hz · "
+                     << oboe::convertToText(s->getHardwareFormat()) << " · " << s->getHardwareChannelCount() << " ch";
+            }
+            e.configSnapshot = text.str();
+        }
+        return e.configSnapshot;
+    }
+    if (part == 1) {
+        text << "buffer=" << s->getBufferSizeInFrames();
+        if (e.pullOwner) text << " · cushion=" << e.pullCushion.load() << " · guard=" << e.guardFrames.load();
+        if (!e.input) text << " · outputTarget=" << e.outputMinimum.load();
+        for (auto *r : e.outputRoutes) if (r->ring) {
+            text << "\ncushion=" << r->cushion.load() << " · routeGuard=" << r->guardFrames.load();
+        }
+    } else {
+        auto count = s->getXRunCount();
+        if (count) e.xruns.store(count.value());
+        text << "frames=" << e.frames.load() << " · xrun=" << e.xruns.load()
+             << " · gap=" << e.gaps.load() << " · dropped=" << e.dropped.load()
+             << " · callback=" << e.callbackFrames.load();
+        if (e.pullOwner) text << " · queued=" << e.queued.load()
+            << " · shortReads=" << e.shortReads.load() << " · reprimes=" << e.reprimes.load()
+            << " · guardProbes=" << e.guardProbes.load() << " · guardFailures=" << e.guardFailures.load()
+            << " · guardCooldown=" << e.guardCooldown.load();
+        if (!e.input) text << " · outputProbes=" << e.outputReductions.load()
+            << " · outputFailures=" << e.outputFailures.load() << " · outputCooldown=" << e.outputCooldown.load();
+        for (auto *r : e.outputRoutes) if (r->ring) {
+            text << "\nrouteQueue=" << r->ring->available() << " · routeDropped=" << r->trimmed.load()
+                 << " · routeUnderflows=" << r->underflows.load();
+        }
+    }
+    return text.str();
+}
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_checkHealth(JNIEnv *, jclass) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    checkProgress(); // ErrorTimeout uses exactly the same event path as Oboe.
+}
+
+#ifndef NDEBUG
+extern "C" JNIEXPORT void JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_test_NativeEventTestApi_freezeProgress(JNIEnv *, jclass) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    if (!engine) return;
+    engine->freezeProgressForTest = true;
+    for (auto &e : engine->endpoints) {
+        e->lastFrames = e->frames.load();
+        e->lastProgress = std::chrono::steady_clock::now();
+    }
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_test_NativeEventTestApi_resizeBuffer(JNIEnv *, jclass, jint deviceId, jint frames) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    if (engine) for (auto &e : engine->endpoints) {
+        if (!e->input && e->deviceId == deviceId) {
+            const int before = e->stream->getBufferSizeInFrames();
+            const auto actual = e->stream->setBufferSizeInFrames(frames);
+            if (!actual) return static_cast<int>(actual.error());
+            if (actual.value() != before) engine->signal->notify(2);
+            return actual.value();
+        }
+    }
+    return -1;
+}
+#endif
+
+// Diagnostic compatibility only. Production control observes awaitEvent.
 extern "C" JNIEXPORT jstring JNICALL
 Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_pollError(JNIEnv *env, jclass) {
     std::lock_guard<std::mutex> lock(controlMutex);
-    if (engine && !engine->error.load() && engine->active.load()) {
-        const auto now = std::chrono::steady_clock::now();
-        for (auto &e : engine->endpoints) {
-            const auto frames = e->frames.load();
-            if (frames != e->lastFrames) {
-                e->lastFrames = frames;
-                e->lastProgress = now;
-            } else if (now - e->lastProgress > std::chrono::seconds(2)) {
-                engine->fail(oboe::Result::ErrorTimeout);
-                break;
-            }
-            auto count = e->stream->getXRunCount();
-            if (count) e->xruns.store(count.value());
+    checkProgress();
+    return toJString(env, stopError());
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_sessionId(JNIEnv *, jclass) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    return engine ? engine->signal->id : 0;
+}
+
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_awaitEvent(JNIEnv *env, jclass, jlong id) {
+    std::shared_ptr<EngineSignal> signal;
+    {
+        std::lock_guard<std::mutex> lock(controlMutex);
+        if (engine && engine->signal->id == id) signal = engine->signal;
+    }
+    auto strings = env->FindClass("java/lang/String");
+    if (!signal) return env->NewObjectArray(0, strings, nullptr);
+    int flags = 0;
+    while (!signal->closed.load(std::memory_order_acquire)) {
+        flags = signal->pending.exchange(0, std::memory_order_acquire);
+        if (flags) break;
+        pollfd fd{signal->waitFd, POLLIN, 0};
+        int result;
+        do { result = ::poll(&fd, 1, -1); } while (result < 0 && errno == EINTR);
+        if (result < 0) {
+            auto exception = env->FindClass("java/io/IOException");
+            env->ThrowNew(exception, std::strerror(errno));
+            return nullptr;
+        }
+        uint64_t count;
+        while (::read(signal->waitFd, &count, sizeof(count)) < 0 && errno == EINTR) {}
+    }
+    if (signal->closed.load()) return env->NewObjectArray(0, strings, nullptr);
+    auto result = env->NewObjectArray(2, strings, nullptr);
+    const int code = (flags & 1) ? signal->error.load(std::memory_order_acquire) : 0;
+    const std::string error = code ? std::string(oboe::convertToText(static_cast<oboe::Result>(code)))
+        + " (" + std::to_string(code) + ")" : "";
+    env->SetObjectArrayElement(result, 0, toJString(env, std::to_string(flags)));
+    env->SetObjectArrayElement(result, 1, toJString(env, error));
+    return result;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_endpointPart(JNIEnv *env, jclass, jint deviceId, jboolean input, jint part) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    if (engine) for (auto &e : engine->endpoints) {
+        if (e->deviceId == deviceId && e->input == static_cast<bool>(input) && e->stream) {
+            return toJString(env, endpointData(*e, part));
         }
     }
-    return toJString(env, stopError());
+    return toJString(env, "");
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_endpointStats(JNIEnv *env, jclass, jint deviceId, jboolean input) {
     std::lock_guard<std::mutex> lock(controlMutex);
-    std::ostringstream text;
-    if (engine) {
-        for (auto &e : engine->endpoints) {
-            if (e->deviceId == deviceId && e->input == static_cast<bool>(input) && e->stream) {
-                auto *s = e->stream.get();
-                text << s->getSampleRate() << " Hz · " << oboe::convertToText(s->getFormat()) << " · "
-                     << s->getChannelCount() << " ch · " << oboe::convertToText(s->getSharingMode()) << " / "
-                     << oboe::convertToText(s->getPerformanceMode()) << "\nburst=" << s->getFramesPerBurst()
-                     << " · buffer=" << s->getBufferSizeInFrames() << " · frames=" << e->frames.load()
-                     << " · xrun=" << e->xruns.load() << " · gap=" << e->gaps.load()
-                     << " · dropped=" << e->dropped.load();
-                text << " · capacity=" << s->getBufferCapacityInFrames()
-                     << " · callback=" << e->callbackFrames.load()
-                     << " · policy=" << engine->latencyMode;
-                text << "\ntransfer=" << (e->pullOwner ? "output-pull" : e->input ? "input-callback" : "output-callback");
-                if (e->input) text << " · preset=" << static_cast<int>(s->getInputPreset());
-                if (e->pullOwner) {
-                    text << " · queued=" << e->queued.load() << " · appQueue=0";
-                    if (engine->latencyMode == 0) text << " · cushion=" << e->pullCushion.load();
-                    else text << " · guard=" << e->guardFrames.load()
-                              << " · shortReads=" << e->shortReads.load() << " · reprimes=" << e->reprimes.load()
-                              << " · guardProbes=" << e->guardProbes.load() << " · guardFailures=" << e->guardFailures.load()
-                              << " · guardCooldown=" << e->guardCooldown.load();
-                }
-                if (!e->input) text << " · outputTarget=" << e->outputMinimum.load()
-                    << " · outputProbes=" << e->outputReductions.load() << " · outputFailures=" << e->outputFailures.load()
-                    << " · outputCooldown=" << e->outputCooldown.load();
-                for (auto *r : e->outputRoutes) {
-                    if (r->ring) text << "\nrouteQueue=" << r->ring->available()
-                                      << " · cushion=" << r->cushion.load()
-                                      << " · routeGuard=" << r->guardFrames.load()
-                                      << " · routeDropped=" << r->trimmed.load()
-                                      << " · routeUnderflows=" << r->underflows.load();
-                }
-                if (s->getHardwareSampleRate() > 0) {
-                    text << "\nhardware: " << s->getHardwareSampleRate() << " Hz · "
-                         << oboe::convertToText(s->getHardwareFormat()) << " · "
-                         << s->getHardwareChannelCount() << " ch";
-                }
-            }
+    if (engine) for (auto &e : engine->endpoints) {
+        if (e->deviceId == deviceId && e->input == static_cast<bool>(input) && e->stream) {
+            return toJString(env, endpointData(*e, 0) + "\n" + endpointData(*e, 1) + "\n" + endpointData(*e, 2));
         }
     }
-    return toJString(env, text.str());
+    return toJString(env, "");
 }
 
 // Opens an exclusive-mode stream just to probe whether the device grants it.
@@ -1029,6 +1209,50 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_testPending(JNIEnv *, jclass, j
     return 0;
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_cancelTestWaiters(JNIEnv *, jclass) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    if (engine) {
+        engine->signal->testCancelled.store(true);
+        engine->signal->wakeSpace();
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_awaitTestSpace(JNIEnv *env, jclass, jint deviceId) {
+    std::shared_ptr<EngineSignal> signal;
+    {
+        std::lock_guard<std::mutex> lock(controlMutex);
+        if (!engine) return toJString(env, "");
+        for (auto &e : engine->endpoints) if (!e->input && e->deviceId == deviceId) {
+            signal = engine->signal;
+            if (signal->closed.load() || signal->testCancelled.load() || signal->error.load()) break;
+            signal->spaceWaiting.store(true);
+            // Arm before checking the ring so a just-completed callback cannot
+            // strand the writer. No endpoint pointer escapes the control lock.
+            if (e->testRing.available() < kRingCapacity) {
+                signal->spaceWaiting.store(false);
+                return toJString(env, "");
+            }
+            break;
+        }
+    }
+    if (!signal || signal->closed.load() || signal->testCancelled.load()) return toJString(env, "");
+    if (!signal->error.load()) {
+        pollfd fd{signal->spaceFd, POLLIN, 0};
+        int result;
+        do { result = ::poll(&fd, 1, 5000); } while (result < 0 && errno == EINTR);
+        signal->spaceWaiting.store(false);
+        if (result == 0) signal->fail(oboe::Result::ErrorTimeout);
+        if (result < 0) return toJString(env, std::strerror(errno));
+        uint64_t count;
+        while (::read(signal->spaceFd, &count, sizeof(count)) < 0 && errno == EINTR) {}
+    }
+    const int code = signal->error.load();
+    return toJString(env, code ? std::string(oboe::convertToText(static_cast<oboe::Result>(code)))
+        + " (" + std::to_string(code) + ")" : "");
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_outputRate(JNIEnv *, jclass, jint deviceId) {
     std::lock_guard<std::mutex> lock(controlMutex);
@@ -1158,6 +1382,12 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
     for (int n = 0; n < 53; ++n) guard.completed(192, 192, 1000);
     guard.prepare(192, 4096, 768, 960, 1000);
     if (guard.frames != 240 || guard.probing) return toJString(env, "FAIL premature guard retry");
+    for (int n = 0; n < 700; ++n) {
+        guard.completed(192, 192, 1000);
+        guard.prepare(192, 4096, 768, 960, 1000);
+    }
+    if (guard.frames != 240 || guard.probing || guard.probes != 1)
+        return toJString(env, "FAIL retrying failed guard floor");
     guard.prepare(192, 256, 768, 960, 1000);
     guard.completed(192, 0, 1000);
     if (guard.frames != 64 || !guard.ready(256, 192)) return toJString(env, "FAIL capacity-limited guard");
@@ -1180,6 +1410,10 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
     for (int n = 0; n < 78; ++n) {
         if (probe.update(576, 192, 1000, 192, false, false) != 0)
             return toJString(env, "FAIL output cooldown");
+    }
+    for (int n = 0; n < 700; ++n) {
+        if (probe.update(576, 192, 1000, 192, false, false) != 0)
+            return toJString(env, "FAIL retrying failed output floor");
     }
     if (probe.update(576, 192, 1000, 192, false, true) != 0 || probe.stable != 0)
         return toJString(env, "FAIL capture gap stability reset");
