@@ -8,7 +8,7 @@ data class ValidationResult(
     val identity: String,
     val channels: Int,
     val error: String = "",
-    /** -1 unknown, 0 not granted, 1 exclusive opens succeed. */
+    /** -1 unknown, 0 not granted, 1 Exclusive actually granted by the system. */
     val exclusiveSupport: Int = -1,
 ) {
     fun valid(channel: Int): Boolean = error.isEmpty() && channel in 0 until channels

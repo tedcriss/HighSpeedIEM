@@ -99,9 +99,15 @@ object RingtoneTest {
             fun openOutput() {
                 if (cancelled()) return
                 if (settings.exclusive) {
+                    // Full 16-int route spec: an absent input side, then the
+                    // exclusive output endpoint with its device parameters.
+                    // The native path writes decoded samples without resampling,
+                    // so an automatic rate requests the decoder's actual rate.
                     val spec = intArrayOf(
-                        -1, 0, 0, 0, 0, 0, 0,
-                        device.id, channel, count, settings.rate, settings.format, 1, 0,
+                        -1, 0, 0, 0, 0, 0, 0, 0,
+                        device.id, channel, count,
+                        if (settings.rate > 0) settings.rate else rate,
+                        settings.format, 1, 0, 0,
                     )
                     val error = NativeAudio.startConfigured(spec)
                     if (error.isNotEmpty()) throw IOException(error)

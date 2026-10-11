@@ -152,15 +152,15 @@ class MonitorSession(private val context: Context) {
         private set
     var status: String = "就绪 · 选择设备，建立通道转发"
         private set
-    /** Engine latency policy for the next start: 0 baseline, 1 guarded, 2 minimum. */
-    var latencyPolicy: Int = 2
+    /** AAudio MMAP policy for the next start: 0 System, 1 Never, 2 Auto. */
+    var mmapPolicy: Int = 0
         private set
 
-    fun setLatencyPolicy(value: Int) {
+    fun setMmapPolicy(value: Int) {
         if (forwardingLocked()) return
         val clamped = value.coerceIn(0, 2)
-        if (latencyPolicy == clamped) return
-        latencyPolicy = clamped
+        if (mmapPolicy == clamped) return
+        mmapPolicy = clamped
         changed()
     }
 
@@ -658,8 +658,11 @@ class MonitorSession(private val context: Context) {
                     android.util.Log.i("DeviceScan", channel.deviceKey + " channels=" + r.channels +
                         " exclusive=" + r.exclusiveSupport +
                         " error=" + r.error + (if (disabled.contains(channel.key)) " disabled=" + channel.key else ""))
+                    // Devices verified to grant exclusive mode are checked
+                    // automatically; the user can still uncheck them until the
+                    // next verification of this device.
                     settings[channel.deviceKey] = cfg.copy(exclusiveSupport = r.exclusiveSupport,
-                        exclusive = cfg.exclusive && r.exclusiveSupport == 1)
+                        exclusive = r.exclusiveSupport == 1)
                     if (r.valid(channel.index)) disabled.remove(channel.key)
                     else disabled.add(channel.key)
                 }
@@ -817,7 +820,7 @@ class MonitorSession(private val context: Context) {
                     runOnTestThread()
                     requireMicrophone()
                     configureCommunication()
-                    error = NativeAudio.startConfigured(spec.toIntArray(), latencyPolicy)
+                    error = NativeAudio.startConfigured(spec.toIntArray(), mmapPolicy)
                 } catch (e: Exception) {
                     error = e.toString()
                 } catch (e: LinkageError) {

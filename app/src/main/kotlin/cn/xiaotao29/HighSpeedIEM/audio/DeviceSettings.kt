@@ -3,9 +3,10 @@ package cn.xiaotao29.HighSpeedIEM.audio
 import android.media.AudioDeviceInfo
 
 /**
- * Per-device recording/playback parameters. A value of 0 means "automatic" and
- * lets the system choose the rate/format. Automatic input preset prefers the
- * native VoicePerformance path, with VoiceRecognition compatibility fallback.
+ * Per-device recording/playback parameters. Automatic rate/format (0) is the
+ * backend's native "unspecified" value: AAudio itself negotiates the actual
+ * stream parameters. The automatic input preset (0) is application-side and
+ * prefers Generic, with VoiceRecognition compatibility fallback.
  */
 data class DeviceSettings(
     val rate: Int = 0,
@@ -14,7 +15,7 @@ data class DeviceSettings(
     val exclusive: Boolean = false,
     /** Output buffer in bursts; 0 keeps the adaptive latency tuner. */
     val buffer: Int = 0,
-    /** -1 unknown, 0 not granted, 1 exclusive opens succeed. */
+    /** -1 unknown, 0 not granted, 1 Exclusive actually granted by the system. */
     val exclusiveSupport: Int = -1,
 ) {
     fun copyOf(rate: Int = this.rate, format: Int = this.format, preset: Int = this.preset,
@@ -58,7 +59,12 @@ data class DeviceSettings(
             return values.toIntArray()
         }
 
-        val PRESET_VALUES = intArrayOf(0, 6, 9, 10)
-        val PRESET_LABELS = arrayOf("自动", "VOICE_RECOGNITION", "UNPROCESSED", "VOICE_PERFORMANCE")
+        /**
+         * Every AAudio input preset (aaudio_input_preset_t) plus the
+         * application-side automatic entry; values match the native constants.
+         */
+        val PRESET_VALUES = intArrayOf(0, 1, 5, 6, 7, 9, 10)
+        val PRESET_LABELS = arrayOf("自动", "GENERIC", "CAMCORDER", "VOICE_RECOGNITION",
+            "VOICE_COMMUNICATION", "UNPROCESSED", "VOICE_PERFORMANCE")
     }
 }

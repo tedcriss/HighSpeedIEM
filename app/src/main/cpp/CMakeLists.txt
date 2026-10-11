@@ -13,4 +13,4 @@ add_subdirectory(${OBOE_DIR} oboe)
 
 add_library(highspeediem SHARED engine.cpp)
 target_compile_options(highspeediem PRIVATE -Wall -Wextra -O2)
-target_link_libraries(highspeediem oboe android log)
+target_link_libraries(highspeediem oboe android log dl)

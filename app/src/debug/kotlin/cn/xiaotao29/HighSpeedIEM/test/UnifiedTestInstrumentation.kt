@@ -1035,16 +1035,16 @@ class UnifiedTestInstrumentation : Instrumentation() {
         runOnMainSync { s.switchTab(2); s.stop(null, false) }
         check(waitUntil(15000) { !s.operationsBlockedPublic })
         try {
-            // Separate input and output reductions on the same physical route.
+            // Every MMAP policy against every requested PCM format on the same route.
             for ((policy, format) in listOf(0 to 0, 1 to 0, 2 to 0, 2 to 1, 2 to 2)) {
-                val trace = File(targetContext.filesDir, "latency-policy-$policy-format-$format.csv")
-                trace.writeText("elapsedMs,inputFrames,gap,dropped,queued,guard,outputBuffer,xrun\n")
+                val trace = File(targetContext.filesDir, "mmap-policy-$policy-format-$format.csv")
+                trace.writeText("elapsedMs,inputFrames,gap,dropped,queued,shortReads,outputBuffer,xrun\n")
                 val spec = intArrayOf(input.device.id, input.index, input.total, 0, format, 0, 0, 0,
                     output.device.id, output.index, output.total, 0, format, 0, 0, 0)
                 val openError = NativeAudio.startConfigured(spec, policy)
-                check(openError.isEmpty()) { "open failed for format=$format: $openError" }
+                check(openError.isEmpty()) { "open failed for mmapPolicy=$policy format=$format: $openError" }
                 val initialOutput = NativeAudio.endpointStats(output.device.id, false)
-                val duration = if (format == 0 && policy == 2) 65000L else 35000L
+                val duration = if (format == 0 && policy == 0) 65000L else 35000L
                 val startedAt = SystemClock.uptimeMillis()
                 val deadline = SystemClock.uptimeMillis() + duration
                 var lastInput = 0L
@@ -1068,14 +1068,13 @@ class UnifiedTestInstrumentation : Instrumentation() {
                     val ins = NativeAudio.endpointStats(input.device.id, true)
                     val outs = NativeAudio.endpointStats(output.device.id, false)
                     check(ins.contains("transfer=output-pull") && ins.contains("appQueue=0")) { ins }
-                    check(ins.contains("preset=10")) { "automatic performance preset not active: $ins" }
+                    check(ins.contains("preset=1")) { "automatic generic preset not active: $ins" }
                     check(!outs.contains("routeQueue=")) { "unnecessary application queue: $outs" }
                     val nextInput = counter(ins, "frames")
                     val nextOutput = counter(outs, "frames")
                     windows.add(Triple(SystemClock.uptimeMillis(), nextOutput, counter(outs, "gap")))
-                    val guard = Regex("guard=(\\d+)").find(ins)?.groupValues?.get(1) ?: "-1"
                     trace.appendText("${SystemClock.uptimeMillis() - startedAt},$nextInput,${counter(outs, "gap")}," +
-                        "${counter(ins, "dropped")},${counter(ins, "queued")},$guard,${counter(outs, "buffer")},${counter(outs, "xrun")}\n")
+                        "${counter(ins, "dropped")},${counter(ins, "queued")},${counter(ins, "shortReads")},${counter(outs, "buffer")},${counter(outs, "xrun")}\n")
                     if (!measured && SystemClock.uptimeMillis() - startedAt >= 2000) {
                         warmFrames = nextOutput
                         warmGaps = counter(outs, "gap")
@@ -1114,8 +1113,9 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 check(NativeAudio.endpointStats(input.device.id, true).isEmpty())
                 check(NativeAudio.endpointStats(output.device.id, false).isEmpty())
             }
-            // Explicit preset remains effective. A mismatched rate still returns
-            // the actual native error and leaves no streams behind.
+            // Explicit preset remains effective. Explicitly mismatched stream
+            // parameters have no common raw domain: the pair must be rejected
+            // with the native error and leave no streams behind.
             val spec = intArrayOf(input.device.id, input.index, input.total, 0, 0, 0, 6, 0,
                 output.device.id, output.index, output.total, 0, 0, 0, 0, 0)
             check(NativeAudio.startConfigured(spec).isEmpty())
@@ -1123,10 +1123,20 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(NativeAudio.endpointStats(input.device.id, true).contains("preset=6"))
             NativeAudio.stop()
             spec[3] = 16000
+            spec[11] = 48000
             val error = NativeAudio.startConfigured(spec)
             check(error.isNotEmpty()) { "mismatched rates accepted" }
             check(NativeAudio.endpointStats(input.device.id, true).isEmpty()) { "error leaked streams" }
-            evidence.add("explicit preset=6; rate rejection=$error; cleanup verified")
+            spec[3] = 0
+            spec[11] = 0
+            spec[4] = 1  // input I16
+            spec[12] = 2 // output Float
+            val formatError = NativeAudio.startConfigured(spec)
+            check(formatError.contains("ErrorInvalidFormat")) { "mismatched formats accepted: $formatError" }
+            check(NativeAudio.endpointStats(input.device.id, true).isEmpty()) { "format error leaked streams" }
+            spec[4] = 0
+            spec[12] = 0
+            evidence.add("explicit preset=6; rate rejection=$error; format rejection=$formatError; cleanup verified")
             check(NativeAudio.startConfigured(spec, -1).contains("ErrorIllegalArgument"))
             check(NativeAudio.endpointStats(output.device.id, false).isEmpty())
             return failures.isEmpty() to (evidence.joinToString(" | ") + " failures=$failures")
@@ -1293,7 +1303,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
             }
             // Only pair-new settings live here; channel-card parameters stay on the device pages.
             check(!hasText("preset")) { "duplicated channel parameter still in params table" }
-            for (name in listOf("bufferBursts", "latencyMode")) {
+            for (name in listOf("bufferBursts", "mmapPolicy")) {
                 var found = hasText(name)
                 repeat(4) {
                     if (!found && body != null) {
@@ -1326,13 +1336,13 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(waitUntil(3000) { s.config(s.outputs.getValue(outKey)).buffer == 4 }) {
                 "buffer edit not committed: ${s.config(s.outputs.getValue(outKey)).buffer}"
             }
-            // Session-wide latency policy through the same table.
-            scrollToDesc("latencyMode，转发延迟策略").click()
-            check(waitUntil(3000) { device.hasObject(By.text("zero input guard / two output bursts")) }) {
+            // Session-wide MMAP policy through the same table.
+            scrollToDesc("mmapPolicy，AAudio MMAP 策略").click()
+            check(waitUntil(3000) { device.hasObject(By.text("禁用 MMAP 数据路径（兼容对照）")) }) {
                 "policy menu did not open"
             }
-            check(clickText("zero input guard / two output bursts")) { "policy option missing" }
-            check(waitUntil(3000) { s.latencyPolicy == 1 }) { "policy edit not committed: ${s.latencyPolicy}" }
+            check(clickText("禁用 MMAP 数据路径（兼容对照）")) { "policy option missing" }
+            check(waitUntil(3000) { s.mmapPolicy == 1 }) { "policy edit not committed: ${s.mmapPolicy}" }
             val close = device.findObject(By.res("route-params-tooltip"))
                 ?.findObject(By.text("关闭")) ?: error("params tooltip close missing")
             close.click()
@@ -1343,7 +1353,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(waitUntil(25000) { s.runningPublic }) { "forwarding did not start; " + diagnostics(s) }
             check(waitUntil(10000) {
                 s.actualStats[outDeviceKey]?.contains("bufferBursts=4") == true &&
-                    s.actualStats[outDeviceKey]?.contains("policy=1") == true
+                    s.actualStats[outDeviceKey]?.contains("mmapPolicy=Never") == true
             }) { "pinned buffer/policy not applied: ${s.actualStats[outDeviceKey]}" }
             // The params entry locks while forwarding runs.
             device.findObject(By.desc(paramsDesc)).click()
@@ -1360,7 +1370,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
         } finally {
             runOnMainSync {
                 s.updateSettings(s.outputs.getValue(outKey)) { it.copyOf(buffer = 0) }
-                s.setLatencyPolicy(2)
+                s.setMmapPolicy(0)
             }
         }
     }

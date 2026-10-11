@@ -35,12 +35,14 @@ object NativeAudio {
     }
 
     /** Opens all routes at once; returns an empty string on success. */
-    // 0: original stable policy; 1: minimum input/two output bursts;
-    // 2: minimum input/one output burst, with bounded glitch recovery.
+    // AAudio MMAP process policy applied around every stream open:
+    // 0: System (leave the process policy untouched);
+    // 1: Never (disable the MMAP data path, compatibility reference);
+    // 2: Auto (let the system choose the MMAP data path).
     @Synchronized
-    fun startConfigured(routes: IntArray, latencyMode: Int = 2): String {
+    fun startConfigured(routes: IntArray, mmapPolicy: Int = 0): String {
         observed.set(ObservedState())
-        val error = startNative(routes, latencyMode)
+        val error = startNative(routes, mmapPolicy)
         finishObserver()
         if (error.isNotEmpty()) return error
         val id = sessionId()
@@ -69,7 +71,7 @@ object NativeAudio {
         }
         return ""
     }
-    private external fun startNative(routes: IntArray, latencyMode: Int): String
+    private external fun startNative(routes: IntArray, mmapPolicy: Int): String
     private external fun sessionId(): Long
     private external fun awaitEvent(sessionId: Long): Array<String>
 
@@ -98,7 +100,7 @@ object NativeAudio {
     /** Actual opened-stream parameters for one device endpoint. */
     external fun endpointStats(deviceId: Int, input: Boolean): String
 
-    /** Probes exclusive-mode support: 1 supported, 0 denied, -1 unknown. */
+    /** Probes exclusive mode: 1 actually granted, 0 denied/downgraded, -1 unknown. */
     external fun exclusiveSupport(deviceId: Int, input: Boolean, channels: Int): Int
 
     /** Warms AAudio function pointers; returns the stream channel count. */

@@ -3,82 +3,11 @@
 #include <algorithm>
 #include <cstdint>
 
-// Callback-owned state. Only the published snapshots in Endpoint are atomic.
-// Capacity is a safety limit, not a target amount of queued audio.
-struct InputGuard {
-    int frames = 0;
-    int step = 1;
-    int limit = 0;
-    int previous = 0;
-    int learnedFloor = 0; // failed lower guard is not retried until the stream reopens
-    bool primed = false;
-    bool received = false;
-    bool probing = false;
-    uint64_t stable = 0;
-    uint64_t trial = 0;
-    int cooldownSeconds = 10;
-    uint32_t shortReads = 0;
-    uint32_t reprimes = 0;
-    uint32_t probes = 0;
-    uint32_t failedProbes = 0;
-
-    void prepare(int callbackFrames, int capacity, int inputBurst, int outputBurst, int rate) {
-        const int burst = std::max({1, inputBurst, outputBurst});
-        step = std::max(1, burst / 4);
-        limit = std::max(0, std::min(burst * 4, capacity - callbackFrames));
-        frames = std::min(frames, limit);
-        previous = std::min(previous, limit);
-        learnedFloor = std::min(learnedFloor, limit);
-        if (frames > learnedFloor && !probing && stable >= static_cast<uint64_t>(rate) * cooldownSeconds) {
-            previous = frames;
-            frames = std::max(learnedFloor, frames - step);
-            probing = true;
-            trial = stable = 0;
-            ++probes;
-        }
-    }
-
-    bool ready(int available, int requested) {
-        // Zero guard forwards even a partial block, including at startup.
-        if (!primed && frames > 0 && available < requested + frames) return false;
-        primed = true;
-        return true;
-    }
-
-    int discard(int available, int requested, int maximumRead) const {
-        return std::min(maximumRead, std::max(0, available - requested - frames));
-    }
-
-    void completed(int requested, int count, int rate) {
-        if (count < requested) {
-            ++shortReads;
-            // Do not inflate latency just because capture has not started yet.
-            if (received || count > 0) {
-                // A lone stall after successful playback should not permanently
-                // add latency. Grow only during repeated shortages; a failed
-                // reduction always restores its previously working value.
-                const bool isolated = frames > 0 && stable >= static_cast<uint64_t>(rate) * 2;
-                frames = std::min(limit, probing ? previous : isolated ? frames : frames + step);
-                if (probing) {
-                    ++failedProbes;
-                    learnedFloor = std::max(learnedFloor, previous);
-                    cooldownSeconds = std::min(120, std::max(30, cooldownSeconds * 2));
-                }
-                ++reprimes;
-                primed = false;
-            }
-            stable = trial = 0;
-            probing = false;
-        } else {
-            stable += count;
-            if (probing && (trial += count) >= static_cast<uint64_t>(rate) * 10) probing = false;
-        }
-        received = received || count > 0;
-    }
-};
-
-// LatencyTuner alone changes output size. This only chooses its next reset
-// minimum and backs off reductions which caused an output underrun.
+// Single minimum-latency policy (no selectable modes):
+// - Inputs keep zero scheduling guard; a short read leaves its tail silent and
+//   never triggers a re-accumulation threshold (doc sections 7/8).
+// - Outputs rely on LatencyTuner alone for size changes. This probe only picks
+//   the next reset minimum and backs off reductions which caused an underrun.
 struct OutputProbe {
     int floor = 1;
     int rollback = 0;

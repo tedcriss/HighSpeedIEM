@@ -50,11 +50,11 @@ import kotlinx.coroutines.launch
 /** Pinned output buffer range in bursts; 0 keeps the adaptive latency tuner. */
 internal val BUFFER_BURSTS_MAX = 32
 
-private val LATENCY_POLICY_LABELS = listOf("0", "1", "2")
-private val LATENCY_POLICY_NOTES = listOf(
-    "3.1 baseline",
-    "zero input guard / two output bursts",
-    "minimum latency (default)",
+private val MMAP_POLICY_LABELS = listOf("System", "Never", "Auto")
+private val MMAP_POLICY_NOTES = listOf(
+    "跟随系统默认策略（默认）",
+    "禁用 MMAP 数据路径（兼容对照）",
+    "允许系统选择 MMAP 数据路径",
 )
 
 /**
@@ -118,16 +118,17 @@ internal fun RouteParamsTooltip(
                         }))
                     }
                     ParamsSection("转发") {
-                        ParamsTable(listOf("latencyMode" to {
+                        ParamsTable(listOf("mmapPolicy" to {
                             OptionDropdown(
                                 label = null,
-                                options = LATENCY_POLICY_LABELS,
-                                selectedIndex = session.latencyPolicy,
+                                options = MMAP_POLICY_LABELS,
+                                selectedIndex = session.mmapPolicy,
                                 enabled = enabled,
-                                hint = "latencyMode，转发延迟策略，作用于下一次启动的全部转发对",
+                                hint = "mmapPolicy，AAudio MMAP 策略，作用于下一次启动的全部转发对",
                                 modifier = Modifier.fillMaxWidth(),
                                 optionText = { option ->
-                                    val note = LATENCY_POLICY_NOTES.getOrNull(option.toIntOrNull() ?: 0).orEmpty()
+                                    val note = MMAP_POLICY_NOTES
+                                        .getOrNull(MMAP_POLICY_LABELS.indexOf(option)).orEmpty()
                                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         Text(option, style = MaterialTheme.typography.bodyMedium)
                                         Text(note, style = MaterialTheme.typography.bodySmall,
@@ -135,7 +136,7 @@ internal fun RouteParamsTooltip(
                                     }
                                 },
                             ) { index ->
-                                activity.safe { session.setLatencyPolicy(index) }
+                                activity.safe { session.setMmapPolicy(index) }
                             }
                         }))
                     }
