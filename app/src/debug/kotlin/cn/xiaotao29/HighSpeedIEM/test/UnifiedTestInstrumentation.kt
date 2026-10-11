@@ -1276,29 +1276,27 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(waitUntil(5000) { device.hasObject(By.res("route-params-tooltip")) }) {
                 "params tooltip did not open"
             }
-            // The scrollable body only exposes visible rows to accessibility.
+            // The body scrolls only when its rows overflow; short content fits.
             // Dropdown anchors carry their own (empty) scroll; take the tallest.
             val body = device.findObject(By.res("route-params-tooltip"))
                 ?.findObjects(By.scrollable(true))?.maxByOrNull { it.visibleBounds.height() }
-                ?: error("params body not scrollable")
             fun scrollToDesc(fragment: String): UiObject2 {
-                repeat(4) {
-                    device.findObject(By.descContains(fragment))?.let { return it }
-                    body.scroll(Direction.DOWN, 0.6f)
-                    SystemClock.sleep(250)
+                if (body != null) {
+                    repeat(4) {
+                        device.findObject(By.descContains(fragment))?.let { return it }
+                        body.scroll(Direction.DOWN, 0.6f)
+                        SystemClock.sleep(250)
+                    }
                 }
                 return device.findObject(By.descContains(fragment)) ?: error(
                     "control missing: $fragment; texts=${dumpTextsGuarded(4000).take(60).joinToString("|")}")
             }
-            for (name in listOf("rate", "format", "preset", "exclusive")) {
-                check(hasText(name)) {
-                    "parameter $name missing; texts=${dumpTextsGuarded(4000).take(60).joinToString("|")}"
-                }
-            }
+            // Only pair-new settings live here; channel-card parameters stay on the device pages.
+            check(!hasText("preset")) { "duplicated channel parameter still in params table" }
             for (name in listOf("bufferBursts", "latencyMode")) {
                 var found = hasText(name)
                 repeat(4) {
-                    if (!found) {
+                    if (!found && body != null) {
                         body.scroll(Direction.DOWN, 0.6f)
                         SystemClock.sleep(250)
                         found = hasText(name)
@@ -1307,15 +1305,6 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 check(found) {
                     "parameter $name missing after scroll; texts=${dumpTextsGuarded(4000).take(60).joinToString("|")}"
                 }
-            }
-            body.scroll(Direction.UP, 1f)
-            SystemClock.sleep(250)
-            // Enum dropdown commits into the shared per-device settings.
-            scrollToDesc("rate，采样率").click()
-            check(waitUntil(3000) { device.hasObject(By.text("16000 Hz")) }) { "rate menu did not open" }
-            check(clickText("16000 Hz")) { "rate option missing" }
-            check(waitUntil(3000) { s.config(s.inputs.getValue(inKey)).rate == 16000 }) {
-                "rate edit not committed: ${s.config(s.inputs.getValue(inKey)).rate}"
             }
             // Numeric field clamps to the engine range; type like a real user.
             fun typeBuffer(text: String, clears: Int) {
@@ -1350,8 +1339,6 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(waitUntil(3000) { !device.hasObject(By.res("route-params-tooltip")) }) {
                 "params tooltip did not dismiss"
             }
-            // Restore the rate so both streams negotiate the same actual rate, then start.
-            runOnMainSync { s.updateSettings(s.inputs.getValue(inKey)) { it.copyOf(rate = 0) } }
             check(clickText("启动 1 个转发")) { "start button missing" }
             check(waitUntil(25000) { s.runningPublic }) { "forwarding did not start; " + diagnostics(s) }
             check(waitUntil(10000) {
@@ -1364,7 +1351,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(!device.hasObject(By.res("route-params-tooltip"))) { "params opened while running" }
             check(clickText("停止转发")) { "stop button missing" }
             check(waitUntil(20000) { !s.runningPublic && s.service == null }) { "forwarding did not stop" }
-            return true to "params table complete; enum/numeric/policy committed and clamped; pinned buffer and policy reached the engine; locked while running"
+            return true to "pair-new params only; numeric/policy committed and clamped; pinned buffer and policy reached the engine; locked while running"
         } catch (failure: Throwable) {
             if (device.hasObject(By.res("route-params-tooltip"))) device.pressBack()
             runOnMainSync { s.stop(null, false) }
@@ -1372,7 +1359,6 @@ class UnifiedTestInstrumentation : Instrumentation() {
             return false to (failure.message ?: failure.toString())
         } finally {
             runOnMainSync {
-                s.updateSettings(s.inputs.getValue(inKey)) { it.copyOf(rate = 0) }
                 s.updateSettings(s.outputs.getValue(outKey)) { it.copyOf(buffer = 0) }
                 s.setLatencyPolicy(2)
             }

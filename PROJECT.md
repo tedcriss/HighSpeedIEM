@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.5`（versionCode 26），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.6`（versionCode 27），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -18,7 +18,7 @@
 # Kotlin 插件会重建空的 .kotlin/ 目录，可随时删除，不影响构建。
 ```
 
-Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.5.apk` 命名。
+Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.6.apk` 命名。
 
 Phone 平台统一测试（instrumentation，单一入口，场景可筛选）：
 
@@ -139,9 +139,9 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 每行完整配对在卡片底部提供“转发信息”键（与设备能力键同款 TextButton + Info 图标），未转发时停用；
 点击通过原生 Rich tooltip 按输入/输出分节以两列表格显示已打开流的实际参数：固定配置开流后发布，缓冲/余量变化事件更新；
 xrun 等计数仅在提示每次弹出时单次采样，弹出后保持静止，停止转发或报错时提示自动关闭。极简信息页保留原有实时参数显示与 3 秒采样。
-完整配对还在信息键右侧提供“转发参数”键（Tune 图标），仅转发未启动时启用；原生 Rich tooltip 内以两列表格编辑该对的可选转发参数：
-输入/输出端点各 rate、format（原生下拉，含自动项）、输入 preset、exclusive（复选框，沿用独占探测门控与通道 0 归属），输出端 bufferBursts
-（数字输入框，0 为自适应、范围 0–32，引擎按容量钳制并跳过 LatencyTuner），以及会话级 latencyMode（0/1/2，下一次启动生效）。
+完整配对还在信息键右侧提供“转发参数”键（Tune 图标），仅转发未启动时启用；原生 Rich tooltip 内以两列表格只编辑配对层新增的设置，
+不重复通道卡片参数：输出端 bufferBursts（数字输入框，0 为自适应、范围 0–32，引擎按容量钳制并跳过 LatencyTuner），
+以及会话级 latencyMode（0/1/2，下一次启动生效；仅改变输出初始缓冲与内部 guard/自适应路径，不改变任何开流属性）。
 参数存于既有的每设备设置与会话策略，设备页与其余转发对视图保持一致；路由规格每端点 8 值（16 值/对），同设备不同参数仍由引擎拒绝。极简模式不提供参数编辑，使用默认值。
 
 **参数**：采样率、采样深度、录音预设默认自动由系统协商；同一设备多声道共享一组设置，

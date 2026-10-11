@@ -213,7 +213,7 @@ private fun RouteCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     RouteInfoTooltip(activity, session, "转发 ${index + 1}", input, output,
                         cardBounds, state.infoEnabled)
-                    RouteParamsTooltip(activity, session, "转发 ${index + 1}", input, output,
+                    RouteParamsTooltip(activity, session, "转发 ${index + 1}", output,
                         cardBounds, state.paramsEnabled)
                 }
             }

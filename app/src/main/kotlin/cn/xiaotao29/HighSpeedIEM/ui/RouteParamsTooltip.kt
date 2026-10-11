@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -62,8 +61,9 @@ private val LATENCY_POLICY_NOTES = listOf(
  * Optional forwarding parameters of one pair, edited before a start. Same
  * persistent-tooltip pattern as the route info entry; the body is a two-column
  * table of raw backend parameter names and native Material 3 controls.
- * Values live in the shared per-device settings and the session policy, so
- * every view of a channel (device pages, other pairs) stays consistent.
+ * Only settings the pair layer adds are exposed here; the stream parameters
+ * shared with the channel cards stay on the device pages. Values live in the
+ * per-device settings and the session policy, so every view stays consistent.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,7 +71,6 @@ internal fun RouteParamsTooltip(
     activity: MainActivity,
     session: MonitorSession,
     label: String,
-    input: Channel,
     output: Channel,
     cardBounds: IntRect?,
     enabled: Boolean,
@@ -110,11 +109,13 @@ internal fun RouteParamsTooltip(
                 onClose = { state.dismiss() },
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    ParamsSection("输入 · ID ${input.device.id} · 通道 ${input.index}") {
-                        EndpointParams(activity, session, input, enabled)
-                    }
+                    val outCfg = session.config(output)
                     ParamsSection("输出 · ID ${output.device.id} · 通道 ${output.index}") {
-                        EndpointParams(activity, session, output, enabled)
+                        ParamsTable(listOf("bufferBursts" to {
+                            BufferBurstsField(activity, session, output, outCfg,
+                                enabled && output.index == 0,
+                                "ID ${output.device.id} 通道 ${output.index}")
+                        }))
                     }
                     ParamsSection("转发") {
                         ParamsTable(listOf("latencyMode" to {
@@ -167,91 +168,6 @@ private fun ParamsSection(header: String, content: @Composable () -> Unit) {
             modifier = Modifier.semantics { heading() })
         content()
     }
-}
-
-/** One endpoint's stream parameters: enums as native dropdowns, exclusive as a checkbox. */
-@Composable
-private fun EndpointParams(
-    activity: MainActivity,
-    session: MonitorSession,
-    channel: Channel,
-    enabled: Boolean,
-) {
-    val cfg = session.config(channel)
-    // Sibling channels inherit channel 0's device settings, like the device pages.
-    val editable = enabled && channel.index == 0
-    val identity = "ID ${channel.device.id} 通道 ${channel.index}"
-    val rates = remember(channel.device) { DeviceSettings.rates(channel.device) }
-    val rateLabels = remember(rates) { rates.map { if (it == 0) "自动" else "$it Hz" } }
-    val formats = remember(channel.device) { DeviceSettings.formats(channel.device) }
-    val formatLabels = remember(formats) { formats.map { DeviceSettings.formatName(it) } }
-    val entries = ArrayList<Pair<String, @Composable () -> Unit>>()
-    entries += "rate" to {
-        OptionDropdown(
-            label = null,
-            options = rateLabels,
-            selectedIndex = rates.indexOf(cfg.rate).coerceAtLeast(0),
-            enabled = editable,
-            hint = "$identity，rate，采样率；自动由系统选择，同一设备由通道 0 设置",
-            modifier = Modifier.fillMaxWidth(),
-        ) { index ->
-            activity.safe {
-                session.updateSettings(channel) { it.copyOf(rate = rates[index]) }
-                session.parameterChanged(channel)
-            }
-        }
-    }
-    entries += "format" to {
-        OptionDropdown(
-            label = null,
-            options = formatLabels,
-            selectedIndex = formats.indexOf(cfg.format).coerceAtLeast(0),
-            enabled = editable,
-            hint = "$identity，format，采样深度；自动由系统选择，同一设备由通道 0 设置",
-            modifier = Modifier.fillMaxWidth(),
-        ) { index ->
-            activity.safe {
-                session.updateSettings(channel) { it.copyOf(format = formats[index]) }
-                session.parameterChanged(channel)
-            }
-        }
-    }
-    if (channel.input) {
-        entries += "preset" to {
-            OptionDropdown(
-                label = null,
-                options = DeviceSettings.PRESET_LABELS.toList(),
-                selectedIndex = DeviceSettings.PRESET_VALUES.indexOf(cfg.preset).coerceAtLeast(0),
-                enabled = editable,
-                hint = "$identity，preset，录音预设；自动优先系统实时返声预设，不支持时使用语音识别预设，同一设备由通道 0 设置",
-                modifier = Modifier.fillMaxWidth(),
-            ) { index ->
-                activity.safe {
-                    session.updateSettings(channel) { it.copyOf(preset = DeviceSettings.PRESET_VALUES[index]) }
-                    session.parameterChanged(channel)
-                }
-            }
-        }
-    }
-    entries += "exclusive" to {
-        Checkbox(
-            checked = cfg.exclusiveSupport == 1 && cfg.exclusive,
-            onCheckedChange = { on ->
-                activity.safe {
-                    session.updateSettings(channel) { it.copyOf(exclusive = on) }
-                    session.parameterChanged(channel)
-                }
-            },
-            enabled = editable && cfg.exclusiveSupport == 1,
-            modifier = Modifier.keyboardFocus(editable && cfg.exclusiveSupport == 1).semantics {
-                contentDescription = "$identity，exclusive，请求设备独占，实际结果取决于系统；同一设备由通道 0 设置"
-            },
-        )
-    }
-    if (!channel.input) {
-        entries += "bufferBursts" to { BufferBurstsField(activity, session, channel, cfg, editable, identity) }
-    }
-    ParamsTable(entries)
 }
 
 /** Digits-only field clamped to the engine's pinned-buffer range; 0 keeps adaptive tuning. */
