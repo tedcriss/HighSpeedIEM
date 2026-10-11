@@ -4,8 +4,9 @@ package cn.xiaotao29.HighSpeedIEM.audio
  * JNI bridge to the native Oboe engine. All functions are safe to call from any
  * thread; the native side serialises control operations internally.
  *
- * Route spec layout (int per endpoint, 14 values per route):
- * [deviceId, channelIndex, channelCount, sampleRate, format, exclusive, inputPreset] x2
+ * Route spec layout (int per endpoint, 16 values per route):
+ * [deviceId, channelIndex, channelCount, sampleRate, format, exclusive, inputPreset,
+ * bufferBursts] x2; bufferBursts 0 keeps adaptive tuning, >0 pins the output buffer.
  * deviceId -1 denotes "absent" (used by preview requests and test adapters).
  */
 object NativeAudio {

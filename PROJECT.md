@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.4`（versionCode 25），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.5`（versionCode 26），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -18,7 +18,7 @@
 # Kotlin 插件会重建空的 .kotlin/ 目录，可随时删除，不影响构建。
 ```
 
-Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.4.apk` 命名。
+Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.5.apk` 命名。
 
 Phone 平台统一测试（instrumentation，单一入口，场景可筛选）：
 
@@ -32,12 +32,12 @@ adb shell am instrument -w -e scenarios native-selftest,launch-tabs,device-valid
 ```
 
 场景：`native-selftest, event-driven, audio-latency, forward-background, launch-tabs, device-validity, selection-preview, spectrum-tooltip, ringtone-test, ringtone-native-drain,
-route-rules, task-route-editing, task-toolbar, forward-start-stop, error-stop, device-lifecycle, rotation, compact-mode, compact-routes, compact-binding-phone`。
+route-rules, task-route-editing, task-toolbar, forward-start-stop, route-params, error-stop, device-lifecycle, rotation, compact-mode, compact-routes, compact-binding-phone`。
 非触控专项：`keyboard-phone, keyboard-overflow-phone, keyboard-compact-phone, keyboard-compact-small-phone`。
 动效专项：`animation-scale-phone` 验证系统动画开关事件下原生文本滚动的停止、复位和恢复；`visual-motion`，实际注入按下/取消事件并对比截图，检查输入/输出卡片的原生水波纹、范围裁切、取消后无残留及不启动音频。
 布局专项：`adaptive-layout`，同一手机上的横竖屏、1/2/3 列、150%/200% 字体、600px 模式切换与滚动锚点恢复。
 性能诊断：`performance-flow`，记录空闲、18 次预热切页、任务页转发和输入页转发的 FrameMetrics、主线程 CPU 与全局状态更新次数；Debug 数值只用于机制对比，实际切页帧耗时另用正式包测量。3.1 的结果和限制见 [性能调优验收-3.1.md](性能调优验收-3.1.md)。
-浮层专项：`tooltip-compatibility`，测量真实频谱、输入/输出能力提示、运行中转发对信息提示与整张卡片的交叠面积，覆盖横竖屏、1/2/3 列与 200% 字体；检查安全边界、正文滚动、固定关闭键、嵌套点击及转发信息键的停用/单次采样。
+浮层专项：`tooltip-compatibility`，测量真实频谱、输入/输出能力提示、运行中转发对信息提示、停止态转发参数提示与整张卡片的交叠面积，覆盖横竖屏、1/2/3 列与 200% 字体；检查安全边界、正文滚动、固定关闭键、嵌套点击及转发信息键的停用/单次采样。`route-params` 验证参数表完整性、下拉/数字/策略提交与钳制、固定缓冲与策略实际生效、运行中锁定。
 `keyboard-compact-phone` 与 `keyboard-compact-small-phone` 均在手机上通过主线程 `Activity.setContent` 临时加载实际 `CompactFlow`，并在 `finally` 恢复手机界面；
 small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动手表模拟器，不更改手机系统分辨率。
 输出逐场景 `=== SCENARIO <名称>: PASS/FAIL - 说明` 与 `=== SUMMARY`。
@@ -139,6 +139,10 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 每行完整配对在卡片底部提供“转发信息”键（与设备能力键同款 TextButton + Info 图标），未转发时停用；
 点击通过原生 Rich tooltip 按输入/输出分节以两列表格显示已打开流的实际参数：固定配置开流后发布，缓冲/余量变化事件更新；
 xrun 等计数仅在提示每次弹出时单次采样，弹出后保持静止，停止转发或报错时提示自动关闭。极简信息页保留原有实时参数显示与 3 秒采样。
+完整配对还在信息键右侧提供“转发参数”键（Tune 图标），仅转发未启动时启用；原生 Rich tooltip 内以两列表格编辑该对的可选转发参数：
+输入/输出端点各 rate、format（原生下拉，含自动项）、输入 preset、exclusive（复选框，沿用独占探测门控与通道 0 归属），输出端 bufferBursts
+（数字输入框，0 为自适应、范围 0–32，引擎按容量钳制并跳过 LatencyTuner），以及会话级 latencyMode（0/1/2，下一次启动生效）。
+参数存于既有的每设备设置与会话策略，设备页与其余转发对视图保持一致；路由规格每端点 8 值（16 值/对），同设备不同参数仍由引擎拒绝。极简模式不提供参数编辑，使用默认值。
 
 **参数**：采样率、采样深度、录音预设默认自动由系统协商；同一设备多声道共享一组设置，
 只有通道 0 可改。独占默认关闭并需实际开流探测支持，不接受静默降级为共享。

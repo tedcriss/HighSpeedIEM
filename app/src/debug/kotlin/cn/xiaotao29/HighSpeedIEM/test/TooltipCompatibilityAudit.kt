@@ -129,6 +129,33 @@ internal class TooltipCompatibilityAudit(
         settle()
     }
 
+    /** Params popup over an idle pair: table controls, avoidance, fixed close. */
+    private fun exerciseRouteParams(name: String, zeroOverlap: Boolean) {
+        main { session.switchTab(2); session.consumeNotice() }
+        settle()
+        val input = session.inputs.values.firstOrNull { it.key !in session.disabled } ?: return
+        val output = session.outputs.values.firstOrNull { it.key !in session.disabled } ?: return
+        main {
+            if (session.model.validCount() == 0) {
+                val row = session.model.rows.last()
+                session.setRouteSide(row, true, input.key)
+                session.setRouteSide(row, false, output.key)
+            }
+        }
+        settle()
+        val paramsDesc = "设置转发 1的转发参数"
+        await("params action missing") { device.hasObject(By.desc(paramsDesc)) }
+        val card = device.findObject(By.res("task-route-0"))?.visibleBounds ?: error("route card missing")
+        val viewport = device.findObject(By.res("task-route-list")).visibleBounds
+        device.findObject(By.desc(paramsDesc)).click()
+        checkPopup("$name-route-params", "route-params-tooltip", card, viewport, zeroOverlap)
+        val close = device.findObject(By.res("route-params-tooltip"))
+            ?.findObject(By.text("关闭")) ?: error("params close missing")
+        close.click()
+        await("params did not dismiss") { !device.hasObject(By.res("route-params-tooltip")) }
+        settle()
+    }
+
     private fun checkPopup(name: String, tag: String, card: Rect, viewport: Rect, noOverlap: Boolean) {
         await("missing $tag") { device.hasObject(By.res(tag)) }
         SystemClock.sleep(600)
@@ -163,10 +190,12 @@ internal class TooltipCompatibilityAudit(
             settle()
             exercise("portrait", 1, true)
             exerciseRouteInfo("portrait", true)
+            exerciseRouteParams("portrait", true)
             device.setOrientationLeft()
             settle()
             exercise("landscape-2-columns", 2, true)
             exerciseRouteInfo("landscape-2-columns", true)
+            exerciseRouteParams("landscape-2-columns", true)
             device.executeShellCommand("wm size 1080x3200")
             settle()
             exercise("landscape-3-columns", 3, true)
@@ -181,6 +210,7 @@ internal class TooltipCompatibilityAudit(
             settle()
             exercise("portrait-font-200", 1, false)
             exerciseRouteInfo("portrait-font-200", false)
+            exerciseRouteParams("portrait-font-200", false)
             File(directory, "geometry.txt").writeText(results.joinToString("\n"))
             return "${results.size} real popups; portrait, landscape 1/2/3 columns, 200% font; safe bounds, card exposure, fixed close, no nested selection; route info gated/one-shot"
         } catch (failure: Throwable) {

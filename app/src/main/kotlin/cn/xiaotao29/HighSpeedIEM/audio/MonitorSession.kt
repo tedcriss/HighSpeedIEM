@@ -152,6 +152,17 @@ class MonitorSession(private val context: Context) {
         private set
     var status: String = "就绪 · 选择设备，建立通道转发"
         private set
+    /** Engine latency policy for the next start: 0 baseline, 1 guarded, 2 minimum. */
+    var latencyPolicy: Int = 2
+        private set
+
+    fun setLatencyPolicy(value: Int) {
+        if (forwardingLocked()) return
+        val clamped = value.coerceIn(0, 2)
+        if (latencyPolicy == clamped) return
+        latencyPolicy = clamped
+        changed()
+    }
 
     private var busy = false
     private var scanInFlight = false
@@ -458,6 +469,7 @@ class MonitorSession(private val context: Context) {
         return intArrayOf(
             channel.device.id, channel.index, channel.total,
             s.rate, s.format, if (s.exclusive) 1 else 0, if (channel.input) s.preset else 0,
+            if (channel.input) 0 else s.buffer,
         )
     }
 
@@ -805,7 +817,7 @@ class MonitorSession(private val context: Context) {
                     runOnTestThread()
                     requireMicrophone()
                     configureCommunication()
-                    error = NativeAudio.startConfigured(spec.toIntArray())
+                    error = NativeAudio.startConfigured(spec.toIntArray(), latencyPolicy)
                 } catch (e: Exception) {
                     error = e.toString()
                 } catch (e: LinkageError) {
@@ -977,9 +989,9 @@ class MonitorSession(private val context: Context) {
                 NativeAudio.stop()
                 if (ep != null) {
                     requireMicrophone()
-                    val spec = IntArray(14)
-                    System.arraycopy(ep, 0, spec, 0, 7)
-                    spec[7] = -1
+                    val spec = IntArray(16)
+                    System.arraycopy(ep, 0, spec, 0, 8)
+                    spec[8] = -1
                     error = NativeAudio.startConfigured(spec)
                 }
             } catch (e: Exception) {

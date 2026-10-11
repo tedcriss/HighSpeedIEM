@@ -14,7 +14,9 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiObject2
 import cn.xiaotao29.HighSpeedIEM.MainActivity
 import cn.xiaotao29.HighSpeedIEM.MonitorApplication
 import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
@@ -88,6 +90,7 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 "task-route-editing" to ::scenarioTaskRouteEditing,
                 "task-toolbar" to ::scenarioTaskToolbar,
                 "forward-start-stop" to ::scenarioForwardStartStop,
+                "route-params" to ::scenarioRouteParams,
                 "error-stop" to ::scenarioErrorStop,
                 "rotation" to ::scenarioRotation,
                 "adaptive-layout" to { true to AdaptiveLayoutAudit(this, device, session()).run() },
@@ -747,8 +750,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
         check(waitUntil(10000) { !s.operationsBlockedPublic })
         try {
             val error = NativeAudio.startConfigured(intArrayOf(
-                -1, 0, 0, 0, 0, 0, 0,
-                channel.device.id, channel.index, channel.total, 0, 0, 0, 0,
+                -1, 0, 0, 0, 0, 0, 0, 0,
+                channel.device.id, channel.index, channel.total, 0, 0, 0, 0, 0,
             ))
             check(error.isEmpty()) { error }
             val rate = NativeAudio.outputRate(channel.device.id)
@@ -1036,8 +1039,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
             for ((policy, format) in listOf(0 to 0, 1 to 0, 2 to 0, 2 to 1, 2 to 2)) {
                 val trace = File(targetContext.filesDir, "latency-policy-$policy-format-$format.csv")
                 trace.writeText("elapsedMs,inputFrames,gap,dropped,queued,guard,outputBuffer,xrun\n")
-                val spec = intArrayOf(input.device.id, input.index, input.total, 0, format, 0, 0,
-                    output.device.id, output.index, output.total, 0, format, 0, 0)
+                val spec = intArrayOf(input.device.id, input.index, input.total, 0, format, 0, 0, 0,
+                    output.device.id, output.index, output.total, 0, format, 0, 0, 0)
                 val openError = NativeAudio.startConfigured(spec, policy)
                 check(openError.isEmpty()) { "open failed for format=$format: $openError" }
                 val initialOutput = NativeAudio.endpointStats(output.device.id, false)
@@ -1113,8 +1116,8 @@ class UnifiedTestInstrumentation : Instrumentation() {
             }
             // Explicit preset remains effective. A mismatched rate still returns
             // the actual native error and leaves no streams behind.
-            val spec = intArrayOf(input.device.id, input.index, input.total, 0, 0, 0, 6,
-                output.device.id, output.index, output.total, 0, 0, 0, 0)
+            val spec = intArrayOf(input.device.id, input.index, input.total, 0, 0, 0, 6, 0,
+                output.device.id, output.index, output.total, 0, 0, 0, 0, 0)
             check(NativeAudio.startConfigured(spec).isEmpty())
             Thread.sleep(500)
             check(NativeAudio.endpointStats(input.device.id, true).contains("preset=6"))
@@ -1250,6 +1253,130 @@ class UnifiedTestInstrumentation : Instrumentation() {
             return false to (failure.message ?: failure.toString())
         }
         return true to "start/stop ok; info action gated, one-shot sampled, auto-dismissed; stats=$stats"
+    }
+
+    /** Per-pair parameter tooltip: native controls, clamping, policy and pinned buffer reach the engine. */
+    private fun scenarioRouteParams(): Pair<Boolean, String> {
+        val s = session()
+        if (!awaitDiscovery(s)) return false to "discovery unfinished"
+        val inKey = firstEnabledInput(s)?.key ?: return false to "no enabled input"
+        val outKey = firstEnabledOutput(s)?.key ?: return false to "no enabled output"
+        val outDeviceKey = firstEnabledOutput(s)?.deviceKey ?: return false to "no enabled output"
+        if (!waitUntil(10000) { !s.operationsBlockedPublic && !s.runningPublic }) {
+            return false to "session busy before start"
+        }
+        setPair(s, inKey, outKey)
+        runOnMainSync { s.switchTab(2) }
+        val paramsDesc = "设置转发 1的转发参数"
+        try {
+            if (!waitUntil(5000) { device.hasObject(By.desc(paramsDesc)) }) {
+                return false to "params action missing; texts=${dumpTextsGuarded(4000).take(30).joinToString("|")}"
+            }
+            device.findObject(By.desc(paramsDesc)).click()
+            check(waitUntil(5000) { device.hasObject(By.res("route-params-tooltip")) }) {
+                "params tooltip did not open"
+            }
+            // The scrollable body only exposes visible rows to accessibility.
+            // Dropdown anchors carry their own (empty) scroll; take the tallest.
+            val body = device.findObject(By.res("route-params-tooltip"))
+                ?.findObjects(By.scrollable(true))?.maxByOrNull { it.visibleBounds.height() }
+                ?: error("params body not scrollable")
+            fun scrollToDesc(fragment: String): UiObject2 {
+                repeat(4) {
+                    device.findObject(By.descContains(fragment))?.let { return it }
+                    body.scroll(Direction.DOWN, 0.6f)
+                    SystemClock.sleep(250)
+                }
+                return device.findObject(By.descContains(fragment)) ?: error(
+                    "control missing: $fragment; texts=${dumpTextsGuarded(4000).take(60).joinToString("|")}")
+            }
+            for (name in listOf("rate", "format", "preset", "exclusive")) {
+                check(hasText(name)) {
+                    "parameter $name missing; texts=${dumpTextsGuarded(4000).take(60).joinToString("|")}"
+                }
+            }
+            for (name in listOf("bufferBursts", "latencyMode")) {
+                var found = hasText(name)
+                repeat(4) {
+                    if (!found) {
+                        body.scroll(Direction.DOWN, 0.6f)
+                        SystemClock.sleep(250)
+                        found = hasText(name)
+                    }
+                }
+                check(found) {
+                    "parameter $name missing after scroll; texts=${dumpTextsGuarded(4000).take(60).joinToString("|")}"
+                }
+            }
+            body.scroll(Direction.UP, 1f)
+            SystemClock.sleep(250)
+            // Enum dropdown commits into the shared per-device settings.
+            scrollToDesc("rate，采样率").click()
+            check(waitUntil(3000) { device.hasObject(By.text("16000 Hz")) }) { "rate menu did not open" }
+            check(clickText("16000 Hz")) { "rate option missing" }
+            check(waitUntil(3000) { s.config(s.inputs.getValue(inKey)).rate == 16000 }) {
+                "rate edit not committed: ${s.config(s.inputs.getValue(inKey)).rate}"
+            }
+            // Numeric field clamps to the engine range; type like a real user.
+            fun typeBuffer(text: String, clears: Int) {
+                scrollToDesc("bufferBursts").click()
+                SystemClock.sleep(400)
+                repeat(clears) {
+                    device.pressKeyCode(67) // KEYCODE_DEL
+                    SystemClock.sleep(120)
+                }
+                device.executeShellCommand("input text $text")
+                SystemClock.sleep(400)
+            }
+            typeBuffer("40", 1)
+            // Engine range is 0..32 bursts; the field clamps out-of-range input.
+            check(waitUntil(3000) { s.config(s.outputs.getValue(outKey)).buffer == 32 }) {
+                "buffer not clamped: ${s.config(s.outputs.getValue(outKey)).buffer}"
+            }
+            typeBuffer("4", 2)
+            check(waitUntil(3000) { s.config(s.outputs.getValue(outKey)).buffer == 4 }) {
+                "buffer edit not committed: ${s.config(s.outputs.getValue(outKey)).buffer}"
+            }
+            // Session-wide latency policy through the same table.
+            scrollToDesc("latencyMode，转发延迟策略").click()
+            check(waitUntil(3000) { device.hasObject(By.text("zero input guard / two output bursts")) }) {
+                "policy menu did not open"
+            }
+            check(clickText("zero input guard / two output bursts")) { "policy option missing" }
+            check(waitUntil(3000) { s.latencyPolicy == 1 }) { "policy edit not committed: ${s.latencyPolicy}" }
+            val close = device.findObject(By.res("route-params-tooltip"))
+                ?.findObject(By.text("关闭")) ?: error("params tooltip close missing")
+            close.click()
+            check(waitUntil(3000) { !device.hasObject(By.res("route-params-tooltip")) }) {
+                "params tooltip did not dismiss"
+            }
+            // Restore the rate so both streams negotiate the same actual rate, then start.
+            runOnMainSync { s.updateSettings(s.inputs.getValue(inKey)) { it.copyOf(rate = 0) } }
+            check(clickText("启动 1 个转发")) { "start button missing" }
+            check(waitUntil(25000) { s.runningPublic }) { "forwarding did not start; " + diagnostics(s) }
+            check(waitUntil(10000) {
+                s.actualStats[outDeviceKey]?.contains("bufferBursts=4") == true &&
+                    s.actualStats[outDeviceKey]?.contains("policy=1") == true
+            }) { "pinned buffer/policy not applied: ${s.actualStats[outDeviceKey]}" }
+            // The params entry locks while forwarding runs.
+            device.findObject(By.desc(paramsDesc)).click()
+            SystemClock.sleep(800)
+            check(!device.hasObject(By.res("route-params-tooltip"))) { "params opened while running" }
+            check(clickText("停止转发")) { "stop button missing" }
+            check(waitUntil(20000) { !s.runningPublic && s.service == null }) { "forwarding did not stop" }
+            return true to "params table complete; enum/numeric/policy committed and clamped; pinned buffer and policy reached the engine; locked while running"
+        } catch (failure: Throwable) {
+            if (device.hasObject(By.res("route-params-tooltip"))) device.pressBack()
+            runOnMainSync { s.stop(null, false) }
+            waitUntil(20000) { !s.operationsBlockedPublic }
+            return false to (failure.message ?: failure.toString())
+        } finally {
+            runOnMainSync {
+                s.updateSettings(s.inputs.getValue(inKey)) { it.copyOf(rate = 0) }
+                s.updateSettings(s.outputs.getValue(outKey)) { it.copyOf(buffer = 0) }
+                s.setLatencyPolicy(2)
+            }
+        }
     }
 
     private fun scenarioErrorStop(): Pair<Boolean, String> {

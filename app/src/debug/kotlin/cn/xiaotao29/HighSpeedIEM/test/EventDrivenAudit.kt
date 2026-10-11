@@ -131,7 +131,7 @@ internal class EventDrivenAudit(private val instrumentation: Instrumentation, pr
             ui.executeShellCommand("cmd appops set --uid ${instrumentation.targetContext.packageName} RECORD_AUDIO $restoreMode")
 
             // Many genuine starts/stops exercise eventfd and waiter ownership.
-            val spec = intArrayOf(input.device.id, input.index, input.total, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0)
+            val spec = intArrayOf(input.device.id, input.index, input.total, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0)
             val fdCount = File("/proc/self/fd").list()!!.size
             val eventFds = eventFdCount()
             repeat(20) {

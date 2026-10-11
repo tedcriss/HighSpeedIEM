@@ -12,12 +12,15 @@ data class DeviceSettings(
     val format: Int = 0,
     val preset: Int = 0,
     val exclusive: Boolean = false,
+    /** Output buffer in bursts; 0 keeps the adaptive latency tuner. */
+    val buffer: Int = 0,
     /** -1 unknown, 0 not granted, 1 exclusive opens succeed. */
     val exclusiveSupport: Int = -1,
 ) {
     fun copyOf(rate: Int = this.rate, format: Int = this.format, preset: Int = this.preset,
-               exclusive: Boolean = this.exclusive, exclusiveSupport: Int = this.exclusiveSupport) =
-        DeviceSettings(rate, format, preset, exclusive, exclusiveSupport)
+               exclusive: Boolean = this.exclusive, buffer: Int = this.buffer,
+               exclusiveSupport: Int = this.exclusiveSupport) =
+        DeviceSettings(rate, format, preset, exclusive, buffer, exclusiveSupport)
 
     companion object {
         fun formatName(value: Int): String = when (value) {

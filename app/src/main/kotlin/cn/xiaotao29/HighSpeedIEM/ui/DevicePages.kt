@@ -355,7 +355,7 @@ private fun ParameterFields(stacked: Boolean, content: @Composable (Modifier) ->
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun OptionDropdown(
-    label: String,
+    label: String?,
     options: List<String>,
     selectedIndex: Int,
     enabled: Boolean,
@@ -449,7 +449,8 @@ fun OptionDropdown(
             state = textState,
             readOnly = true,
             enabled = enabled,
-            label = { Text(label, style = MaterialTheme.typography.labelMedium) },
+            // Null label: tables and rows that name the parameter outside the field.
+            label = label?.let { text -> { Text(text, style = MaterialTheme.typography.labelMedium) } },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             textStyle = MaterialTheme.typography.bodyMedium,
             outputTransformation = valueStyling,
@@ -505,7 +506,7 @@ fun OptionDropdown(
                             previous = itemFocus[(index - 1 + itemFocus.size) % itemFocus.size]
                         }
                         .keyboardFocus().semantics {
-                        if (option.isBlank()) contentDescription = "空白，清除$label"
+                        if (option.isBlank() && label != null) contentDescription = "空白，清除$label"
                     },
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 )

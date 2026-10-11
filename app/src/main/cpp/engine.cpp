@@ -37,6 +37,8 @@ constexpr uint32_t kRingCapacity = 16384;
 constexpr uint32_t kSpectrumHistory = 1024;
 constexpr int kMaxChannels = 32;
 constexpr int kMaxRoutes = 128;
+// Upper bound for the pinned output buffer, in bursts (0 keeps adaptive tuning).
+constexpr int kMaxBufferBursts = 32;
 constexpr int kSpectrumFft = 512;
 
 int captureFramesToDiscard(int available, int callbackFrames, int inputBurst, int outputBurst,
@@ -169,6 +171,8 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
     int requestedFormat = 0; // 0 = let the system choose
     int exclusive = 0;
     int inputPreset = 0;
+    // 0 = adaptive LatencyTuner; >0 pins the stream buffer to that many bursts.
+    int requestedBufferBursts = 0;
     std::vector<float> scratch;
     std::vector<uint8_t> capture;
     Endpoint *pullOwner = nullptr;
@@ -347,7 +351,8 @@ struct Engine {
         for (auto &e : endpoints) {
             if (e->deviceId == spec[0] && e->input == input &&
                 (e->requestedRate != spec[3] || e->requestedFormat != spec[4] ||
-                 e->exclusive != spec[5] || e->inputPreset != spec[6])) {
+                 e->exclusive != spec[5] || e->inputPreset != spec[6] ||
+                 e->requestedBufferBursts != spec[7])) {
                 throw std::invalid_argument("AAudio same-device configurations differ");
             }
         }
@@ -356,6 +361,7 @@ struct Engine {
         e->requestedFormat = spec[4];
         e->exclusive = spec[5];
         e->inputPreset = spec[6];
+        e->requestedBufferBursts = spec[7];
         return e;
     }
 
@@ -441,20 +447,30 @@ struct Engine {
         e.scratch.resize(kRingCapacity * e.channels);
         if (e.pullOwner) e.capture.resize(kRingCapacity * e.channels * sizeof(float));
         if (!e.input) {
-            e.tuner = std::make_unique<oboe::LatencyTuner>(*e.stream);
-            const int minimum = e.stream->getFramesPerBurst() *
-                (latencyMode == 2 && !e.outputRoutes.empty() ? 1 : 2);
-            e.tuner->setMinimumBufferSize(minimum);
-            // The constructor resets to two bursts. Apply the new minimum via
-            // the tuner's own reset path before starting the output callback.
-            e.tuner->requestReset();
-            const auto tuning = e.tuner->tune();
-            if (tuning != oboe::Result::OK && tuning != oboe::Result::ErrorUnimplemented)
-                return oboe::convertToText(tuning);
-            auto size = e.stream->setBufferSizeInFrames(minimum);
-            if (!size) return oboe::convertToText(size.error());
-            e.outputProbe.floor = size.value(); // actual device-clamped minimum
-            e.outputMinimum.store(size.value());
+            if (e.requestedBufferBursts > 0) {
+                // Pinned buffer: apply once, device-clamped, no adaptive tuning.
+                const int requested = e.stream->getFramesPerBurst() * e.requestedBufferBursts;
+                const auto size = e.stream->setBufferSizeInFrames(
+                    std::min(requested, e.stream->getBufferCapacityInFrames()));
+                if (!size) return oboe::convertToText(size.error());
+                e.outputProbe.floor = size.value();
+                e.outputMinimum.store(size.value());
+            } else {
+                e.tuner = std::make_unique<oboe::LatencyTuner>(*e.stream);
+                const int minimum = e.stream->getFramesPerBurst() *
+                    (latencyMode == 2 && !e.outputRoutes.empty() ? 1 : 2);
+                e.tuner->setMinimumBufferSize(minimum);
+                // The constructor resets to two bursts. Apply the new minimum via
+                // the tuner's own reset path before starting the output callback.
+                e.tuner->requestReset();
+                const auto tuning = e.tuner->tune();
+                if (tuning != oboe::Result::OK && tuning != oboe::Result::ErrorUnimplemented)
+                    return oboe::convertToText(tuning);
+                auto size = e.stream->setBufferSizeInFrames(minimum);
+                if (!size) return oboe::convertToText(size.error());
+                e.outputProbe.floor = size.value(); // actual device-clamped minimum
+                e.outputMinimum.store(size.value());
+            }
         }
         if (e.input) {
             e.history.clear();
@@ -688,12 +704,13 @@ oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buff
             gaps.fetch_add(numFrames - count, std::memory_order_relaxed);
         }
         writePcm(buffer, samples, numFrames * channels, s->getFormat());
+        // Counters stay live even with a pinned buffer (no tuner instance).
+        const auto count = s->getXRunCount();
+        if (count) xruns.store(count.value(), std::memory_order_relaxed);
         if (tuner) {
             const auto result = tuner->tune();
             if (result != oboe::Result::OK && result != oboe::Result::ErrorUnimplemented) signal->fail(result);
-            const auto count = s->getXRunCount();
             if (count) {
-                xruns.store(count.value(), std::memory_order_relaxed);
                 if (engine->latencyMode != 0) {
                     const int target = outputProbe.update(s->getBufferSizeInFrames(), s->getFramesPerBurst(),
                         s->getSampleRate(), numFrames, count.value() != previousXRuns,
@@ -758,27 +775,30 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startNative(JNIEnv *env, jclass
         engine.reset();
         if (!spec || latencyMode < 0 || latencyMode > 2) return toJString(env, "ErrorIllegalArgument");
         const int length = env->GetArrayLength(spec);
-        if (length == 0 || length % 14 || length > 14 * kMaxRoutes) {
+        // 8 ints per endpoint: id, channel, channels, rate, format, exclusive,
+        // preset, bufferBursts.
+        if (length == 0 || length % 16 || length > 16 * kMaxRoutes) {
             return toJString(env, oboe::convertToText(oboe::Result::ErrorIllegalArgument));
         }
         std::vector<jint> a(length);
         env->GetIntArrayRegion(spec, 0, length, a.data());
         engine = std::make_unique<Engine>();
         engine->latencyMode = latencyMode;
-        for (int k = 0; k < length; k += 14) {
-            for (int side : {0, 7}) {
+        for (int k = 0; k < length; k += 16) {
+            for (int side : {0, 8}) {
                 const int x = k + side;
                 if (a[x] != -1 && (a[x] <= 0 || a[x + 1] < 0 || a[x + 2] < 1 || a[x + 2] > kMaxChannels ||
                                    a[x + 1] >= a[x + 2] || a[x + 3] < 0 || a[x + 3] > 384000 ||
-                                   a[x + 4] < 0 || a[x + 4] > 4 || a[x + 5] < 0 || a[x + 5] > 1)) {
+                                   a[x + 4] < 0 || a[x + 4] > 4 || a[x + 5] < 0 || a[x + 5] > 1 ||
+                                   a[x + 7] < 0 || a[x + 7] > kMaxBufferBursts)) {
                     engine.reset();
                     return toJString(env, oboe::convertToText(oboe::Result::ErrorIllegalArgument));
                 }
             }
             Endpoint *in = engine->configured(&a[k], true);
-            Endpoint *out = engine->configured(&a[k + 7], false);
+            Endpoint *out = engine->configured(&a[k + 8], false);
             if (in && out) {
-                engine->routes.push_back(std::make_unique<Route>(in, out, a[k + 1], a[k + 8]));
+                engine->routes.push_back(std::make_unique<Route>(in, out, a[k + 1], a[k + 9]));
             }
             if (!in && !out) {
                 engine.reset();
@@ -875,6 +895,7 @@ std::string endpointData(Endpoint &e, int part) {
     }
     if (part == 1) {
         text << "buffer=" << s->getBufferSizeInFrames();
+        if (e.requestedBufferBursts) text << " · bufferBursts=" << e.requestedBufferBursts;
         if (e.pullOwner) text << " · cushion=" << e.pullCushion.load() << " · guard=" << e.guardFrames.load();
         if (!e.input) text << " · outputTarget=" << e.outputMinimum.load();
         for (auto *r : e.outputRoutes) if (r->ring) {
@@ -1270,7 +1291,7 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_monitorConfigured(JNIEnv *env, 
     std::lock_guard<std::mutex> lock(controlMutex);
     if (!engine || !engine->active.load()) return toJString(env, "");
     if (!config || env->GetArrayLength(config) != 7) return toJString(env, "ErrorIllegalArgument");
-    int a[7];
+    int a[8] = {}; // endpoint spec width; monitoring never pins the buffer
     env->GetIntArrayRegion(config, 0, 7, a);
     const int deviceId = a[0], channels = a[2];
     if (deviceId <= 0 || channels < 1 || channels > kMaxChannels || a[1] < 0 || a[1] >= channels ||
@@ -1280,7 +1301,7 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_monitorConfigured(JNIEnv *env, 
     for (auto &e : engine->endpoints) {
         if (e->input && e->deviceId == deviceId) {
             if (e->channels >= channels && e->requestedRate == a[3] && e->requestedFormat == a[4] &&
-                e->exclusive == a[5] && e->inputPreset == a[6]) {
+                e->exclusive == a[5] && e->inputPreset == a[6] && e->requestedBufferBursts == a[7]) {
                 return toJString(env, "");
             }
             return toJString(env, "AAudio active input configuration differs from spectrum request");

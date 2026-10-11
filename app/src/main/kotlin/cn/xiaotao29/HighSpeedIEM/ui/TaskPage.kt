@@ -74,6 +74,7 @@ private val TaskToolbarShadowElevation = 6.dp
 private data class RouteCardState(
     val row: RouteModel.Row,
     val infoEnabled: Boolean,
+    val paramsEnabled: Boolean,
 )
 
 /**
@@ -93,8 +94,10 @@ fun TaskPage(
     // Capture values in this subscribed scope. Lazy content and child cards
     // receive immutable snapshots instead of reading a mutable session later.
     val running = session.runningPublic
+    val locked = session.forwardingLockedPublic
     val cards = session.model.rows.map { row ->
-        RouteCardState(row, infoEnabled = running && row.complete())
+        RouteCardState(row, infoEnabled = running && row.complete(),
+            paramsEnabled = !locked && row.complete())
     }
     val inputChannels = session.inputs.values.filter { it.key !in session.disabled }
     val outputChannels = session.outputs.values.filter { it.key !in session.disabled }
@@ -200,13 +203,19 @@ private fun RouteCard(
                         Modifier.weight(1f), onPick)
                 }
             }
-            // Only a complete pair has running parameters to show; the entry
-            // unlocks while forwarding runs and dismissal is automatic on stop.
+            // Only a complete pair has parameters to show or edit; the info
+            // entry unlocks while forwarding runs, the params entry before a
+            // start, and both dismiss automatically when their lock flips.
             val input = session.inputs[row.input]
             val output = session.outputs[row.output]
             if (row.complete() && input != null && output != null) {
-                RouteInfoTooltip(activity, session, "转发 ${index + 1}", input, output,
-                    cardBounds, state.infoEnabled, Modifier.padding(top = 4.dp))
+                Row(Modifier.padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RouteInfoTooltip(activity, session, "转发 ${index + 1}", input, output,
+                        cardBounds, state.infoEnabled)
+                    RouteParamsTooltip(activity, session, "转发 ${index + 1}", input, output,
+                        cardBounds, state.paramsEnabled)
+                }
             }
         }
     }
