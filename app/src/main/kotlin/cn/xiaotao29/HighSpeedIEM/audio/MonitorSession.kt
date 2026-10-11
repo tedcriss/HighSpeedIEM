@@ -139,6 +139,9 @@ class MonitorSession(private val context: Context) {
     var service: ForwardingOwner? = null
     var tab: Int = 0
     var visible: Boolean = false
+    // Only the compact information page keeps a live 3s telemetry display.
+    // The standard task page reads counters once per route-info tooltip open.
+    private var telemetryPolling = false
     var loading: Boolean = false
         private set
     var running: Boolean = false
@@ -160,6 +163,7 @@ class MonitorSession(private val context: Context) {
     private var healthReading = false
     private var statsReading = false
     private var pendingSettings = false
+    private var pendingTelemetryOnce = false
     private var appOpsWatching = false
     private var permissionChecking = false
     private var permissionCheckPending = false
@@ -296,9 +300,11 @@ class MonitorSession(private val context: Context) {
 
     private fun readStreamSnapshots(telemetry: Boolean) {
         if (disposed || !running || operationsBlocked()) return
-        if (statsReading) { pendingSettings = true; return }
+        // A queued counter request must survive the settings-only re-read.
+        if (statsReading) { pendingSettings = true; if (telemetry) pendingTelemetryOnce = true; return }
         statsReading = true
         pendingSettings = false
+        pendingTelemetryOnce = false
         val token = generation
         val id = NativeAudio.currentSessionId
         val endpoints = model.rows.filter { it.complete() }.flatMap {
@@ -326,13 +332,13 @@ class MonitorSession(private val context: Context) {
                 statsReading = false
                 if (disposed || !running) return@post
                 if (token != generation || id != NativeAudio.currentSessionId) {
-                    if (pendingSettings || _endpointSnapshots.value.isEmpty()) readStreamSnapshots(telemetry = false)
+                    if (pendingSettings || _endpointSnapshots.value.isEmpty()) readStreamSnapshots(telemetry = pendingTelemetryOnce)
                     return@post
                 }
                 if (error != null) { stop(error, false); return@post }
                 _endpointSnapshots.value = snapshots
                 _streamStats.value = snapshots.mapValues { it.value.display() }
-                if (pendingSettings) readStreamSnapshots(telemetry = false)
+                if (pendingSettings) readStreamSnapshots(telemetry = pendingTelemetryOnce)
             }
         }
     }
@@ -1152,7 +1158,7 @@ class MonitorSession(private val context: Context) {
         if (!running && previewKey != null && visible && tab == 0) main.postDelayed(spectrumSample, 150)
         if (running) {
             if (_endpointSnapshots.value.isEmpty() || pendingSettings) readStreamSnapshots(telemetry = false)
-            if (visible && tab == 2) main.postDelayed(telemetrySample, 3000)
+            if (visible && tab == 2 && telemetryPolling) main.postDelayed(telemetrySample, 3000)
         }
         scheduleOperationDeadline()
     }
@@ -1189,6 +1195,18 @@ class MonitorSession(private val context: Context) {
         visibilityGeneration++
         if (!visible) dismissInputPreview(selectedInput) else checkMicrophoneAccess()
         changed()
+    }
+
+    /** The compact information module opts into the periodic telemetry display. */
+    fun setTelemetryPolling(enabled: Boolean) {
+        if (telemetryPolling == enabled) return
+        telemetryPolling = enabled
+        scheduleTimers()
+    }
+
+    /** Explicit one-shot counter read for the route-info tooltip; no periodic sampling. */
+    fun sampleStatsOnce() {
+        readStreamSnapshots(telemetry = true)
     }
 
     private fun changed() {

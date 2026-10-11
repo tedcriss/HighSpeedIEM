@@ -82,11 +82,19 @@ internal class EventDrivenAudit(private val instrumentation: Instrumentation, pr
                     s.endpointSnapshots.value.getValue(output.deviceKey).revision > beforeSettings.revision
             }
             check(s.endpointSnapshots.value.getValue(output.deviceKey).config === config) { "config re-read" }
-            main { s.switchTab(1) }
+            // The standard task page never samples periodically, even while visible.
             val counters = s.endpointSnapshots.value.mapValues { it.value.telemetry }
             SystemClock.sleep(3600)
-            check(s.endpointSnapshots.value.mapValues { it.value.telemetry } == counters) { "hidden task telemetry sampled" }
-            checks.add("open config cached; actual buffer event/revision; hidden telemetry stopped")
+            check(s.endpointSnapshots.value.mapValues { it.value.telemetry } == counters) { "visible task telemetry polled" }
+            main { s.sampleStatsOnce() }
+            waitFor("explicit single telemetry sample", 5000) {
+                s.endpointSnapshots.value.getValue(output.deviceKey).telemetry != counters.getValue(output.deviceKey)
+            }
+            main { s.switchTab(1) }
+            val hidden = s.endpointSnapshots.value.mapValues { it.value.telemetry }
+            SystemClock.sleep(3600)
+            check(s.endpointSnapshots.value.mapValues { it.value.telemetry } == hidden) { "hidden task telemetry sampled" }
+            checks.add("open config cached; actual buffer event/revision; no periodic telemetry; explicit sample once; hidden quiet")
 
             val errorAt = SystemClock.uptimeMillis()
             val failures = (1..12).map { Thread { NativeAudio.injectError(-899) }.apply { this.start() } }

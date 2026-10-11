@@ -1180,11 +1180,26 @@ class UnifiedTestInstrumentation : Instrumentation() {
         val s = session()
         if (!awaitDiscovery(s)) return false to "discovery unfinished"
         val inKey = firstEnabledInput(s)?.key ?: return false to "no enabled input"
+        val inDeviceKey = firstEnabledInput(s)?.deviceKey ?: return false to "no enabled input"
         val outKey = firstEnabledOutput(s)?.key ?: return false to "no enabled output"
         if (!waitUntil(10000) { !s.operationsBlockedPublic && !s.runningPublic }) {
             return false to "session busy before start"
         }
         setPair(s, inKey, outKey)
+        runOnMainSync { s.switchTab(2) }
+        val infoDesc = "查看转发 1的运行信息"
+        // The on-demand information entry exists but stays closed before start.
+        // A merged Compose accessibility wrapper may still report enabled=true,
+        // so exercise the actual touch path like the compact scenarios do.
+        if (!waitUntil(5000) { device.hasObject(By.desc(infoDesc)) }) {
+            return false to "route info action missing before start; texts=${dumpTextsGuarded(4000).take(40).joinToString("|")}"
+        }
+        device.findObject(By.desc(infoDesc)).click()
+        SystemClock.sleep(800)
+        if (device.hasObject(By.res("route-info-tooltip"))) {
+            device.pressBack()
+            return false to "route info opened while stopped"
+        }
         runOnMainSync {
             s.prepareForwarding {
                 if (s.startingPublic && !s.loadingPublic) {
@@ -1200,11 +1215,41 @@ class UnifiedTestInstrumentation : Instrumentation() {
         }
         val stats = s.actualStats.values.firstOrNull()?.replace("\n", "; ") ?: ""
         if (!waitUntil(3000) { s.service != null }) return false to "service not attached"
-        runOnMainSync { s.stop(null, false) }
-        if (!waitUntil(20000) { !s.runningPublic && s.service == null }) {
-            return false to "forwarding did not stop"
+        try {
+            // The standard task page never polls counters; they stay frozen until
+            // the tooltip explicitly samples once, then freeze again.
+            fun telemetry() = s.endpointSnapshots.value.mapValues { it.value.telemetry }
+            val idle = telemetry()
+            Thread.sleep(3600)
+            check(telemetry() == idle) { "task page polled telemetry without the tooltip" }
+            device.findObject(By.desc(infoDesc)).click()
+            check(waitUntil(5000) { device.hasObject(By.res("route-info-tooltip")) }) {
+                "route info tooltip did not open"
+            }
+            check(waitUntil(5000) { telemetry()[inDeviceKey] != idle[inDeviceKey] }) {
+                "tooltip open did not sample counters once; idle=${idle[inDeviceKey]}; now=${telemetry()[inDeviceKey]}; " +
+                    "notice=${s.notices.value}"
+            }
+            check(hasText("转发 1 · 运行信息") && hasText("burst")) {
+                "route info table incomplete; texts=${dumpTextsGuarded().take(30).joinToString("|")}"
+            }
+            val sampled = telemetry()
+            Thread.sleep(3600)
+            check(telemetry() == sampled) { "tooltip kept polling counters" }
+            // Stopping while open must dismiss the tooltip automatically.
+            runOnMainSync { s.stop(null, false) }
+            check(waitUntil(20000) { !s.runningPublic && s.service == null }) {
+                "forwarding did not stop"
+            }
+            check(waitUntil(5000) { !device.hasObject(By.res("route-info-tooltip")) }) {
+                "route info tooltip stayed open after stop"
+            }
+        } catch (failure: Throwable) {
+            runOnMainSync { s.stop(null, false) }
+            waitUntil(20000) { !s.operationsBlockedPublic }
+            return false to (failure.message ?: failure.toString())
         }
-        return true to "start/stop ok; stats=$stats"
+        return true to "start/stop ok; info action gated, one-shot sampled, auto-dismissed; stats=$stats"
     }
 
     private fun scenarioErrorStop(): Pair<Boolean, String> {

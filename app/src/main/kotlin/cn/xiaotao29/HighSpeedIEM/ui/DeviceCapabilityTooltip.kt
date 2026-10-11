@@ -90,7 +90,7 @@ internal fun DeviceCapabilityTooltip(channel: Channel, cardBounds: IntRect?, ena
 
 /** A shared column width keeps every row aligned, including multiline values. */
 @Composable
-private fun CapabilityTable(entries: List<Pair<String, String>>, modifier: Modifier = Modifier) {
+internal fun CapabilityTable(entries: List<Pair<String, String>>, modifier: Modifier = Modifier) {
     Layout(
         modifier = modifier,
         content = {

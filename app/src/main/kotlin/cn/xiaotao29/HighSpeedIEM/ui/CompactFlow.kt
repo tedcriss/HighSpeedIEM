@@ -87,6 +87,12 @@ fun CompactFlow(activity: MainActivity, session: MonitorSession) {
     var enterPage by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
     // These pages configure routes; entering from a phone releases previews/tests.
     LaunchedEffect(session) { activity.safe { session.switchTab(2) } }
+    // The compact information module keeps the live telemetry display; the
+    // standard task page samples counters once per route-info tooltip open.
+    DisposableEffect(session) {
+        session.setTelemetryPolling(true)
+        onDispose { session.setTelemetryPolling(false) }
+    }
     BoxWithConstraints(Modifier.fillMaxSize().onPreviewKeyEvent { event ->
         val step = when (event.key) {
             Key.DirectionLeft -> -1

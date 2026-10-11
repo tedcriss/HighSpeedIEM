@@ -1,6 +1,7 @@
 package cn.xiaotao29.HighSpeedIEM.test
 
 import android.app.Instrumentation
+import android.content.Intent
 import android.graphics.Rect
 import android.os.SystemClock
 import androidx.test.uiautomator.By
@@ -9,6 +10,7 @@ import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import cn.xiaotao29.HighSpeedIEM.audio.Channel
 import cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
+import cn.xiaotao29.HighSpeedIEM.service.ForwardingService
 import java.io.File
 
 /** Actual popup/card bounds, including edge cards, rotation and large text on one phone. */
@@ -83,6 +85,50 @@ internal class TooltipCompatibilityAudit(
         }
     }
 
+    /** Route-info popup over a real running pair: gated action, avoidance, fixed close. */
+    private fun exerciseRouteInfo(name: String, zeroOverlap: Boolean) {
+        main { session.switchTab(2); session.consumeNotice() }
+        settle()
+        val input = session.inputs.values.firstOrNull { it.key !in session.disabled } ?: return
+        val output = session.outputs.values.firstOrNull { it.key !in session.disabled } ?: return
+        main {
+            session.model.clear()
+            val row = session.model.rows.last()
+            session.setRouteSide(row, true, input.key)
+            session.setRouteSide(row, false, output.key)
+        }
+        settle()
+        val infoDesc = "查看转发 1的运行信息"
+        await("route info action missing") { device.hasObject(By.desc(infoDesc)) }
+        // A merged Compose wrapper may report enabled=true; exercise the touch path.
+        device.findObject(By.desc(infoDesc)).click()
+        SystemClock.sleep(600)
+        check(!device.hasObject(By.res("route-info-tooltip"))) { "route info opened while stopped" }
+        main {
+            session.prepareForwarding {
+                if (session.startingPublic && !session.loadingPublic) {
+                    instrumentation.targetContext.startForegroundService(
+                        Intent(instrumentation.targetContext, ForwardingService::class.java))
+                }
+            }
+        }
+        // Starting opens real streams; give it the same budget as the start scenarios.
+        val startDeadline = SystemClock.uptimeMillis() + 30000
+        while (SystemClock.uptimeMillis() < startDeadline &&
+            !(session.runningPublic && session.actualStats.isNotEmpty())) SystemClock.sleep(200)
+        check(session.runningPublic && session.actualStats.isNotEmpty()) { "route forwarding did not start" }
+        settle()
+        val card = device.findObject(By.res("task-route-0"))?.visibleBounds ?: error("route card missing")
+        val viewport = device.findObject(By.res("task-route-list")).visibleBounds
+        device.findObject(By.desc(infoDesc)).click()
+        checkPopup("$name-route-info", "route-info-tooltip", card, viewport, zeroOverlap)
+        device.findObject(By.text("关闭")).click()
+        await("route info did not dismiss") { !device.hasObject(By.res("route-info-tooltip")) }
+        main { session.stop(null, false) }
+        await("route forwarding did not stop") { !session.runningPublic && !session.operationsBlockedPublic }
+        settle()
+    }
+
     private fun checkPopup(name: String, tag: String, card: Rect, viewport: Rect, noOverlap: Boolean) {
         await("missing $tag") { device.hasObject(By.res(tag)) }
         SystemClock.sleep(600)
@@ -108,6 +154,7 @@ internal class TooltipCompatibilityAudit(
         val size = device.executeShellCommand("wm size").lineSequence()
             .firstOrNull { it.startsWith("Override size:") }?.substringAfter(":")?.trim()
         val font = device.executeShellCommand("settings get system font_scale").trim()
+        val savedRoutes = session.model.rows.map { it.input to it.output }
         try {
             main { session.stop(null, false); session.switchTab(0); session.consumeNotice() }
             device.executeShellCommand("settings put system font_scale 1.0")
@@ -115,9 +162,11 @@ internal class TooltipCompatibilityAudit(
             device.setOrientationNatural()
             settle()
             exercise("portrait", 1, true)
+            exerciseRouteInfo("portrait", true)
             device.setOrientationLeft()
             settle()
             exercise("landscape-2-columns", 2, true)
+            exerciseRouteInfo("landscape-2-columns", true)
             device.executeShellCommand("wm size 1080x3200")
             settle()
             exercise("landscape-3-columns", 3, true)
@@ -131,20 +180,36 @@ internal class TooltipCompatibilityAudit(
             device.setOrientationNatural()
             settle()
             exercise("portrait-font-200", 1, false)
+            exerciseRouteInfo("portrait-font-200", false)
             File(directory, "geometry.txt").writeText(results.joinToString("\n"))
-            return "${results.size} real popups; portrait, landscape 1/2/3 columns, 200% font; safe bounds, card exposure, fixed close, no nested selection"
+            return "${results.size} real popups; portrait, landscape 1/2/3 columns, 200% font; safe bounds, card exposure, fixed close, no nested selection; route info gated/one-shot"
         } catch (failure: Throwable) {
             capture("failure")
             throw failure
         } finally {
-            if (device.hasObject(By.res("spectrum-tooltip")) || device.hasObject(By.res("capability-tooltip"))) {
+            if (device.hasObject(By.res("spectrum-tooltip")) || device.hasObject(By.res("capability-tooltip"))
+                || device.hasObject(By.res("route-info-tooltip"))) {
                 device.pressBack()
             }
             device.executeShellCommand("wm size ${size ?: "reset"}")
             device.executeShellCommand("settings put system font_scale $font")
             device.setOrientationNatural()
             device.unfreezeRotation()
-            main { session.stop(null, false); session.switchTab(0); session.consumeNotice() }
+            main { session.stop(null, false) }
+            // Route editing stays locked until the stop cleanup finishes.
+            val stopDeadline = SystemClock.uptimeMillis() + 20000
+            while (SystemClock.uptimeMillis() < stopDeadline && session.operationsBlockedPublic) SystemClock.sleep(150)
+            main {
+                session.model.clear()
+                savedRoutes.forEach { (input, output) ->
+                    if (input == null && output == null) return@forEach
+                    val row = session.model.rows.last()
+                    input?.let { session.setRouteSide(row, true, it) }
+                    output?.let { session.setRouteSide(row, false, it) }
+                }
+                session.switchTab(0)
+                session.consumeNotice()
+            }
             configurator.waitForIdleTimeout = idleTimeout
         }
     }

@@ -1,11 +1,6 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,7 +36,6 @@ import androidx.compose.material3.SplitButtonDefaults
 import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.gestures.BringIntoViewSpec
@@ -54,6 +48,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
@@ -64,6 +60,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.roundToIntRect
 import androidx.compose.ui.zIndex
 import cn.xiaotao29.HighSpeedIEM.MainActivity
 import cn.xiaotao29.HighSpeedIEM.audio.Channel
@@ -75,8 +73,7 @@ private val TaskToolbarShadowElevation = 6.dp
 
 private data class RouteCardState(
     val row: RouteModel.Row,
-    val inputStats: String,
-    val outputStats: String,
+    val infoEnabled: Boolean,
 )
 
 /**
@@ -92,12 +89,12 @@ fun TaskPage(
     onControlsHeightChanged: (Dp) -> Unit = {},
 ) {
     @Suppress("UNUSED_VARIABLE") val sessionVersion = session.version.collectAsState().value
-    val stats by session.streamStats.collectAsState()
     val status = taskStatus(session)
     // Capture values in this subscribed scope. Lazy content and child cards
     // receive immutable snapshots instead of reading a mutable session later.
+    val running = session.runningPublic
     val cards = session.model.rows.map { row ->
-        RouteCardState(row, routeStats(session, row, true, stats), routeStats(session, row, false, stats))
+        RouteCardState(row, infoEnabled = running && row.complete())
     }
     val inputChannels = session.inputs.values.filter { it.key !in session.disabled }
     val outputChannels = session.outputs.values.filter { it.key !in session.disabled }
@@ -130,7 +127,8 @@ fun TaskPage(
                     animateItems = true,
                     heading = { PageHeading("音频转发", "配对已启用的输入与输出通道，即可开始转发。", status) },
                 ) { index, card, animation ->
-                    RouteCard(card, index, inputChannels, outputChannels, editable, animation) { input, value ->
+                    RouteCard(activity, session, card, index, inputChannels, outputChannels,
+                        editable, animation) { input, value ->
                         activity.safe { session.setRouteSide(card.row, input, value) }
                     }
                 }
@@ -158,9 +156,11 @@ fun TaskPage(
     }
 }
 
-/** One forwarding row: input dropdown, output dropdown, live stream stats. */
+/** One forwarding row: input dropdown, output dropdown, on-demand info tooltip. */
 @Composable
 private fun RouteCard(
+    activity: MainActivity,
+    session: MonitorSession,
     state: RouteCardState,
     index: Int,
     inputChannels: List<Channel>,
@@ -171,8 +171,11 @@ private fun RouteCard(
 ) {
     val row = state.row
     val largeText = LocalDensity.current.fontScale > 1.2f
+    var cardBounds by remember { mutableStateOf<IntRect?>(null) }
     Card(
-        modifier = modifier.fillMaxWidth().padding(bottom = 12.dp).testTag("task-route-$index"),
+        modifier = modifier.fillMaxWidth().padding(bottom = 12.dp)
+            .onGloballyPositioned { cardBounds = it.boundsInWindow().roundToIntRect() }
+            .testTag("task-route-$index"),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         shape = MaterialTheme.shapes.large,
@@ -184,18 +187,26 @@ private fun RouteCard(
                 modifier = Modifier.padding(bottom = 12.dp))
             if (largeText) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    RouteSide(row.input, inputChannels, state.inputStats, index, true, editable,
+                    RouteSide(row.input, inputChannels, index, true, editable,
                         Modifier.fillMaxWidth(), onPick)
-                    RouteSide(row.output, outputChannels, state.outputStats, index, false, editable,
+                    RouteSide(row.output, outputChannels, index, false, editable,
                         Modifier.fillMaxWidth(), onPick)
                 }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    RouteSide(row.input, inputChannels, state.inputStats, index, true, editable,
+                    RouteSide(row.input, inputChannels, index, true, editable,
                         Modifier.weight(1f), onPick)
-                    RouteSide(row.output, outputChannels, state.outputStats, index, false, editable,
+                    RouteSide(row.output, outputChannels, index, false, editable,
                         Modifier.weight(1f), onPick)
                 }
+            }
+            // Only a complete pair has running parameters to show; the entry
+            // unlocks while forwarding runs and dismissal is automatic on stop.
+            val input = session.inputs[row.input]
+            val output = session.outputs[row.output]
+            if (row.complete() && input != null && output != null) {
+                RouteInfoTooltip(activity, session, "转发 ${index + 1}", input, output,
+                    cardBounds, state.infoEnabled, Modifier.padding(top = 4.dp))
             }
         }
     }
@@ -206,7 +217,6 @@ private fun RouteCard(
 private fun RouteSide(
     current: String?,
     channels: List<Channel>,
-    stats: String,
     index: Int,
     input: Boolean,
     editable: Boolean,
@@ -216,8 +226,6 @@ private fun RouteSide(
     val keys = listOf<String?>(null) + channels.map { it.key }
     val labels = listOf(" ") + channels.map(::channelLabel)
     val selected = keys.indexOf(current).coerceAtLeast(0)
-    var lastStats by remember { mutableStateOf(stats) }
-    SideEffect { if (stats.isNotEmpty()) lastStats = stats }
 
     Column(modifier) {
         OptionDropdown(
@@ -252,19 +260,6 @@ private fun RouteSide(
             },
         ) { position ->
             if (position in keys.indices) onPick(input, keys[position])
-        }
-        // Animate the appearance of stats, never the continuously refreshed text.
-        AnimatedVisibility(
-            visible = stats.isNotEmpty(),
-            enter = expandVertically(MaterialTheme.motionScheme.fastSpatialSpec()) +
-                fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
-            exit = shrinkVertically(MaterialTheme.motionScheme.fastSpatialSpec()) +
-                fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
-            label = "route-stats",
-        ) {
-            Text(if (stats.isNotEmpty()) stats else lastStats, style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp))
         }
     }
 }
