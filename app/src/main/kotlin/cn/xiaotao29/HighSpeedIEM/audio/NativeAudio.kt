@@ -17,7 +17,9 @@ object NativeAudio {
     }
 
     /** Opens all routes at once; returns an empty string on success. */
-    external fun startConfigured(routes: IntArray): String
+    // 0: original stable policy; 1: minimum input/two output bursts;
+    // 2: minimum input/one output burst, with bounded glitch recovery.
+    external fun startConfigured(routes: IntArray, latencyMode: Int = 2): String
 
     /** Stops and releases every stream held by the engine. */
     external fun stop()

@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.1`（versionCode 22），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.2`（versionCode 23），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -18,7 +18,7 @@
 # Kotlin 插件会重建空的 .kotlin/ 目录，可随时删除，不影响构建。
 ```
 
-Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.1.apk` 命名。
+Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.2.apk` 命名。
 
 Phone 平台统一测试（instrumentation，单一入口，场景可筛选）：
 
@@ -53,13 +53,16 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   同一输入连接多个输出设备时才使用独立 SPSC 队列，按块发布/混合；不同输出互不抢读。
   回调遍历开流前固定的端点/路由指针，不访问控制线程可扩容的端点容器。
   回调内无分配、无锁、无 JNI。输入输出由系统协商，应用层不做重采样：
-  两端实际采样率不一致时关闭全部流并返回 `ErrorInvalidRate`。输出缓冲从
-  2 个 burst 起步并在输出回调中用 `LatencyTuner` 调整，输出无 xrun 30 秒后通过其原生
-  requestReset 重新尝试最小缓冲（应用缺帧同样打断稳定窗口）。直接读取通常保留一个较大的
-  输入/输出系统 burst 的余量，缺帧时在原生输入缓冲中自适应增加，最多四个且受实际容量限制；
-  连续 30 秒无缺帧并且整个窗口都有足够剩余帧时才降低一档。超出的过期音频有界丢弃，
-  避免不同驱动周期造成反复缺音。跨输出队列缺音后增加余量，
-  稳定消费 10 秒后逐 burst 降低；瞬时队列满计入丢帧而不把调度卡顿当作致命设备错误。
+  两端实际采样率不一致时关闭全部流并返回 `ErrorInvalidRate`。转发输出缓冲尝试从
+  1 个 burst 起步，由唯一的 `LatencyTuner` 根据 xrun 增加；连续 15 秒稳定后每次减少一个
+  burst，失败延长重试冷却，不直接重置到最小值。输入从零额外余量开始，部分读取的声音仍转发，
+  缺少的尾部补零；反复短读按较大系统 burst 的四分之一增加余量，上限为四个 burst 与
+  实际容量余量的较小值。稳定 10 秒后逐步降低，可降到零，试验失败恢复原值并冷却 30/60/120 秒。
+  过期音频有界丢弃；跨输出队列各自独立使用同样的细粒度恢复与修剪，不额外保留一整个输入 burst。
+  瞬时队列满仍计入丢帧，不把调度卡顿当作致命设备错误。铃声和独立探测保持两个 burst。
+  JNI 开流参数提供原始 3.1、仅降低输入、同时降低输入输出三种对照策略，生产默认最后一种。
+  诊断增加实际回调帧数、capacity、guard、短读/重新填充、缓冲试探/失败/冷却；详情与证据见
+  [3.2 延迟优化](docs/latency-optimization.md)。
   输入预设“自动”优先 VoicePerformance；Oboe 在 Android 8.1/9 自动兼容为 VoiceRecognition，
   厂商拒绝自动开流时也尝试 VoiceRecognition。显式预设及共享/独占设置保持严格生效。
   实际参数包含转发方式、预设、缺帧/丢帧与队列统计；appQueue=0 只表示无应用转发队列，

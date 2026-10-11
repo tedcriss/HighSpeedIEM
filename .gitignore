@@ -23,6 +23,10 @@ signing.properties
 .env
 .env.*
 
+# Offline measurement tools.
+__pycache__/
+*.pyc
+
 # Maven/Gradle dependencies are downloaded during the build and stay in caches.
 # Keep gradle/wrapper/gradle-wrapper.jar: it bootstraps a fresh checkout.
 # Keep app/src/main/cpp/oboe/: CMake requires these bundled sources and does

@@ -10,6 +10,7 @@
 
 #include <jni.h>
 #include <oboe/Oboe.h>
+#include "LatencyPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -86,10 +87,12 @@ struct Ring {
     }
 
     // Drop the oldest samples so a scheduling stall cannot become permanent delay.
-    void trim(uint32_t keep) {
+    uint32_t trim(uint32_t keep) {
         const auto w = write.load(std::memory_order_acquire);
         const auto r = read.load(std::memory_order_relaxed);
-        if (w - r > keep) read.store(w - keep, std::memory_order_release);
+        if (w - r <= keep) return 0;
+        read.store(w - keep, std::memory_order_release);
+        return w - r - keep;
     }
 };
 
@@ -128,7 +131,12 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
     std::vector<Route *> outputRoutes;
     std::atomic<uint64_t> dropped{0};
     std::atomic<int32_t> queued{0};
+    std::atomic<int32_t> callbackFrames{0};
     std::atomic<int> pullCushion{1};
+    InputGuard guard;
+    std::atomic<int> guardFrames{0};
+    std::atomic<uint32_t> shortReads{0}, reprimes{0}, guardProbes{0}, guardFailures{0};
+    std::atomic<int> guardCooldown{10};
     bool pullPrimed = false;
     uint64_t stableInputFrames = 0;
     int minimumPullHeadroom = INT32_MAX;
@@ -144,6 +152,9 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
     std::unique_ptr<oboe::LatencyTuner> tuner;
     int32_t previousXRuns = 0;
     uint64_t stableOutputFrames = 0;
+    OutputProbe outputProbe;
+    std::atomic<int> outputMinimum{0}, outputCooldown{15};
+    std::atomic<uint32_t> outputReductions{0}, outputFailures{0};
     uint64_t lastFrames = 0;
     std::chrono::steady_clock::time_point lastProgress = std::chrono::steady_clock::now();
 
@@ -154,6 +165,7 @@ struct Endpoint : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback,
     bool onError(oboe::AudioStream *stream, oboe::Result error) override;
     bool capturePcm(const void *buffer, int numFrames);
     int pull(int numFrames);
+    int pullStable(int numFrames);
 };
 
 // One forwarding pair. A private ring is needed only for cross-output fanout.
@@ -167,10 +179,28 @@ struct Route {
     std::atomic<int> cushion{0};
     std::atomic<uint64_t> underflows{0};
     uint64_t stableFrames = 0;
+    bool minimumLatency = false;
+    InputGuard guard;
+    std::atomic<int> guardFrames{0};
+    std::atomic<uint32_t> trimmed{0};
 
     Route(Endpoint *i, Endpoint *o, int ic, int oc) : in(i), out(o), inChannel(ic), outChannel(oc) {}
 
     uint32_t mix(float *samples, uint32_t numFrames, int inputBurst, int sampleRate) {
+        if (minimumLatency) {
+            const int outputBurst = out->stream ? out->stream->getFramesPerBurst() : numFrames;
+            guard.prepare(numFrames, kRingCapacity, inputBurst, outputBurst, sampleRate);
+            trimmed.fetch_add(ring->trim(numFrames + guard.frames), std::memory_order_relaxed);
+            if (!guard.ready(ring->available(), numFrames)) {
+                guardFrames.store(guard.frames, std::memory_order_relaxed);
+                return 0;
+            }
+            const auto count = ring->mix(samples, numFrames, out->channels, outChannel);
+            guard.completed(numFrames, count, sampleRate);
+            if (count < numFrames) underflows.fetch_add(1, std::memory_order_relaxed);
+            guardFrames.store(guard.frames, std::memory_order_relaxed);
+            return count;
+        }
         const auto burst = static_cast<uint32_t>(std::max(1, inputBurst));
         int extra = cushion.load(std::memory_order_relaxed);
         // Recover after a transient stall, gradually, rather than retaining it forever.
@@ -198,6 +228,9 @@ struct Route {
 };
 
 struct Engine {
+    // 0 = 3.1 baseline, 1 = zero input guard/two output bursts,
+    // 2 = minimum latency: zero input guard/one output burst (default).
+    int latencyMode = 2;
     std::vector<std::shared_ptr<Endpoint>> endpoints;
     std::vector<std::unique_ptr<Route>> routes;
     std::shared_ptr<EngineSignal> signal = std::make_shared<EngineSignal>();
@@ -210,6 +243,7 @@ struct Engine {
 
     void prepareRoutes() {
         for (auto &r : routes) {
+            r->minimumLatency = latencyMode != 0;
             r->in->inputRoutes.push_back(r.get());
             r->out->outputRoutes.push_back(r.get());
         }
@@ -338,9 +372,20 @@ struct Engine {
         e.scratch.resize(kRingCapacity * e.channels);
         if (e.pullOwner) e.capture.resize(kRingCapacity * e.channels * sizeof(float));
         if (!e.input) {
-            auto size = e.stream->setBufferSizeInFrames(e.stream->getFramesPerBurst() * 2);
-            if (!size) return oboe::convertToText(size.error());
             e.tuner = std::make_unique<oboe::LatencyTuner>(*e.stream);
+            const int minimum = e.stream->getFramesPerBurst() *
+                (latencyMode == 2 && !e.outputRoutes.empty() ? 1 : 2);
+            e.tuner->setMinimumBufferSize(minimum);
+            // The constructor resets to two bursts. Apply the new minimum via
+            // the tuner's own reset path before starting the output callback.
+            e.tuner->requestReset();
+            const auto tuning = e.tuner->tune();
+            if (tuning != oboe::Result::OK && tuning != oboe::Result::ErrorUnimplemented)
+                return oboe::convertToText(tuning);
+            auto size = e.stream->setBufferSizeInFrames(minimum);
+            if (!size) return oboe::convertToText(size.error());
+            e.outputProbe.floor = size.value(); // actual device-clamped minimum
+            e.outputMinimum.store(size.value());
         }
         if (e.input) {
             e.history.clear();
@@ -414,7 +459,7 @@ bool Endpoint::capturePcm(const void *buffer, int numFrames) {
     return true;
 }
 
-int Endpoint::pull(int numFrames) {
+int Endpoint::pullStable(int numFrames) {
     if (stream->getDeviceId() != deviceId) {
         signal->fail(oboe::Result::ErrorDisconnected);
         return 0;
@@ -479,7 +524,61 @@ int Endpoint::pull(int numFrames) {
     return capturePcm(capture.data(), count) ? count : 0;
 }
 
+int Endpoint::pull(int numFrames) {
+    callbackFrames.store(numFrames, std::memory_order_relaxed);
+    if (engine->latencyMode == 0) return pullStable(numFrames);
+    if (stream->getDeviceId() != deviceId) {
+        signal->fail(oboe::Result::ErrorDisconnected);
+        return 0;
+    }
+    auto available = stream->getAvailableFrames();
+    if (!available) {
+        signal->fail(available.error());
+        return 0;
+    }
+    const int rate = stream->getSampleRate();
+    guard.prepare(numFrames, stream->getBufferCapacityInFrames(), stream->getFramesPerBurst(),
+                  pullOwner->stream->getFramesPerBurst(), rate);
+    const auto publishGuard = [&] {
+        guardFrames.store(guard.frames, std::memory_order_relaxed);
+        shortReads.store(guard.shortReads, std::memory_order_relaxed);
+        reprimes.store(guard.reprimes, std::memory_order_relaxed);
+        guardProbes.store(guard.probes, std::memory_order_relaxed);
+        guardFailures.store(guard.failedProbes, std::memory_order_relaxed);
+        guardCooldown.store(guard.cooldownSeconds, std::memory_order_relaxed);
+    };
+    if (!guard.ready(available.value(), numFrames)) {
+        queued.store(available.value(), std::memory_order_relaxed);
+        gaps.fetch_add(numFrames, std::memory_order_relaxed);
+        publishGuard();
+        return 0;
+    }
+    const int discard = guard.discard(available.value(), numFrames, kRingCapacity);
+    int discarded = 0;
+    if (discard > 0) {
+        auto read = stream->read(capture.data(), discard, 0);
+        if (!read) {
+            signal->fail(read.error());
+            return 0;
+        }
+        discarded = read.value();
+        dropped.fetch_add(discarded, std::memory_order_relaxed);
+    }
+    auto read = stream->read(capture.data(), numFrames, 0);
+    if (!read) {
+        signal->fail(read.error());
+        return 0;
+    }
+    const int count = read.value();
+    guard.completed(numFrames, count, rate);
+    queued.store(std::max(0, available.value() - discarded - count), std::memory_order_relaxed);
+    gaps.fetch_add(numFrames - count, std::memory_order_relaxed);
+    publishGuard();
+    return capturePcm(capture.data(), count) ? count : 0;
+}
+
 oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buffer, int32_t numFrames) {
+    callbackFrames.store(numFrames, std::memory_order_relaxed);
     float *samples = scratch.data();
     if (numFrames < 0 || static_cast<uint32_t>(numFrames) > kRingCapacity) {
         signal->fail(oboe::Result::ErrorOutOfRange);
@@ -524,16 +623,33 @@ oboe::DataCallbackResult Endpoint::onAudioReady(oboe::AudioStream *s, void *buff
             const auto count = s->getXRunCount();
             if (count) {
                 xruns.store(count.value(), std::memory_order_relaxed);
-                if (count.value() != previousXRuns || gaps.load(std::memory_order_relaxed) != gapsBefore) {
+                if (engine->latencyMode != 0) {
+                    const int target = outputProbe.update(s->getBufferSizeInFrames(), s->getFramesPerBurst(),
+                        s->getSampleRate(), numFrames, count.value() != previousXRuns,
+                        gaps.load(std::memory_order_relaxed) != gapsBefore);
                     previousXRuns = count.value();
-                    stableOutputFrames = 0;
+                    if (target > 0) {
+                        tuner->setMinimumBufferSize(target);
+                        tuner->requestReset();
+                    } else if (target < 0) {
+                        tuner->setMinimumBufferSize(-target);
+                    }
+                    outputMinimum.store(tuner->getMinimumBufferSize(), std::memory_order_relaxed);
+                    outputCooldown.store(outputProbe.cooldownSeconds, std::memory_order_relaxed);
+                    outputReductions.store(outputProbe.reductions, std::memory_order_relaxed);
+                    outputFailures.store(outputProbe.failedReductions, std::memory_order_relaxed);
                 } else {
-                    stableOutputFrames += numFrames;
-                }
-                if (stableOutputFrames >= static_cast<uint64_t>(s->getSampleRate()) * 30) {
-                    stableOutputFrames = 0;
-                    // Use Oboe's own reset path, only after prolonged stable playback.
-                    if (s->getBufferSizeInFrames() > tuner->getMinimumBufferSize()) tuner->requestReset();
+                    if (count.value() != previousXRuns || gaps.load(std::memory_order_relaxed) != gapsBefore) {
+                        previousXRuns = count.value();
+                        stableOutputFrames = 0;
+                    } else {
+                        stableOutputFrames += numFrames;
+                    }
+                    if (stableOutputFrames >= static_cast<uint64_t>(s->getSampleRate()) * 30) {
+                        stableOutputFrames = 0;
+                        // Use Oboe's own reset path, only after prolonged stable playback.
+                        if (s->getBufferSizeInFrames() > tuner->getMinimumBufferSize()) tuner->requestReset();
+                    }
                 }
             }
         }
@@ -561,11 +677,11 @@ std::string stopError() {
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startConfigured(JNIEnv *env, jclass, jintArray spec) {
+Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startConfigured(JNIEnv *env, jclass, jintArray spec, jint latencyMode) {
     std::lock_guard<std::mutex> lock(controlMutex);
     try {
         engine.reset();
-        if (!spec) return toJString(env, "ErrorIllegalArgument");
+        if (!spec || latencyMode < 0 || latencyMode > 2) return toJString(env, "ErrorIllegalArgument");
         const int length = env->GetArrayLength(spec);
         if (length == 0 || length % 14 || length > 14 * kMaxRoutes) {
             return toJString(env, oboe::convertToText(oboe::Result::ErrorIllegalArgument));
@@ -573,6 +689,7 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_startConfigured(JNIEnv *env, jc
         std::vector<jint> a(length);
         env->GetIntArrayRegion(spec, 0, length, a.data());
         engine = std::make_unique<Engine>();
+        engine->latencyMode = latencyMode;
         for (int k = 0; k < length; k += 14) {
             for (int side : {0, 7}) {
                 const int x = k + side;
@@ -674,13 +791,28 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_endpointStats(JNIEnv *env, jcla
                      << " · buffer=" << s->getBufferSizeInFrames() << " · frames=" << e->frames.load()
                      << " · xrun=" << e->xruns.load() << " · gap=" << e->gaps.load()
                      << " · dropped=" << e->dropped.load();
+                text << " · capacity=" << s->getBufferCapacityInFrames()
+                     << " · callback=" << e->callbackFrames.load()
+                     << " · policy=" << engine->latencyMode;
                 text << "\ntransfer=" << (e->pullOwner ? "output-pull" : e->input ? "input-callback" : "output-callback");
                 if (e->input) text << " · preset=" << static_cast<int>(s->getInputPreset());
-                if (e->pullOwner) text << " · queued=" << e->queued.load()
-                                      << " · cushion=" << e->pullCushion.load() << " · appQueue=0";
+                if (e->pullOwner) {
+                    text << " · queued=" << e->queued.load() << " · appQueue=0";
+                    if (engine->latencyMode == 0) text << " · cushion=" << e->pullCushion.load();
+                    else text << " · guard=" << e->guardFrames.load()
+                              << " · shortReads=" << e->shortReads.load() << " · reprimes=" << e->reprimes.load()
+                              << " · guardProbes=" << e->guardProbes.load() << " · guardFailures=" << e->guardFailures.load()
+                              << " · guardCooldown=" << e->guardCooldown.load();
+                }
+                if (!e->input) text << " · outputTarget=" << e->outputMinimum.load()
+                    << " · outputProbes=" << e->outputReductions.load() << " · outputFailures=" << e->outputFailures.load()
+                    << " · outputCooldown=" << e->outputCooldown.load();
                 for (auto *r : e->outputRoutes) {
                     if (r->ring) text << "\nrouteQueue=" << r->ring->available()
-                                      << " · cushion=" << r->cushion.load();
+                                      << " · cushion=" << r->cushion.load()
+                                      << " · routeGuard=" << r->guardFrames.load()
+                                      << " · routeDropped=" << r->trimmed.load()
+                                      << " · routeUnderflows=" << r->underflows.load();
                 }
                 if (s->getHardwareSampleRate() > 0) {
                     text << "\nhardware: " << s->getHardwareSampleRate() << " Hz · "
@@ -1010,6 +1142,47 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
         }
     }
     // Block publication, channel extraction, additive mixing and counter wrap.
+    InputGuard guard;
+    guard.prepare(192, 4096, 768, 960, 1000);
+    if (guard.frames != 0 || !guard.ready(80, 192) || guard.discard(4096, 192, 16384) != 3904)
+        return toJString(env, "FAIL zero guard/partial startup/backlog");
+    guard.completed(192, 80, 1000);
+    if (guard.frames != 240 || guard.ready(400, 192) || !guard.ready(432, 192))
+        return toJString(env, "FAIL quarter-burst reprime");
+    for (int n = 0; n < 53; ++n) guard.completed(192, 192, 1000);
+    guard.prepare(192, 4096, 768, 960, 1000);
+    if (guard.frames != 0 || !guard.probing) return toJString(env, "FAIL guard recovery to zero");
+    guard.completed(192, 180, 1000);
+    if (guard.frames != 240 || guard.failedProbes != 1 || guard.cooldownSeconds != 30)
+        return toJString(env, "FAIL guard rollback/cooldown");
+    for (int n = 0; n < 53; ++n) guard.completed(192, 192, 1000);
+    guard.prepare(192, 4096, 768, 960, 1000);
+    if (guard.frames != 240 || guard.probing) return toJString(env, "FAIL premature guard retry");
+    guard.prepare(192, 256, 768, 960, 1000);
+    guard.completed(192, 0, 1000);
+    if (guard.frames != 64 || !guard.ready(256, 192)) return toJString(env, "FAIL capacity-limited guard");
+    guard.prepare(192, 96, 768, 960, 1000);
+    if (guard.frames != 0 || !guard.ready(96, 192)) return toJString(env, "FAIL capacity below callback");
+    // Zero guard really removes stale waveform samples, not just a statistic.
+    Ring newest;
+    for (int i = 0; i < 1024; ++i) newest.push(static_cast<float>(i));
+    newest.trim(192 + guard.frames);
+    if (!newest.pop(x) || x != 832.f) return toJString(env, "FAIL waveform age after trim");
+    OutputProbe probe;
+    probe.floor = 192;
+    for (int n = 0; n < 78; ++n) {
+        if (probe.update(576, 192, 1000, 192, false, false) != 0)
+            return toJString(env, "FAIL early output reduction");
+    }
+    if (probe.update(576, 192, 1000, 192, false, false) != 384 ||
+        probe.update(384, 192, 1000, 192, true, false) != -576 || probe.cooldownSeconds != 30)
+        return toJString(env, "FAIL output gradual reset/rollback");
+    for (int n = 0; n < 78; ++n) {
+        if (probe.update(576, 192, 1000, 192, false, false) != 0)
+            return toJString(env, "FAIL output cooldown");
+    }
+    if (probe.update(576, 192, 1000, 192, false, true) != 0 || probe.stable != 0)
+        return toJString(env, "FAIL capture gap stability reset");
     if (captureFramesToDiscard(1152, 192, 768, 960) != 0 ||
         captureFramesToDiscard(4096, 192, 768, 960) != 2944 ||
         captureFramesToDiscard(384, 192, 192, 192) != 0 ||
@@ -1054,6 +1227,7 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
     if (bad.load()) return toJString(env, "FAIL concurrent block order");
     // Multiple channels on one output bypass rings; cross-output fanout does not.
     Engine topology;
+    topology.latencyMode = 0;
     auto *single = topology.endpoint(10, 2, true);
     auto *fanout = topology.endpoint(11, 1, true);
     auto *out1 = topology.endpoint(20, 2, false);
@@ -1090,5 +1264,19 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_selfTest(JNIEnv *env, jclass) {
         return toJString(env, "FAIL stall backlog trim");
     }
     if (topology.routes[3]->ring->available() != 0) return toJString(env, "FAIL fanout block isolation");
-    return toJString(env, "PASS native FIFO, PCM16/24/32/Float, callback lifetime, block SPSC/wrap/mix, direct/fanout topology and stall recovery");
+    // The new fanout path starts without an extra burst, consumes a partial
+    // waveform, and only this consumer trims its own old samples.
+    route.minimumLatency = true;
+    route.ring->trim(0);
+    route.ring->pushChannel(mono.data(), 8, 1, 0);
+    output.fill(0);
+    if (route.mix(output.data(), 16, 16, 1000) != 8 || route.guardFrames.load() != 4 || output[0] != .25f)
+        return toJString(env, "FAIL minimum fanout partial/adaptation");
+    route.ring->pushChannel(mono.data(), 16, 1, 0);
+    route.ring->pushChannel(mono.data(), 16, 1, 0);
+    output.fill(0);
+    if (route.mix(output.data(), 16, 16, 1000) != 16 || route.ring->available() != 4 || route.trimmed.load() != 12 ||
+        topology.routes[3]->ring->available() != 0)
+        return toJString(env, "FAIL minimum fanout trim/isolation");
+    return toJString(env, "PASS native FIFO, PCM16/24/32/Float, callback lifetime, block SPSC/wrap/mix, direct/fanout topology, zero/quarter guard, capacity clamp, waveform trim, probe rollback/cooldown and stall recovery");
 }

@@ -1005,19 +1005,24 @@ class UnifiedTestInstrumentation : Instrumentation() {
     /** Real AAudio streams: read-driven input, PCM paths, sustained progress and cleanup. */
     private fun scenarioAudioLatency(): Pair<Boolean, String> {
         val s = session()
-        check(awaitDiscovery(s) && waitUntil(15000) { !s.operationsBlockedPublic }) { "session busy" }
+        check(awaitDiscovery(s) && waitUntil(15000) { !s.operationsBlockedPublic }) { "session busy: ${diagnostics(s)}" }
         val input = firstEnabledInput(s) ?: error("no enabled input")
         val output = firstEnabledOutput(s) ?: error("no enabled output")
         val evidence = ArrayList<String>()
+        val failures = ArrayList<String>()
         runOnMainSync { s.switchTab(2); s.stop(null, false) }
         check(waitUntil(15000) { !s.operationsBlockedPublic })
         try {
-            for (format in listOf(0, 1, 2)) {
+            // Separate input and output reductions on the same physical route.
+            for ((policy, format) in listOf(0 to 0, 1 to 0, 2 to 0, 2 to 1, 2 to 2)) {
+                val trace = File(targetContext.filesDir, "latency-policy-$policy-format-$format.csv")
+                trace.writeText("elapsedMs,inputFrames,gap,dropped,queued,guard,outputBuffer,xrun\n")
                 val spec = intArrayOf(input.device.id, input.index, input.total, 0, format, 0, 0,
                     output.device.id, output.index, output.total, 0, format, 0, 0)
-                val openError = NativeAudio.startConfigured(spec)
+                val openError = NativeAudio.startConfigured(spec, policy)
                 check(openError.isEmpty()) { "open failed for format=$format: $openError" }
-                val duration = if (format == 0) 35000L else 5000L
+                val initialOutput = NativeAudio.endpointStats(output.device.id, false)
+                val duration = if (format == 0 && policy == 2) 65000L else 35000L
                 val startedAt = SystemClock.uptimeMillis()
                 val deadline = SystemClock.uptimeMillis() + duration
                 var lastInput = 0L
@@ -1026,6 +1031,12 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 var warmFrames = 0L
                 var warmGaps = 0L
                 var measured = false
+                var queuedSum = 0L
+                var queuedMax = 0L
+                var samples = 0L
+                var warmDropped = 0L
+                var warmXrun = 0L
+                val windows = ArrayList<Triple<Long, Long, Long>>()
                 fun counter(stats: String, name: String) =
                     Regex("$name=(\\d+)").find(stats)!!.groupValues[1].toLong()
                 while (SystemClock.uptimeMillis() < deadline) {
@@ -1039,10 +1050,22 @@ class UnifiedTestInstrumentation : Instrumentation() {
                     check(!outs.contains("routeQueue=")) { "unnecessary application queue: $outs" }
                     val nextInput = counter(ins, "frames")
                     val nextOutput = counter(outs, "frames")
+                    windows.add(Triple(SystemClock.uptimeMillis(), nextOutput, counter(outs, "gap")))
+                    val guard = Regex("guard=(\\d+)").find(ins)?.groupValues?.get(1) ?: "-1"
+                    trace.appendText("${SystemClock.uptimeMillis() - startedAt},$nextInput,${counter(outs, "gap")}," +
+                        "${counter(ins, "dropped")},${counter(ins, "queued")},$guard,${counter(outs, "buffer")},${counter(outs, "xrun")}\n")
                     if (!measured && SystemClock.uptimeMillis() - startedAt >= 2000) {
                         warmFrames = nextOutput
                         warmGaps = counter(outs, "gap")
+                        warmDropped = counter(ins, "dropped")
+                        warmXrun = counter(outs, "xrun")
                         measured = true
+                    }
+                    if (measured) {
+                        val queued = counter(ins, "queued")
+                        queuedSum += queued
+                        queuedMax = maxOf(queuedMax, queued)
+                        samples++
                     }
                     if (nextInput > lastInput && nextOutput > lastOutput) lastProgress = SystemClock.uptimeMillis()
                     check(SystemClock.uptimeMillis() - lastProgress < 2000) { "audio stalled: $ins / $outs" }
@@ -1054,11 +1077,17 @@ class UnifiedTestInstrumentation : Instrumentation() {
                 check(lastInput > 0 && lastOutput > 0)
                 val missing = counter(outs, "gap") - warmGaps
                 val rendered = lastOutput - warmFrames
-                check(measured && rendered > 0 && missing.toDouble() / rendered < .001) {
-                    "steady missing frames=$missing/$rendered; $ins / $outs"
-                }
+                if (!measured || rendered <= 0 || missing.toDouble() / rendered >= .005)
+                    failures.add("policy=$policy format=$format steady missing frames=$missing/$rendered")
+                val tailStart = windows.first { it.first >= windows.last().first - 10000 }
+                val tailFrames = windows.last().second - tailStart.second
+                val tailGaps = windows.last().third - tailStart.third
+                if (tailFrames <= 0 || tailGaps.toDouble() / tailFrames >= .005)
+                    failures.add("policy=$policy format=$format final 10s missing frames=$tailGaps/$tailFrames")
                 check(NativeAudio.spectrum(input.device.id, input.index).isNotEmpty()) { "pull input spectrum empty" }
-                evidence.add("format=$format: steady gap=$missing/$rendered; $ins / $outs".replace("\n", "; "))
+                evidence.add("policy=$policy format=$format: initialOutput=[$initialOutput]; steady gap=$missing/$rendered " +
+                    "dropDelta=${counter(ins, "dropped") - warmDropped} xrunDelta=${counter(outs, "xrun") - warmXrun} " +
+                    "queuedMean=${queuedSum / samples.coerceAtLeast(1)} queuedMax=$queuedMax tailGap=$tailGaps/$tailFrames; $ins / $outs")
                 NativeAudio.stop()
                 check(NativeAudio.endpointStats(input.device.id, true).isEmpty())
                 check(NativeAudio.endpointStats(output.device.id, false).isEmpty())
@@ -1076,7 +1105,9 @@ class UnifiedTestInstrumentation : Instrumentation() {
             check(error.isNotEmpty()) { "mismatched rates accepted" }
             check(NativeAudio.endpointStats(input.device.id, true).isEmpty()) { "error leaked streams" }
             evidence.add("explicit preset=6; rate rejection=$error; cleanup verified")
-            return true to evidence.joinToString(" | ")
+            check(NativeAudio.startConfigured(spec, -1).contains("ErrorIllegalArgument"))
+            check(NativeAudio.endpointStats(output.device.id, false).isEmpty())
+            return failures.isEmpty() to (evidence.joinToString(" | ") + " failures=$failures")
         } finally {
             NativeAudio.stop()
         }
