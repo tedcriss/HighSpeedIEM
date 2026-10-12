@@ -565,13 +565,27 @@ struct Engine {
         return first;
     }
 
-    void closeStreams() {
+    // Closes every stream and verifies it actually reached Closed. A stream
+    // that will not close may still own a running callback; the caller then
+    // keeps the whole engine alive instead of destroying it (doc section 6).
+    bool closeStreams() {
+        bool closed = true;
         for (auto &e : endpoints) {
-            if (e->stream) e->stream->close();
+            if (!e->stream) continue;
+            const auto result = e->stream->close();
+            const auto state = e->stream->getState();
+            if ((result != oboe::Result::OK && result != oboe::Result::ErrorClosed) ||
+                state != oboe::StreamState::Closed) {
+                __android_log_print(ANDROID_LOG_ERROR, "IEM-engine",
+                                    "AAudio close failed: %s (%d); retaining stream objects",
+                                    oboe::convertToText(result), static_cast<int>(result));
+                closed = false;
+            }
         }
         // A callback already executing on another endpoint can still reference
         // a route's input/output stream. Keep all stream objects until ALL close.
-        for (auto &e : endpoints) e->stream.reset();
+        if (closed) for (auto &e : endpoints) e->stream.reset();
+        return closed;
     }
 
     ~Engine() {
@@ -882,14 +896,15 @@ std::vector<std::unique_ptr<Engine>> &retiredEngines() {
 void shutdownEngine() {
     if (!engine) return;
     const auto result = engine->stopStreams();
-    if (result == oboe::Result::OK) {
-        engine->closeStreams();
+    if (result == oboe::Result::OK && engine->closeStreams()) {
         engine.reset();
         return;
     }
-    __android_log_print(ANDROID_LOG_ERROR, "IEM-engine",
-                        "AAudio stop failed: %s (%d); retaining stream objects",
-                        oboe::convertToText(result), static_cast<int>(result));
+    if (result != oboe::Result::OK) {
+        __android_log_print(ANDROID_LOG_ERROR, "IEM-engine",
+                            "AAudio stop failed: %s (%d); retaining stream objects",
+                            oboe::convertToText(result), static_cast<int>(result));
+    }
     retiredEngines().push_back(std::move(engine));
 }
 
@@ -1251,7 +1266,10 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_NativeAudio_probe(JNIEnv *, jclass, jint de
     const int channels =
         stream->getDeviceId() == deviceId ? stream->getChannelCount()
                                           : static_cast<int>(oboe::Result::ErrorDisconnected);
-    stream->close();
+    const auto closed = stream->close();
+    if (closed != oboe::Result::OK && closed != oboe::Result::ErrorClosed) {
+        return static_cast<int>(closed);
+    }
     return channels;
 }
 

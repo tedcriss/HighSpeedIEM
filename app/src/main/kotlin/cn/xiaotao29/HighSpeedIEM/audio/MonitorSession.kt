@@ -1102,7 +1102,12 @@ class MonitorSession(private val context: Context) {
         ringtoneRequested = true
         // The latest selection waits for the previous worker's finally block.
         // Rapid switches replace this request without overlapping output streams.
-        if (ringtoneKey != null) return
+        if (ringtoneKey != null) {
+            // The previous test still owns the output; this switch waits for
+            // its verified release. Surface the API-latency wait as blocking.
+            floatingMessage("正在切换测试通道：等待上一通道释放完成后自动播放")
+            return
+        }
         ringtoneKey = channel.key
         val s = config(channel).copyOf()
         val token = cancelRingtoneWork()

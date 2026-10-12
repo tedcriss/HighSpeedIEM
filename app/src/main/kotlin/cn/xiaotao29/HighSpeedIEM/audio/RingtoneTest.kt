@@ -3,6 +3,7 @@ package cn.xiaotao29.HighSpeedIEM.audio
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.os.Build
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaCodec
@@ -51,6 +52,14 @@ object RingtoneTest {
         if (cancelled()) signal.cancel()
         val callbacks = android.os.HandlerThread("IEM-media-events")
         val routingError = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        // Close/settle policy: real audio policies apply preferred-device
+        // routing and previous-track releases asynchronously, so right after
+        // play() the track can still report the old route. Routing events are
+        // ignored while the settled route is verified, and always after the
+        // track has been released.
+        val routingSettling = java.util.concurrent.atomic.AtomicBoolean(false)
+        val routingSettledOk = java.util.concurrent.atomic.AtomicBoolean(false)
+        val trackReleased = java.util.concurrent.atomic.AtomicBoolean(false)
         var routingListener: android.media.AudioRouting.OnRoutingChangedListener? = null
         var extractorOwner: MediaExtractor? = null
         var codec: MediaCodec? = null
@@ -95,6 +104,35 @@ object RingtoneTest {
             var rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             var encoding = AudioFormat.ENCODING_PCM_16BIT
+
+            // Waits (bounded, on this worker; the foreground stays blocked in
+            // its testing/busy state) until the policy settled the requested
+            // route. Transient settle events are shielded by routingSettling;
+            // a route that never settles is a genuine misroute and fails.
+            fun awaitRoutingSettled(output: AudioTrack) {
+                if (cancelled()) return
+                routingSettling.set(true)
+                try {
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        val deadline = System.nanoTime() + STALL_TIMEOUT_NS
+                        var routed: AudioDeviceInfo? = output.routedDevice
+                        while (!cancelled() && !routingSettledOk.get() && routed?.id != device.id &&
+                            System.nanoTime() < deadline) {
+                            Thread.sleep(20)
+                            routed = output.routedDevice
+                        }
+                        if (!cancelled() && !routingSettledOk.get() && routed?.id != device.id) {
+                            throw IOException("AudioTrack routing: requested deviceId=${device.id}, returned deviceId=${routed?.id}")
+                        }
+                    } else {
+                        // routedDevice needs API 28; below it only a fixed
+                        // grace window shields the settle transient events.
+                        Thread.sleep(1500)
+                    }
+                } finally {
+                    routingSettling.set(false)
+                }
+            }
 
             fun openOutput() {
                 if (cancelled()) return
@@ -158,6 +196,13 @@ object RingtoneTest {
                 }
                 val routeListener = android.media.AudioRouting.OnRoutingChangedListener { routing ->
                     val routed = routing.routedDevice
+                    if (routingSettling.get()) {
+                        // Some HALs keep routedDevice null; a matching event
+                        // is authoritative evidence that the route settled.
+                        if (routed?.id == device.id) routingSettledOk.set(true)
+                        return@OnRoutingChangedListener
+                    }
+                    if (trackReleased.get()) return@OnRoutingChangedListener
                     if (routed != null && routed.id != device.id) {
                         val error = "AudioTrack routing: requested deviceId=${device.id}, returned deviceId=${routed.id}"
                         routingError.set(error)
@@ -177,6 +222,7 @@ object RingtoneTest {
                 val period = output.setPositionNotificationPeriod(maxOf(1, output.sampleRate / 50))
                 if (period != AudioTrack.SUCCESS) throw IOException("AudioTrack.setPositionNotificationPeriod()=$period")
                 if (!cancelled()) output.play()
+                awaitRoutingSettled(output)
                 android.util.Log.i("RingtoneTest", "AudioTrack actual rate=${output.sampleRate} encoding=${output.audioFormat} channelCount=${output.channelCount}")
             }
 
@@ -310,11 +356,20 @@ object RingtoneTest {
                 try {
                     track?.let { output ->
                         try {
+                            trackReleased.set(true)
                             routingListener?.let { output.removeOnRoutingChangedListener(it) }
                             output.setPlaybackPositionUpdateListener(null)
                             output.pause()
                             output.flush()
-                        } finally { output.release() }
+                        } finally {
+                            output.release()
+                            // Complete close policy: a released track must be
+                            // uninitialized; anything else still holds its
+                            // routing and would misroute the next test channel.
+                            if (output.state != AudioTrack.STATE_UNINITIALIZED) {
+                                throw IOException("AudioTrack.getState()=${output.state} after release()")
+                            }
+                        }
                     }
                 } finally {
                     try {

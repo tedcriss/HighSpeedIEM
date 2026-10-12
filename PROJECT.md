@@ -1,7 +1,7 @@
 # HighSpeedIEM
 
 多通道实时音频转发：把麦克风收录的声音低延迟地转发到扬声器/耳机/其他输出设备。
-包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.7`（versionCode 28），显示名见 `app/src/main/res/values/strings.xml`。
+包名 `cn.xiaotao29.HighSpeedIEM`，版本 `3.8`（versionCode 29），显示名见 `app/src/main/res/values/strings.xml`。
 
 ## 构建与测试
 
@@ -18,7 +18,7 @@
 # Kotlin 插件会重建空的 .kotlin/ 目录，可随时删除，不影响构建。
 ```
 
-Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.7.apk` 命名。
+Release 开启 R8 优化与资源裁剪，使用 Android 默认优化规则保留 JNI 绑定；性能判断使用 Release，Debug 用于功能与诊断。四 ABI 签名交付文件按 `cn.xiaotao29.HighSpeedIEM_3.8.apk` 命名。
 
 Phone 平台统一测试（instrumentation，单一入口，场景可筛选）：
 
@@ -73,6 +73,7 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
   输出回调在输入未 Started 时输出静音，音频线程绝不等待输入。
   **停止**：先停流再关闭并释放；若某条流 stop 失败，可能仍被回调使用，遂保留整个引擎对象
   （移入隔离表，进程内不释放）并 `Log.e` 报错原文，不再继续 close，避免释放正被使用的对象。
+  close 同样核验返回值与 `Closed` 状态，失败按同一隔离保留策略处理（3.8 起完整关闭策略）。
   输入预设“自动”优先 Generic，厂商拒绝时回退 VoiceRecognition；显式预设严格生效。
   独占为请求，系统降级为共享时记录实际值而不失败（与文档一致）。
   实际参数含转发方式、预设、processor 名与延迟、缺帧/丢帧/短读与队列统计；appQueue=0 只表示无应用转发队列，
@@ -131,6 +132,9 @@ small 场景仅在组合内提供圆屏配置和 220dp 内容区域，不启动�
 提示条靠近底部导航栏，输出列表无需为角落按钮保留空间。
 铃声按解码回调逐段写入所选通道；解码结束后等待 AudioTrack 末帧 marker 或 AAudio 设备缓冲实际耗尽，
 再释放输出、解码器和提取器。解码/写入/尾部排空仅检查连续无进度超时，正常长铃声不触发会话超时。
+真机音频策略对 preferred 设备与旧流释放是异步结算的：播放后等待路由结算（轮询 `routedDevice`
+直至等于请求设备或 5s 超时，超时才判真错路由），结算期与释放后的路由事件一律忽略，释放后核验
+`STATE_NOINIT`，否则报错；切换通道排队等待上一 worker 核验释放完成，前台以阻塞提示表现该等待。
 `ringtone-test` 使用 24.25 秒默认铃声验证点击自动播放、自然结束取消选中、再次点击取消、单选切换、连续切换、
 待播放选择取消、切页与后台资源释放、缺失资源提示及再次播放；
 临时铃声和默认铃声设置在测试后清理、还原。`ringtone-native-drain` 验证 AAudio 尾部缓冲释放。
