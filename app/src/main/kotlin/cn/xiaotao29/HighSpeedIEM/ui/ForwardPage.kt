@@ -51,10 +51,12 @@ import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -62,7 +64,10 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import cn.xiaotao29.HighSpeedIEM.MainActivity
@@ -135,8 +140,8 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         BatteryButton(activity, session)
-                        RealtimeParamsAnchor { onClick ->
-                            FilledTonalIconButton(onClick = onClick) {
+                        RealtimeParamsAnchor(enabled = session.forwarding) { onClick ->
+                            FilledTonalIconButton(onClick = onClick, enabled = session.forwarding) {
                                 Icon(Icons.Outlined.Info, contentDescription = "查看实时流参数")
                             }
                         }
@@ -177,11 +182,11 @@ private fun VerticalControls(activity: MainActivity, session: RelaySession) {
                     topStart = 4.dp, topEnd = 4.dp, bottomStart = 24.dp, bottomEnd = 24.dp,
                 )
                 BatteryButton(activity, session, shape = topShape)
-                RealtimeParamsAnchor { onClick ->
+                RealtimeParamsAnchor(enabled = session.forwarding) { onClick ->
                     ControlButton(
                         onClick = onClick,
                         shape = midShape,
-                        enabled = true,
+                        enabled = session.forwarding,
                         description = "查看实时流参数",
                         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -358,9 +363,15 @@ private fun BatteryButton(activity: MainActivity, session: RelaySession, shape: 
 /** Realtime stream parameters tooltip; polls the engine every 200 ms while open. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RealtimeParamsAnchor(anchor: @Composable (onClick: () -> Unit) -> Unit) {
+private fun RealtimeParamsAnchor(
+    enabled: Boolean,
+    anchor: @Composable (onClick: () -> Unit) -> Unit,
+) {
     val state = rememberTooltipState(isPersistent = true)
     val scope = rememberCoroutineScope()
+    LaunchedEffect(enabled) {
+        if (!enabled) state.dismiss()
+    }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberRichTooltipPositionProvider(),
         state = state,
@@ -382,15 +393,21 @@ private fun RealtimeParamsAnchor(anchor: @Composable (onClick: () -> Unit) -> Un
 
 @Composable
 private fun RealtimeParamsContent(visible: Boolean) {
-    var inputInfo by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-    var outputInfo by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    // Values live in snapshot maps and the key order is fixed on first poll,
+    // so the table structure never rebuilds: only changed value texts recompose.
+    val inputValues = remember { mutableStateMapOf<String, String>() }
+    val outputValues = remember { mutableStateMapOf<String, String>() }
+    var inputKeys by remember { mutableStateOf<List<String>>(emptyList()) }
+    var outputKeys by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(visible) {
         if (!visible) return@LaunchedEffect
         while (isActive) {
             val inPairs = withContext(Dispatchers.IO) { pollStream(AAudio.DIRECTION_INPUT) }
             val outPairs = withContext(Dispatchers.IO) { pollStream(AAudio.DIRECTION_OUTPUT) }
-            inputInfo = inPairs
-            outputInfo = outPairs
+            if (inputKeys.isEmpty() && inPairs.isNotEmpty()) inputKeys = inPairs.map { it.first }
+            if (outputKeys.isEmpty() && outPairs.isNotEmpty()) outputKeys = outPairs.map { it.first }
+            applyPoll(inputValues, inPairs)
+            applyPoll(outputValues, outPairs)
             delay(200)
         }
     }
@@ -403,26 +420,63 @@ private fun RealtimeParamsContent(visible: Boolean) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         MarqueeText("输入流", style = MaterialTheme.typography.titleSmall)
-        if (inputInfo.isEmpty()) {
+        if (inputKeys.isEmpty()) {
             MarqueeText(
                 "无已打开的输入流",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            InfoTable(inputInfo)
+            RealtimeTable(inputKeys, inputValues)
         }
         MarqueeText("输出流", style = MaterialTheme.typography.titleSmall)
-        if (outputInfo.isEmpty()) {
+        if (outputKeys.isEmpty()) {
             MarqueeText(
                 "无已打开的输出流",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            InfoTable(outputInfo)
+            RealtimeTable(outputKeys, outputValues)
         }
     }
+}
+
+/** Writes only changed entries so unchanged value texts keep their composition. */
+private fun applyPoll(target: SnapshotStateMap<String, String>, pairs: List<Pair<String, String>>) {
+    for ((key, value) in pairs) {
+        if (target[key] != value) target[key] = value
+    }
+}
+
+/** Fixed two-column table; each value cell recomposes on its own change only. */
+@Composable
+private fun RealtimeTable(keys: List<String>, values: SnapshotStateMap<String, String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        keys.forEach { key ->
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                MarqueeText(
+                    key,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(0.45f).clearAndSetSemantics {},
+                )
+                RealtimeValue(key, values, Modifier.weight(0.55f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RealtimeValue(key: String, values: Map<String, String>, modifier: Modifier = Modifier) {
+    val value = values[key].orEmpty()
+    MarqueeText(
+        value.ifEmpty { "（空）" },
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = modifier.clearAndSetSemantics {
+            contentDescription = "$key，${value.ifEmpty { "空" }}"
+        },
+    )
 }
 
 private fun pollStream(direction: Int): List<Pair<String, String>> {
@@ -438,7 +492,8 @@ private fun pollStream(direction: Int): List<Pair<String, String>> {
 @Composable
 private fun StartStopButton(activity: MainActivity, session: RelaySession, shape: Shape? = null) {
     val running = session.forwarding
-    val enabled = running || (session.canForward && !session.busy)
+    val enabled = running ||
+        (session.canForward && session.hasMixerRoutes && !session.busy)
     val onClick = { if (running) activity.stopForwarding() else activity.startForwarding() }
     val description = if (running) "停止转发" else "启动转发"
     if (shape == null) {

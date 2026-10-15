@@ -15,8 +15,8 @@ android {
         applicationId = "cn.xiaotao29.HighSpeedIEM"
         minSdk = 27
         targetSdk = 37
-        versionCode = 31
-        versionName = "4.1"
+        versionCode = 32
+        versionName = "4.2"
         val abis = (project.findProperty("abi") as String?)
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
             ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

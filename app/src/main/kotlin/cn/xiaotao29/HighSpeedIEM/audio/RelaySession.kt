@@ -196,6 +196,10 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         get() = selectedInputId != null && inputDevices.containsKey(selectedInputId) &&
             selectedOutputId != null && outputDevices.containsKey(selectedOutputId)
 
+    /** True when at least one output channel mixes at least one input channel. */
+    val hasMixerRoutes: Boolean
+        get() = mixer.values.any { it != 0 }
+
     // ---- forwarding lifecycle ----
 
     fun showError(text: String) {
