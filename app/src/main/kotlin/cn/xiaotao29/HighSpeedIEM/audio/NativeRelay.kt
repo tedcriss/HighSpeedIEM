@@ -1,5 +1,7 @@
 package cn.xiaotao29.HighSpeedIEM.audio
 
+import androidx.annotation.Keep
+
 /**
  * JNI bridge to the native AAudio relay engine (librelay). All calls are
  * blocking; callers must run them off the main thread except
@@ -9,6 +11,7 @@ object NativeRelay {
 
     /** Receives [onNativeError] on an arbitrary native thread. */
     interface Listener {
+        @Keep
         fun onNativeError(text: String)
     }
 

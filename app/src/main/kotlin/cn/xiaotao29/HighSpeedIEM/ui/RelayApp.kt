@@ -48,6 +48,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.filterNotNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
@@ -104,11 +108,19 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
         }
 
         // Errors surface verbatim in a snackbar; its text wraps (no marquee).
-        LaunchedEffect(session.errorText) {
-            val message = session.errorText ?: return@LaunchedEffect
-            session.consumeError()
-            snackbarHostState.currentSnackbarData?.dismiss()
-            snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Long)
+        LaunchedEffect(session, activity) {
+            activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                snapshotFlow { session.pendingError }.filterNotNull().collect { error ->
+                    snackbarHostState.showSnackbar(
+                        message = error.text,
+                        actionLabel = "关闭",
+                        duration = SnackbarDuration.Long,
+                    )
+                    // A cancelled display (background/recreation) retains the
+                    // notice. Only acknowledge a completed or dismissed one.
+                    session.consumeError(error.id)
+                }
+            }
         }
 
         val pageScaffold: @Composable (Modifier) -> Unit = { modifier ->

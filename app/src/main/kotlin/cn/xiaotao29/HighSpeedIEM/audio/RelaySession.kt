@@ -6,8 +6,10 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.Keep
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
@@ -59,9 +61,13 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     var busy by mutableStateOf(false)
         private set
 
-    /** Raw error text for the snackbar; consumed by the UI. */
-    var errorText by mutableStateOf<String?>(null)
-        private set
+    data class ErrorNotice(val id: Long, val text: String)
+
+    // Retain the head until the UI finishes showing it. IDs distinguish
+    // consecutive identical errors and survive Activity recreation.
+    private val errors = mutableStateListOf<ErrorNotice>()
+    private var nextErrorId = 0L
+    val pendingError: ErrorNotice? get() = errors.firstOrNull()
 
     /** Deep-link request from the ongoing notification (forward tab). */
     var pendingTab by mutableStateOf<Int?>(null)
@@ -70,6 +76,8 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         private set
 
     private var lifecycleJob: Job? = null
+    private var stopRequested = false
+    private var clearSelectionOnStop = false
 
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<AudioDeviceInfo>) {
@@ -111,14 +119,15 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
 
     private fun onDeviceRemoved(device: AudioDeviceInfo) {
         val input = device.isSource
+        val wasInUse = deviceInUse(input, device.id)
         val devices = if (input) inputDevices else outputDevices
         val params = if (input) inputParams else outputParams
         devices.remove(device.id)
         params.remove(device.id)
         if (input && selectedInputId == device.id) selectedInputId = null
         if (!input && selectedOutputId == device.id) selectedOutputId = null
-        mixer.clear()
-        if (deviceInUse(input, device.id) && (forwarding || busy)) {
+        if (wasInUse) mixer.clear()
+        if (wasInUse && (forwarding || busy)) {
             // The native error callback may already have stopped the relay;
             // stopForwarding is idempotent and tolerates that.
             stopForwarding("转发已停止：音频设备 ID ${device.id} 已被移除")
@@ -203,11 +212,11 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     // ---- forwarding lifecycle ----
 
     fun showError(text: String) {
-        errorText = text
+        errors.add(ErrorNotice(++nextErrorId, text))
     }
 
-    fun consumeError() {
-        errorText = null
+    fun consumeError(id: Long) {
+        if (pendingError?.id == id) errors.removeAt(0)
     }
 
     /** Pre-flight consistency checks; null means start may proceed. */
@@ -241,12 +250,14 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         }
         val error = prepareStartError()
         if (error != null) {
-            errorText = error
+            showError(error)
             newOwner.relayClosed()
             return
         }
         owner = newOwner
         busy = true
+        stopRequested = false
+        clearSelectionOnStop = false
         val config = buildConfig()
         val masks = IntArray(effectiveOutputChannels) { mixerMask(it) }
         lifecycleJob = scope.launch {
@@ -257,16 +268,18 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
                     t.toString()
                 }
             }
-            busy = false
-            if (failure == null) {
+            if (failure == null && !stopRequested) {
                 forwarding = true
+                busy = false
                 owner?.relayStarted()
             } else {
-                errorText = failure
-                clearSelections()
-                val current = owner
-                owner = null
-                current?.relayClosed()
+                if (failure != null) {
+                    showError(failure)
+                    clearSelectionOnStop = true
+                }
+                // A removal/error received during nativeStart must close the
+                // newly opened streams before the UI becomes usable again.
+                finishStopping()
             }
         }
     }
@@ -293,33 +306,41 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
      */
     @JvmOverloads
     fun stopForwarding(error: String? = null, clearSelection: Boolean = error != null) {
+        error?.let(::showError)
+        clearSelectionOnStop = clearSelectionOnStop || clearSelection
         if (lifecycleJob?.isActive == true) {
-            // A start/stop is still settling; surface the error but let the
-            // running job finish the teardown.
-            if (error != null && errorText == null) errorText = error
+            stopRequested = true
             return
         }
-        if (!forwarding && !busy && error != null) {
-            errorText = error
+        if (!forwarding && !busy && owner == null) {
+            if (clearSelectionOnStop) clearSelections()
+            clearSelectionOnStop = false
             return
         }
         busy = true
-        val currentOwner = owner
+        stopRequested = true
         lifecycleJob = scope.launch {
-            val closeError = withContext(Dispatchers.IO) {
-                try {
-                    NativeRelay.nativeStop()
-                } catch (t: Throwable) {
-                    t.toString()
-                }
-            }
-            forwarding = false
-            busy = false
-            if (clearSelection) clearSelections()
-            owner = null
-            (error ?: closeError)?.let { errorText = it }
-            currentOwner?.relayClosed()
+            finishStopping()
         }
+    }
+
+    private suspend fun finishStopping() {
+        val currentOwner = owner
+        val closeError = withContext(Dispatchers.IO) {
+            try {
+                NativeRelay.nativeStop()
+            } catch (t: Throwable) {
+                t.toString()
+            }
+        }
+        forwarding = false
+        if (clearSelectionOnStop) clearSelections()
+        clearSelectionOnStop = false
+        stopRequested = false
+        owner = null
+        busy = false
+        closeError?.let(::showError)
+        currentOwner?.relayClosed()
     }
 
     private fun clearSelections() {
@@ -330,6 +351,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
 
     // ---- NativeRelay.Listener (arbitrary native thread) ----
 
+    @Keep // JNI looks up this exact method name; R8 cannot discover that reference.
     override fun onNativeError(text: String) {
         mainHandler.post { stopForwarding(text) }
     }

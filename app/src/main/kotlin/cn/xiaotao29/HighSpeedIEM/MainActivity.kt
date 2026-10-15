@@ -36,7 +36,7 @@ class MainActivity : ComponentActivity() {
             if (granted) {
                 safe(action)
             } else {
-                val error = "PackageManager.PERMISSION_DENIED: [android.permission.$permissionName]"
+                val error = "PackageManager.PERMISSION_DENIED: [$permissionName]"
                 if (session.busy) session.stopForwarding(error) else session.showError(error)
             }
             // Refresh lists: the mic permission gates some input device info.
