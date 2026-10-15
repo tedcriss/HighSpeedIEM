@@ -175,7 +175,7 @@ fun InfoTable(entries: List<Pair<String, String>>, modifier: Modifier = Modifier
 @Composable
 fun PageHeading(title: String, description: String, status: String) {
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 16.dp, bottom = 12.dp),
+        Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(

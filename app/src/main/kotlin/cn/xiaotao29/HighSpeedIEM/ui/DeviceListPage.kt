@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
@@ -85,10 +86,23 @@ fun DevicesPage(session: RelaySession, input: Boolean) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(if (landscape) 2 else 1),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 16.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // The page heading scrolls with the list, like the pre-rewrite app.
+        item(key = "page-heading", span = { GridItemSpan(maxLineSpan) }) {
+            PageHeading(
+                title = if (input) "输入设备" else "输出设备",
+                description = if (input) {
+                    "选中一个设备作为转发输入源，卡片内可查看设备能力与开流参数。"
+                } else {
+                    "选中一个设备作为转发输出目标，选中状态跨 tab 页保留。"
+                },
+                status = (if (input) session.selectedInputId else session.selectedOutputId)
+                    ?.let { "已选中 ID $it" } ?: "未选中",
+            )
+        }
         items(entries, key = { it.key }) { entry ->
             DeviceCard(session, input, entry.value)
         }

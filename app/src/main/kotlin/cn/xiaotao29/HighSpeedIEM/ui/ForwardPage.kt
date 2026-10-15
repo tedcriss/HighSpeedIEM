@@ -133,11 +133,19 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
-                    start = 16.dp, top = 4.dp, end = 16.dp,
+                    start = 16.dp, end = 16.dp,
                     bottom = if (landscape) 16.dp else 112.dp,
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // The page heading scrolls with the list, like the pre-rewrite app.
+                item(key = "page-heading") {
+                    PageHeading(
+                        title = "转发控制",
+                        description = "按输出通道配置混音输入，启动后由前台服务后台常驻转发。",
+                        status = if (session.forwarding) "转发中" else "未转发",
+                    )
+                }
                 if (outChannels == 0) {
                     item {
                         Box(

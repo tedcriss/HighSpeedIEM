@@ -15,8 +15,8 @@ android {
         applicationId = "cn.xiaotao29.HighSpeedIEM"
         minSdk = 27
         targetSdk = 37
-        versionCode = 41
-        versionName = "4.11"
+        versionCode = 42
+        versionName = "4.12"
         val abis = (project.findProperty("abi") as String?)
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
             ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
@@ -70,6 +70,8 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     // 1.5 carries the Material 3 Expressive ToggleButton and SplitButton.
     implementation("androidx.compose.material3:material3:1.5.0-beta01")
+    // App-level adaptive navigation (NavigationSuiteScaffold / rail / bar).
+    implementation("androidx.compose.material3:material3-adaptive-navigation-suite:1.5.0-beta01")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.core:core-ktx:1.16.0")
