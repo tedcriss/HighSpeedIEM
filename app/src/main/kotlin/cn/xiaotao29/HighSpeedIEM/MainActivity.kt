@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
@@ -44,6 +45,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge-to-edge is required for reliable status-bar hiding in landscape.
+        enableEdgeToEdge()
         setVolumeControlStream(AudioManager.STREAM_MUSIC)
         handleIntent(intent)
         setContent {

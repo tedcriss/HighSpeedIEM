@@ -50,6 +50,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
@@ -83,6 +86,20 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
             session.pendingTab?.let {
                 tab = it
                 session.pendingTab = null
+            }
+        }
+
+        // Landscape runs immersive: the system status bar is hidden there and
+        // restored in portrait (activity recreation re-runs this effect).
+        LaunchedEffect(portrait) {
+            val window = activity.window
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            if (portrait) {
+                controller.show(WindowInsetsCompat.Type.statusBars())
+            } else {
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.statusBars())
             }
         }
 
