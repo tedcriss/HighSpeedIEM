@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
@@ -26,23 +25,18 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RichTooltip
-import androidx.compose.material3.SplitButtonDefaults
-import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -62,10 +56,8 @@ import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -88,9 +80,9 @@ private val ToolbarShadowElevation = 6.dp
 /**
  * Forward-control tab. Bottom layer: one card per output channel (count
  * follows the selected output device / its requested channel count). Top
- * layer: the three controls (battery optimization, realtime parameters,
- * start/stop) wrapped in a floating toolbar like the pre-rewrite app —
- * horizontal at the bottom in portrait, a reserved vertical lane in landscape.
+ * layer: a floating toolbar holding the three controls as equal-level
+ * transparent icon buttons — horizontal at the bottom in portrait, a
+ * vertical floating toolbar lane in landscape.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -99,7 +91,29 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
     val landscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     Row(Modifier.fillMaxSize()) {
-        if (landscape) VerticalControls(activity, session)
+        if (landscape) {
+            Column(
+                Modifier
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                VerticalFloatingToolbar(
+                    expanded = true,
+                    expandedShadowElevation = ToolbarShadowElevation,
+                    collapsedShadowElevation = ToolbarShadowElevation,
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        ForwardControlButtons(activity, session)
+                    }
+                }
+            }
+        }
         Box(Modifier.weight(1f).fillMaxHeight()) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -138,84 +152,72 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
                         .zIndex(1f)
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
-                    HorizontalSplitControls(activity, session)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ForwardControlButtons(activity, session)
+                    }
                 }
             }
         }
     }
 }
 
-/** Landscape toolbar lane: the three controls stacked in a vertical toolbar. */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+/**
+ * The three toolbar controls on one level: battery optimization, realtime
+ * parameters and start/stop, each a transparent icon-only IconButton. The
+ * start/stop icon keeps the primary highlight tint to stand out.
+ */
 @Composable
-private fun VerticalControls(activity: MainActivity, session: RelaySession) {
-    Column(
-        Modifier
-            .fillMaxHeight()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+private fun ForwardControlButtons(activity: MainActivity, session: RelaySession) {
+    BatteryIconButton(activity, session)
+    RealtimeParamsAnchor(enabled = session.forwarding) { onClick ->
+        RealtimeParamsIconButton(enabled = session.forwarding, onClick = onClick)
+    }
+    StartStopIconButton(activity, session)
+}
+
+@Composable
+private fun BatteryIconButton(activity: MainActivity, session: RelaySession) {
+    val available = remember { activity.batterySettingsAvailable() }
+    IconButton(
+        onClick = { activity.launchBatterySettings() },
+        enabled = available && !session.busy,
+        colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Transparent),
     ) {
-        VerticalFloatingToolbar(
-            expanded = true,
-            expandedShadowElevation = ToolbarShadowElevation,
-            collapsedShadowElevation = ToolbarShadowElevation,
-        ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                val topShape = RoundedCornerShape(
-                    topStart = 24.dp, topEnd = 24.dp, bottomStart = 4.dp, bottomEnd = 4.dp,
-                )
-                val midShape = RoundedCornerShape(4.dp)
-                val bottomShape = RoundedCornerShape(
-                    topStart = 4.dp, topEnd = 4.dp, bottomStart = 24.dp, bottomEnd = 24.dp,
-                )
-                val running = session.forwarding
-                val batteryAvailable = remember { activity.batterySettingsAvailable() }
-                ControlButton(
-                    onClick = { activity.launchBatterySettings() },
-                    shape = topShape,
-                    enabled = batteryAvailable && !session.busy,
-                    description = "打开系统后台运行保护设置",
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ) {
-                    Icon(Icons.Filled.Battery5Bar, null, Modifier.size(20.dp))
-                }
-                RealtimeParamsAnchor(enabled = session.forwarding) { onClick ->
-                    ControlButton(
-                        onClick = onClick,
-                        shape = midShape,
-                        enabled = session.forwarding,
-                        description = "查看实时流参数",
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ) {
-                        Icon(Icons.Outlined.Info, null, Modifier.size(20.dp))
-                    }
-                }
-                ControlButton(
-                    onClick = {
-                        if (running) activity.stopForwarding() else activity.startForwarding()
-                    },
-                    shape = bottomShape,
-                    enabled = running ||
-                        (session.canForward && session.hasMixerRoutes && !session.busy),
-                    description = if (running) "停止转发" else "启动转发",
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                ) {
-                    Icon(
-                        if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                        null,
-                        Modifier.size(20.dp),
-                    )
-                }
-            }
-        }
+        Icon(Icons.Filled.Battery5Bar, contentDescription = "打开系统后台运行保护设置")
+    }
+}
+
+@Composable
+private fun RealtimeParamsIconButton(enabled: Boolean, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Transparent),
+    ) {
+        Icon(Icons.Outlined.Info, contentDescription = "查看实时流参数")
+    }
+}
+
+@Composable
+private fun StartStopIconButton(activity: MainActivity, session: RelaySession) {
+    val running = session.forwarding
+    val enabled = running ||
+        (session.canForward && session.hasMixerRoutes && !session.busy)
+    IconButton(
+        onClick = { if (running) activity.stopForwarding() else activity.startForwarding() },
+        enabled = enabled,
+        colors = IconButtonDefaults.iconButtonColors(
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.primary,
+        ),
+    ) {
+        Icon(
+            if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+            contentDescription = if (running) "停止转发" else "启动转发",
+        )
     }
 }
 
@@ -350,85 +352,7 @@ private fun EffectsDialogButton(channel: Int, enabled: Boolean) {
     }
 }
 
-/**
- * Portrait toolbar content: the three controls as one native split button —
- * leading battery key, inner realtime key with the native inner corner, and a
- * highlighted trailing start/stop key. Outer edges carry the large split
- * button corners, matching the floating toolbar capsule.
- */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun HorizontalSplitControls(activity: MainActivity, session: RelaySession) {
-    val height = ButtonDefaults.MediumContainerHeight
-    val batteryAvailable = remember { activity.batterySettingsAvailable() }
-    val running = session.forwarding
-    val startEnabled = running ||
-        (session.canForward && session.hasMixerRoutes && !session.busy)
-    SplitButtonLayout(
-        leadingButton = {
-            SplitButtonDefaults.LeadingButton(
-                onClick = { activity.launchBatterySettings() },
-                enabled = batteryAvailable && !session.busy,
-                shapes = SplitButtonDefaults.leadingButtonShapesFor(height),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ),
-                contentPadding = PaddingValues(horizontal = 14.dp),
-                modifier = Modifier
-                    .height(height)
-                    .semantics { contentDescription = "打开系统后台运行保护设置" },
-            ) {
-                Icon(Icons.Filled.Battery5Bar, null, Modifier.size(20.dp))
-            }
-        },
-        trailingButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                RealtimeParamsAnchor(enabled = running) { onClick ->
-                    Button(
-                        onClick = onClick,
-                        enabled = running,
-                        // Native split-button inner corner (medium token).
-                        shape = RoundedCornerShape(4.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                        contentPadding = PaddingValues(horizontal = 14.dp),
-                        modifier = Modifier
-                            .height(height)
-                            .semantics { contentDescription = "查看实时流参数" },
-                    ) {
-                        Icon(Icons.Outlined.Info, null, Modifier.size(20.dp))
-                    }
-                }
-                SplitButtonDefaults.TrailingButton(
-                    onClick = {
-                        if (running) activity.stopForwarding() else activity.startForwarding()
-                    },
-                    enabled = startEnabled,
-                    shapes = SplitButtonDefaults.trailingButtonShapesFor(height),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp),
-                    modifier = Modifier
-                        .height(height)
-                        .semantics { contentDescription = if (running) "停止转发" else "启动转发" },
-                ) {
-                    Icon(
-                        if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                        null,
-                        Modifier.size(20.dp),
-                    )
-                }
-            }
-        },
-    )
-}
-
-/** Realtime stream parameters tooltip; polls the engine every 200 ms while open. */
+/** Realtime stream parameters tooltip; polls the engine while open. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RealtimeParamsAnchor(
@@ -578,30 +502,4 @@ private fun pollStream(direction: Int): List<Pair<String, String>> {
         null
     } ?: return emptyList()
     return flat.asList().chunked(2).map { (key, value) -> key to value }
-}
-
-/** Shared stacked-toolbar button: icon-only with a caller-provided shape. */
-@Composable
-private fun ControlButton(
-    onClick: () -> Unit,
-    shape: Shape,
-    enabled: Boolean,
-    description: String,
-    containerColor: Color,
-    contentColor: Color,
-    content: @Composable () -> Unit,
-) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        shape = shape,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = containerColor,
-            contentColor = contentColor,
-        ),
-        contentPadding = PaddingValues(12.dp),
-        modifier = Modifier.semantics { contentDescription = description },
-    ) {
-        content()
-    }
 }
