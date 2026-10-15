@@ -19,6 +19,11 @@ constexpr int32_t kMinScratchFrames = 8192;
 // Like Oboe's full-duplex helper, discard startup capture backlog. Each
 // callback performs bounded non-blocking reads, including on MMAP.
 constexpr int32_t kStartupDrainCallbacks = 20;
+// OboeTester FullDuplexStream startup sequence: after the drain, optionally
+// let input accumulate a cushion (0 = skip), then run discard callbacks so
+// input and output reach equilibrium before forwarding starts.
+constexpr int32_t kStartupCushionCallbacks = 0;
+constexpr int32_t kStartupDiscardCallbacks = 30;
 
 // AAudio_setMMapPolicy / AAudioStream_isMMapUsed exist from API 29; resolve
 // them at runtime so minSdk 27 builds keep working.
@@ -373,6 +378,8 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     tuneCountdown = outRate / 2;
     previousXRunCount = -1;
     startupDrainCallbacks = kStartupDrainCallbacks;
+    startupCushionCallbacks = kStartupCushionCallbacks;
+    startupDiscardCallbacks = kStartupDiscardCallbacks;
     startupFramesDiscarded = 0;
 
     scratchFrames = std::max(kMinScratchFrames, outBurst * 4);
@@ -597,6 +604,40 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
             --startupDrainCallbacks;
             startupFramesDiscarded.fetch_add(static_cast<uint32_t>(total), std::memory_order_relaxed);
         }
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
+    if (startupCushionCallbacks > 0) {
+        // Cushion phase: skip reading entirely and let input accumulate a
+        // little data so the read pointer stays off the write pointer.
+        --startupCushionCallbacks;
+        fillSilence(audioData, 0, numFrames);
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
+    if (startupDiscardCallbacks > 0) {
+        // Equilibrium phase: one non-blocking attempt at exactly this
+        // callback's numFrames, discarded. Never loop-drain the whole input
+        // here and never wait for a full read.
+        --startupDiscardCallbacks;
+        int32_t readOffset = 0;
+        while (readOffset < numFrames) {
+            int32_t want = std::min(numFrames - readOffset, scratchFrames);
+            int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
+            if (got < 0) {
+                notifyError(std::string("AAudioStream_read(input): ") +
+                            AAudio_convertResultToText(got));
+                fillSilence(audioData, 0, numFrames);
+                return AAUDIO_CALLBACK_RESULT_STOP;
+            }
+            if (got == 0) break;  // no data yet; do not wait
+            readOffset += got;
+        }
+        if (readOffset > 0) {
+            startupFramesDiscarded.fetch_add(static_cast<uint32_t>(readOffset),
+                                             std::memory_order_relaxed);
+        }
+        fillSilence(audioData, 0, numFrames);
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 

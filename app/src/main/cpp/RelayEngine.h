@@ -105,7 +105,12 @@ private:
     int32_t outBurst = 0;
     int32_t inputDrainFrames = 0;
     // Callback-owned state, initialized before requestStart(output).
+    // Startup sync phases, used in order (OboeTester FullDuplexStream):
+    // drain the capture backlog, cushion the input, discard to equilibrium,
+    // then forward.
     int32_t startupDrainCallbacks = 0;
+    int32_t startupCushionCallbacks = 0;
+    int32_t startupDiscardCallbacks = 0;
     bool tuneBuffer = false;
     int32_t tuneCountdown = 0;
     int32_t previousXRunCount = 0;
