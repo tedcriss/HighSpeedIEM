@@ -8,6 +8,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -88,7 +89,25 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                 }
             },
         ) { padding ->
-            Box(Modifier.padding(padding).fillMaxSize()) {
+            Column(Modifier.padding(padding).fillMaxSize()) {
+                PageHeading(
+                    title = when (tab) {
+                        0 -> "输入设备"
+                        1 -> "输出设备"
+                        else -> "转发控制"
+                    },
+                    description = when (tab) {
+                        0 -> "选中一个设备作为转发输入源，卡片内可查看设备能力与开流参数。"
+                        1 -> "选中一个设备作为转发输出目标，选中状态跨 tab 页保留。"
+                        else -> "按输出通道配置混音输入，启动后由前台服务后台常驻转发。"
+                    },
+                    status = when (tab) {
+                        0 -> session.selectedInputId?.let { "已选中 ID $it" } ?: "未选中"
+                        1 -> session.selectedOutputId?.let { "已选中 ID $it" } ?: "未选中"
+                        else -> if (session.forwarding) "转发中" else "未转发"
+                    },
+                )
+                Box(Modifier.fillMaxSize()) {
                 AnimatedContent(
                     targetState = tab,
                     transitionSpec = {
@@ -104,6 +123,7 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                     }
                 }
                 if (session.busy) BlockingOverlay()
+                }
             }
         }
     }

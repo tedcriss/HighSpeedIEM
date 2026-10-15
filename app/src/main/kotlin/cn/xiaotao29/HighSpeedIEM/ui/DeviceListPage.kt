@@ -85,7 +85,7 @@ fun DevicesPage(session: RelaySession, input: Boolean) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(if (landscape) 2 else 1),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {

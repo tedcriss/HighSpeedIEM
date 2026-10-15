@@ -1,10 +1,12 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
@@ -23,12 +26,16 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -39,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.VerticalFloatingToolbar
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,10 +57,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import cn.xiaotao29.HighSpeedIEM.MainActivity
 import cn.xiaotao29.HighSpeedIEM.audio.AAudio
 import cn.xiaotao29.HighSpeedIEM.audio.NativeRelay
@@ -63,47 +75,122 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private val ToolbarShadowElevation = 6.dp
+
 /**
  * Forward-control tab. Bottom layer: one card per output channel (count
  * follows the selected output device / its requested channel count). Top
- * layer: battery optimization, realtime parameters and the start/stop key.
+ * layer: the three controls (battery optimization, realtime parameters,
+ * start/stop) wrapped in a floating toolbar like the pre-rewrite app —
+ * horizontal at the bottom in portrait, a reserved vertical lane in landscape.
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ForwardPage(activity: MainActivity, session: RelaySession) {
     val outChannels = session.effectiveOutputChannels
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 112.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (outChannels == 0) {
-                item {
-                    Box(
-                        Modifier.fillMaxWidth().padding(top = 48.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        MarqueeText(
-                            "未选中输出设备，暂无转发通道",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+    val landscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    Row(Modifier.fillMaxSize()) {
+        if (landscape) VerticalControls(activity, session)
+        Box(Modifier.weight(1f).fillMaxHeight()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp, top = 4.dp, end = 16.dp,
+                    bottom = if (landscape) 16.dp else 112.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (outChannels == 0) {
+                    item {
+                        Box(
+                            Modifier.fillMaxWidth().padding(top = 48.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            MarqueeText(
+                                "未选中输出设备，暂无转发通道",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                } else {
+                    items(count = outChannels, key = { it }) { channel ->
+                        ChannelMixCard(session, channel)
                     }
                 }
-            } else {
-                items(count = outChannels, key = { it }) { channel ->
-                    ChannelMixCard(session, channel)
+            }
+            if (!landscape) {
+                HorizontalFloatingToolbar(
+                    expanded = true,
+                    expandedShadowElevation = ToolbarShadowElevation,
+                    collapsedShadowElevation = ToolbarShadowElevation,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .zIndex(1f)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        BatteryButton(activity, session)
+                        RealtimeParamsAnchor { onClick ->
+                            FilledTonalIconButton(onClick = onClick) {
+                                Icon(Icons.Outlined.Info, contentDescription = "查看实时流参数")
+                            }
+                        }
+                        StartStopButton(activity, session)
+                    }
                 }
             }
         }
-        Row(
-            Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    }
+}
+
+/** Landscape toolbar lane: the three controls stacked in a vertical toolbar. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun VerticalControls(activity: MainActivity, session: RelaySession) {
+    Column(
+        Modifier
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        VerticalFloatingToolbar(
+            expanded = true,
+            expandedShadowElevation = ToolbarShadowElevation,
+            collapsedShadowElevation = ToolbarShadowElevation,
         ) {
-            BatteryButton(activity, session)
-            RealtimeParamsButton()
-            StartStopButton(activity, session)
+            Column(
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                val topShape = RoundedCornerShape(
+                    topStart = 24.dp, topEnd = 24.dp, bottomStart = 4.dp, bottomEnd = 4.dp,
+                )
+                val midShape = RoundedCornerShape(4.dp)
+                val bottomShape = RoundedCornerShape(
+                    topStart = 4.dp, topEnd = 4.dp, bottomStart = 24.dp, bottomEnd = 24.dp,
+                )
+                BatteryButton(activity, session, shape = topShape)
+                RealtimeParamsAnchor { onClick ->
+                    ControlButton(
+                        onClick = onClick,
+                        shape = midShape,
+                        enabled = true,
+                        description = "查看实时流参数",
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ) {
+                        Icon(Icons.Outlined.Info, null, Modifier.size(20.dp))
+                    }
+                }
+                StartStopButton(activity, session, shape = bottomShape)
+            }
         }
     }
 }
@@ -239,22 +326,39 @@ private fun EffectsDialogButton(channel: Int, enabled: Boolean) {
     }
 }
 
+/** Icon-only toolbar entry; [shape] switches to the stacked toolbar variant. */
 @Composable
-private fun BatteryButton(activity: MainActivity, session: RelaySession) {
+private fun BatteryButton(activity: MainActivity, session: RelaySession, shape: Shape? = null) {
     val available = remember { activity.batterySettingsAvailable() }
-    IconButton(
-        onClick = { activity.launchBatterySettings() },
-        enabled = available && !session.busy,
-        colors = IconButtonDefaults.filledTonalIconButtonColors(),
-    ) {
-        Icon(Icons.Filled.Battery5Bar, contentDescription = "打开系统后台运行保护设置")
+    val enabled = available && !session.busy
+    val onClick = { activity.launchBatterySettings() }
+    val description = "打开系统后台运行保护设置"
+    if (shape == null) {
+        IconButton(
+            onClick = onClick,
+            enabled = enabled,
+            colors = IconButtonDefaults.filledTonalIconButtonColors(),
+        ) {
+            Icon(Icons.Filled.Battery5Bar, contentDescription = description)
+        }
+    } else {
+        ControlButton(
+            onClick = onClick,
+            shape = shape,
+            enabled = enabled,
+            description = description,
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ) {
+            Icon(Icons.Filled.Battery5Bar, null, Modifier.size(20.dp))
+        }
     }
 }
 
 /** Realtime stream parameters tooltip; polls the engine every 200 ms while open. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RealtimeParamsButton() {
+private fun RealtimeParamsAnchor(anchor: @Composable (onClick: () -> Unit) -> Unit) {
     val state = rememberTooltipState(isPersistent = true)
     val scope = rememberCoroutineScope()
     TooltipBox(
@@ -268,14 +372,10 @@ private fun RealtimeParamsButton() {
             )
         },
     ) {
-        FilledTonalIconButton(
-            onClick = {
-                scope.launch {
-                    if (state.isVisible) state.dismiss() else state.show()
-                }
-            },
-        ) {
-            Icon(Icons.Outlined.Info, contentDescription = "查看实时流参数")
+        anchor {
+            scope.launch {
+                if (state.isVisible) state.dismiss() else state.show()
+            }
         }
     }
 }
@@ -334,19 +434,65 @@ private fun pollStream(direction: Int): List<Pair<String, String>> {
     return flat.asList().chunked(2).map { (key, value) -> key to value }
 }
 
-/** Icon-only start/stop key; disabled until an input and an output are picked. */
+/** Start/stop key; disabled until an input and an output are picked. */
 @Composable
-private fun StartStopButton(activity: MainActivity, session: RelaySession) {
+private fun StartStopButton(activity: MainActivity, session: RelaySession, shape: Shape? = null) {
     val running = session.forwarding
-    IconButton(
-        onClick = { if (running) activity.stopForwarding() else activity.startForwarding() },
-        enabled = running || (session.canForward && !session.busy),
-        modifier = Modifier.size(56.dp),
-        colors = IconButtonDefaults.filledIconButtonColors(),
+    val enabled = running || (session.canForward && !session.busy)
+    val onClick = { if (running) activity.stopForwarding() else activity.startForwarding() }
+    val description = if (running) "停止转发" else "启动转发"
+    if (shape == null) {
+        IconButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.size(56.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(),
+        ) {
+            Icon(
+                if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                contentDescription = description,
+            )
+        }
+    } else {
+        ControlButton(
+            onClick = onClick,
+            shape = shape,
+            enabled = enabled,
+            description = description,
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+        ) {
+            Icon(
+                if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                null,
+                Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/** Shared stacked-toolbar button: icon-only with a caller-provided shape. */
+@Composable
+private fun ControlButton(
+    onClick: () -> Unit,
+    shape: Shape,
+    enabled: Boolean,
+    description: String,
+    containerColor: Color,
+    contentColor: Color,
+    content: @Composable () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = shape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+        ),
+        contentPadding = PaddingValues(12.dp),
+        modifier = Modifier.semantics { contentDescription = description },
     ) {
-        Icon(
-            if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-            contentDescription = if (running) "停止转发" else "启动转发",
-        )
+        content()
     }
 }
