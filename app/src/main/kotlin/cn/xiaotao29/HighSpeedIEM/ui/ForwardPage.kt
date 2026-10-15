@@ -70,6 +70,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import cn.xiaotao29.HighSpeedIEM.MainActivity
@@ -475,7 +476,9 @@ private fun RealtimeParamsContent(visible: Boolean) {
             if (outputKeys.isEmpty() && outPairs.isNotEmpty()) outputKeys = outPairs.map { it.first }
             applyPoll(inputValues, inPairs)
             applyPoll(outputValues, outPairs)
-            delay(200)
+            // One second keeps the readout live without starving the main
+            // thread on slow renderers (200ms polling caused frame skips).
+            delay(1000)
         }
     }
     Column(
@@ -486,22 +489,36 @@ private fun RealtimeParamsContent(visible: Boolean) {
             .padding(bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        MarqueeText("输入流", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "输入流",
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         if (inputKeys.isEmpty()) {
-            MarqueeText(
+            Text(
                 "无已打开的输入流",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         } else {
             RealtimeTable(inputKeys, inputValues)
         }
-        MarqueeText("输出流", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "输出流",
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         if (outputKeys.isEmpty()) {
-            MarqueeText(
+            Text(
                 "无已打开的输出流",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         } else {
             RealtimeTable(outputKeys, outputValues)
@@ -516,16 +533,22 @@ private fun applyPoll(target: SnapshotStateMap<String, String>, pairs: List<Pair
     }
 }
 
-/** Fixed two-column table; each value cell recomposes on its own change only. */
+/**
+ * Fixed two-column table; each value cell recomposes on its own change only.
+ * Cells are plain single-line ellipsized texts on purpose: marquee animations
+ * for every row kept the main thread busy and stalled the UI while polling.
+ */
 @Composable
 private fun RealtimeTable(keys: List<String>, values: SnapshotStateMap<String, String>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         keys.forEach { key ->
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                MarqueeText(
+                Text(
                     key,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(0.45f).clearAndSetSemantics {},
                 )
                 RealtimeValue(key, values, Modifier.weight(0.55f))
@@ -537,9 +560,11 @@ private fun RealtimeTable(keys: List<String>, values: SnapshotStateMap<String, S
 @Composable
 private fun RealtimeValue(key: String, values: Map<String, String>, modifier: Modifier = Modifier) {
     val value = values[key].orEmpty()
-    MarqueeText(
+    Text(
         value.ifEmpty { "（空）" },
         style = MaterialTheme.typography.bodyMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier.clearAndSetSemantics {
             contentDescription = "$key，${value.ifEmpty { "空" }}"
         },
