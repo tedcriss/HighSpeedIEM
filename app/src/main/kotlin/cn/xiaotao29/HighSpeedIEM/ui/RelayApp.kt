@@ -103,7 +103,7 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
             navigationSuiteType = if (portrait) {
                 NavigationSuiteType.NavigationBar
             } else {
-                NavigationSuiteType.WideNavigationRailExpanded
+                NavigationSuiteType.WideNavigationRailCollapsed
             },
         ) {
             Scaffold(
