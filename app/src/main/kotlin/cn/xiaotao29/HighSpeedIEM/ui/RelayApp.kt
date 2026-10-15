@@ -45,6 +45,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -84,6 +85,8 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
         val portrait =
             LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
         var tab by rememberSaveable { mutableIntStateOf(0) }
+        // Keep dialog state outside the portrait/landscape navigation branches.
+        var mixingOutput by rememberSaveable { mutableStateOf<Int?>(null) }
         val snackbarHostState = remember { SnackbarHostState() }
 
         LaunchedEffect(session.pendingTab) {
@@ -166,7 +169,7 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                         when (current) {
                             0 -> DevicesPage(session, input = true)
                             1 -> DevicesPage(session, input = false)
-                            else -> ForwardPage(activity, session)
+                            else -> ForwardPage(activity, session, onEditMixer = { mixingOutput = it })
                         }
                     }
                     if (session.busy) BlockingOverlay()
@@ -205,6 +208,9 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                 LandscapeNavigation(selected = tab) { tab = it }
                 pageScaffold(Modifier.weight(1f))
             }
+        }
+        mixingOutput?.let { channel ->
+            MixerDialog(session, channel, onDismiss = { mixingOutput = null })
         }
     }
 }

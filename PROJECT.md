@@ -15,6 +15,10 @@ Kotlin + Jetpack Compose（Material Design 3）前端，C++ 直接调用 AAudio�
   - `ui/`：三个 tab（输入设备 / 输出设备 / 转发控制）。设备卡片（图标 + 标题 + 副标题 +
     能力/测试/参数三键）、全屏参数对话框、混音 Basic dialog、实时参数 tooltip、
     开流期间全屏阻塞遮罩、Snackbar 报错原文（换行显示）。
+    混音选择框使用 Material 3 BasicAlertDialog + Surface、ListItem/Checkbox，
+    固定标题/底部按钮与贯穿分隔线，中间单列滚动；整行具备复选框语义与键盘焦点。
+    选择先保存在可恢复草稿中，取消/返回/点外部不改变路由；确定时整张掩码一次更新，
+    不逐项调用原生引擎。弹窗状态位于横竖屏布局分支之外，旋转/重建保留未确认选择。
     错误按带唯一 ID 的队列保存，显示完成或手动关闭后才消费；界面进入后台或重建时
     保留未读消息，回到前台继续显示，连续相同错误不会互相覆盖。
   - `service/ForwardingService`：前台服务（microphone + mediaPlayback + 部分唤醒锁），
@@ -112,6 +116,19 @@ FramesRead/FramesWritten 均停留在 0；移除读取门槛后，1.5 秒读取�
 XRunCount=0、已输出非零 PCM。共享输入测试仍有输入 XRun，测试通过只表示数据流
 持续推进，不能作为无爆音或端到端低延迟的证明。release Lint 为 0 errors / 8 warnings
 （现有权限查询、资源/图标、依赖版本、备份和唤醒锁提示，本次未调整）。
+
+## v4.56 混音对话框
+
+按照用户提供的系统列表对话框参考图重新排版，沿用应用主题色和 Material 3 原生圆角、
+色彩、文字及复选框组件，自动跟随深色模式。标题与取消/确定操作固定，长列表独立滚动；
+滚动区受窗口可用高度约束，在横屏也保留操作按钮。
+`MixerDialogTest` 验证取消/返回丢弃、确认多选/清空、Activity 重建和横竖屏保留草稿、
+遥控器按键切换、32 声道滚动到底部并选中最后一项。
+组件用法参考 [Android Dialog](https://developer.android.com/develop/ui/compose/components/dialog)
+和 [Checkbox](https://developer.android.com/develop/ui/compose/components/checkbox)。
+
+验证：手机虚拟机 10 项界面/报错测试通过；release 浅色/深色的横竖屏截图检查通过，
+切换时弹窗与勾选仍保留。四 ABI release 编译与签名校验通过，Lint 0 errors / 8 warnings。
 
 ## 设备类型映射
 

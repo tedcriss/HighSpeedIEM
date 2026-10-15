@@ -34,16 +34,22 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AlertDialogDefaults
+import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalFloatingToolbar
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -53,7 +59,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
@@ -64,6 +72,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -95,7 +104,7 @@ private val FadeSpec = tween<Float>(durationMillis = 260)
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun ForwardPage(activity: MainActivity, session: RelaySession) {
+fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int) -> Unit) {
     val outChannels = session.effectiveOutputChannels
     val landscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -161,7 +170,7 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
                     }
                 } else {
                     items(count = outChannels, key = { it }) { channel ->
-                        ChannelMixCard(session, channel)
+                        ChannelMixCard(session, channel, onEditMixer)
                     }
                 }
             }
@@ -377,7 +386,7 @@ private fun RealtimeParamsPanel(modifier: Modifier = Modifier, onClose: () -> Un
 }
 
 @Composable
-private fun ChannelMixCard(session: RelaySession, channel: Int) {
+private fun ChannelMixCard(session: RelaySession, channel: Int, onEditMixer: (Int) -> Unit) {
     val selectedCount = Integer.bitCount(session.mixerMask(channel))
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -404,10 +413,10 @@ private fun ChannelMixCard(session: RelaySession, channel: Int) {
                 )
             }
             MixerDialogButton(
-                session = session,
                 channel = channel,
                 label = "混音输入 · 已选 $selectedCount",
                 enabled = !session.busy,
+                onClick = { onEditMixer(channel) },
             )
             EffectsDialogButton(channel = channel, enabled = !session.busy)
         }
@@ -416,71 +425,93 @@ private fun ChannelMixCard(session: RelaySession, channel: Int) {
 
 @Composable
 private fun MixerDialogButton(
-    session: RelaySession,
     channel: Int,
     label: String,
     enabled: Boolean,
+    onClick: () -> Unit,
 ) {
-    var show by remember { mutableStateOf(false) }
     FilledTonalButton(
-        onClick = { show = true },
+        onClick = onClick,
         enabled = enabled,
         modifier = Modifier.semantics { contentDescription = "输出通道 $channel：$label" },
     ) {
         Icon(Icons.Outlined.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp))
         MarqueeText(label, style = MaterialTheme.typography.labelLarge)
     }
-    if (show) {
-        MixerDialog(session = session, outChannel = channel, onDismiss = { show = false })
-    }
 }
 
-/** Basic dialog: two-column checkbox list of the selected input's channels. */
+/** Fixed title/actions around a scrollable Material checkbox list. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -> Unit) {
+internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -> Unit) {
     val inputId = session.selectedInputId
     val device = inputId?.let { session.inputDevices[it] }
     val inputChannels = session.effectiveInputChannels
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭", maxLines = 1) }
-        },
-        title = { MarqueeText("输出通道 $outChannel · 选择混音输入通道") },
-        text = {
-            if (device == null || inputChannels <= 0) {
-                MarqueeText(
-                    "请先在输入设备页选中一个输入设备",
-                    style = MaterialTheme.typography.bodyMedium,
+    var draftMask by rememberSaveable(inputId, session.selectedOutputId, outChannel, inputChannels) {
+        mutableIntStateOf(session.mixerMask(outChannel))
+    }
+    val available = device != null && inputChannels > 0 &&
+        session.selectedOutputId != null && outChannel in 0 until session.effectiveOutputChannels
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = AlertDialogDefaults.shape,
+            color = AlertDialogDefaults.containerColor,
+            tonalElevation = AlertDialogDefaults.TonalElevation,
+        ) {
+            Column {
+                Text(
+                    "输出通道 $outChannel · 混音输入",
+                    modifier = Modifier.padding(24.dp).semantics { heading() },
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = AlertDialogDefaults.titleContentColor,
                 )
-            } else {
-                val mask = session.mixerMask(outChannel)
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    repeat(inputChannels) { channel ->
-                        val checked = (mask and (1 shl channel)) != 0
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .toggleable(
+                HorizontalDivider()
+                if (!available) {
+                    Text(
+                        "请先选中输入和输出设备",
+                        modifier = Modifier.padding(24.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 360.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp),
+                    ) {
+                        items(inputChannels, key = { it }) { channel ->
+                            val checked = (draftMask and (1 shl channel)) != 0
+                            ListItem(
+                                headlineContent = { Text("ID $inputId · 通道 $channel") },
+                                leadingContent = { Checkbox(checked = checked, onCheckedChange = null) },
+                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                                modifier = Modifier.toggleable(
                                     value = checked,
+                                    enabled = !session.busy,
                                     role = Role.Checkbox,
-                                    onValueChange = { session.toggleMixerChannel(outChannel, channel) },
-                                )
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Checkbox(checked = checked, onCheckedChange = null)
-                            MarqueeText(
-                                "ID ${device.id} · 通道 $channel",
-                                style = MaterialTheme.typography.bodyLarge,
+                                    onValueChange = { draftMask = draftMask xor (1 shl channel) },
+                                ),
                             )
                         }
                     }
                 }
+                HorizontalDivider()
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    TextButton(
+                        enabled = available && !session.busy,
+                        onClick = {
+                            session.setMixerMask(outChannel, draftMask)
+                            onDismiss()
+                        },
+                    ) { Text("确定") }
+                }
             }
-        },
-    )
+        }
+    }
 }
 
 /** Reserved entry for per-channel input effects; content not implemented yet. */

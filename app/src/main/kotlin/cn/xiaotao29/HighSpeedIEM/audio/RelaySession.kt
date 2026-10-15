@@ -170,15 +170,21 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     fun mixerMask(outChannel: Int): Int = mixer[outChannel] ?: 0
 
     fun toggleMixerChannel(outChannel: Int, inChannel: Int) {
-        val mask = mixerMask(outChannel) xor (1 shl inChannel)
-        if (mask == 0) mixer.remove(outChannel) else mixer[outChannel] = mask
+        setMixerMask(outChannel, mixerMask(outChannel) xor (1 shl inChannel))
+    }
+
+    /** Apply the whole dialog selection in one native routing update. */
+    fun setMixerMask(outChannel: Int, mask: Int) {
+        if (busy) return
         if (forwarding) {
             try {
                 NativeRelay.nativeSetMixer(outChannel, mask)
             } catch (e: Exception) {
                 showError(e.toString())
+                return
             }
         }
+        if (mask == 0) mixer.remove(outChannel) else mixer[outChannel] = mask
     }
 
     /** Channel count the forward page renders cards for. */
