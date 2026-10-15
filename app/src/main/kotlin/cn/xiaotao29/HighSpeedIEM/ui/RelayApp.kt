@@ -34,7 +34,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.adaptive.navigationsuite.ExperimentalMaterial3AdaptiveNavigationSuiteApi
@@ -184,19 +183,19 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                         selected = tab == 0,
                         onClick = { tab = 0 },
                         icon = { Icon(Icons.Filled.Mic, contentDescription = null) },
-                        label = { Text("输入设备", maxLines = 1) },
+                        label = { MarqueeText("输入设备") },
                     )
                     NavigationSuiteItem(
                         selected = tab == 1,
                         onClick = { tab = 1 },
                         icon = { Icon(Icons.Filled.Speaker, contentDescription = null) },
-                        label = { Text("输出设备", maxLines = 1) },
+                        label = { MarqueeText("输出设备") },
                     )
                     NavigationSuiteItem(
                         selected = tab == 2,
                         onClick = { tab = 2 },
                         icon = { Icon(Icons.Filled.SwapHoriz, contentDescription = null) },
-                        label = { Text("转发控制", maxLines = 1) },
+                        label = { MarqueeText("转发控制") },
                     )
                 },
                 navigationSuiteType = NavigationSuiteType.NavigationBar,
@@ -255,19 +254,19 @@ private fun LandscapeNavigation(selected: Int, onSelect: (Int) -> Unit) {
                     selected = selected == 0,
                     onClick = { onSelect(0) },
                     icon = { Icon(Icons.Filled.Mic, contentDescription = null) },
-                    label = { Text("输入设备", maxLines = 1) },
+                    label = { MarqueeText("输入设备") },
                 )
                 NavigationRailItem(
                     selected = selected == 1,
                     onClick = { onSelect(1) },
                     icon = { Icon(Icons.Filled.Speaker, contentDescription = null) },
-                    label = { Text("输出设备", maxLines = 1) },
+                    label = { MarqueeText("输出设备") },
                 )
                 NavigationRailItem(
                     selected = selected == 2,
                     onClick = { onSelect(2) },
                     icon = { Icon(Icons.Filled.SwapHoriz, contentDescription = null) },
-                    label = { Text("转发控制", maxLines = 1) },
+                    label = { MarqueeText("转发控制") },
                 )
             }
         }

@@ -51,7 +51,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalFloatingToolbar
 import androidx.compose.runtime.Composable
@@ -74,7 +73,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -346,36 +344,28 @@ private fun RealtimeParamsPanel(modifier: Modifier = Modifier, onClose: () -> Un
                     .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
+                MarqueeText(
                     "输入流",
                     style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 if (inputKeys.isEmpty()) {
-                    Text(
+                    MarqueeText(
                         "无已打开的输入流",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 } else {
                     RealtimeTable(inputKeys, inputValues)
                 }
-                Text(
+                MarqueeText(
                     "输出流",
                     style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 if (outputKeys.isEmpty()) {
-                    Text(
+                    MarqueeText(
                         "无已打开的输出流",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 } else {
                     RealtimeTable(outputKeys, outputValues)
@@ -405,11 +395,10 @@ private fun ChannelMixCard(session: RelaySession, channel: Int, onEditMixer: (In
                 color = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             ) {
-                Text(
+                MarqueeText(
                     "$channel",
                     Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
                 )
             }
             MixerDialogButton(
@@ -460,7 +449,7 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
             tonalElevation = AlertDialogDefaults.TonalElevation,
         ) {
             Column {
-                Text(
+                MarqueeText(
                     "输出通道 $outChannel · 混音输入",
                     modifier = Modifier.padding(24.dp).semantics { heading() },
                     style = MaterialTheme.typography.headlineSmall,
@@ -468,7 +457,7 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
                 )
                 HorizontalDivider()
                 if (!available) {
-                    Text(
+                    MarqueeText(
                         "请先选中输入和输出设备",
                         modifier = Modifier.padding(24.dp),
                         style = MaterialTheme.typography.bodyLarge,
@@ -482,7 +471,7 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
                         items(inputChannels, key = { it }) { channel ->
                             val checked = (draftMask and (1 shl channel)) != 0
                             ListItem(
-                                headlineContent = { Text("ID $inputId · 通道 $channel") },
+                                headlineContent = { MarqueeText("ID $inputId · 通道 $channel") },
                                 leadingContent = { Checkbox(checked = checked, onCheckedChange = null) },
                                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                                 modifier = Modifier.toggleable(
@@ -500,14 +489,14 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 ) {
-                    TextButton(onClick = onDismiss) { Text("取消") }
+                    TextButton(onClick = onDismiss) { MarqueeText("取消") }
                     TextButton(
                         enabled = available && !session.busy,
                         onClick = {
                             session.setMixerMask(outChannel, draftMask)
                             onDismiss()
                         },
-                    ) { Text("确定") }
+                    ) { MarqueeText("确定") }
                 }
             }
         }
@@ -530,7 +519,7 @@ private fun EffectsDialogButton(channel: Int, enabled: Boolean) {
         AlertDialog(
             onDismissRequest = { show = false },
             confirmButton = {
-                TextButton(onClick = { show = false }) { Text("关闭", maxLines = 1) }
+                TextButton(onClick = { show = false }) { MarqueeText("关闭") }
             },
             title = { MarqueeText("输出通道 $channel · 输入音效") },
             text = { Box(Modifier.fillMaxWidth().height(48.dp)) },
@@ -547,20 +536,17 @@ private fun applyPoll(target: SnapshotStateMap<String, String>, pairs: List<Pair
 
 /**
  * Fixed two-column table; each value cell recomposes on its own change only.
- * Cells are plain single-line ellipsized texts on purpose: marquee animations
- * for every row kept the main thread busy and stalled the UI while polling.
+ * Single-line cells share the app marquee; only changed values recompose.
  */
 @Composable
 private fun RealtimeTable(keys: List<String>, values: SnapshotStateMap<String, String>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         keys.forEach { key ->
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(
+                MarqueeText(
                     key,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(0.45f).clearAndSetSemantics {},
                 )
                 RealtimeValue(key, values, Modifier.weight(0.55f))
@@ -572,11 +558,9 @@ private fun RealtimeTable(keys: List<String>, values: SnapshotStateMap<String, S
 @Composable
 private fun RealtimeValue(key: String, values: Map<String, String>, modifier: Modifier = Modifier) {
     val value = values[key].orEmpty()
-    Text(
+    MarqueeText(
         value.ifEmpty { "（空）" },
         style = MaterialTheme.typography.bodyMedium,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
         modifier = modifier.clearAndSetSemantics {
             contentDescription = "$key，${value.ifEmpty { "空" }}"
         },

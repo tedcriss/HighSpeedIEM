@@ -95,7 +95,7 @@ fun ParamDropdown(
             readOnly = true,
             enabled = enabled,
             singleLine = true,
-            label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            label = { MarqueeText(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
@@ -110,7 +110,7 @@ fun ParamDropdown(
         ) {
             options.forEach { (value, text) ->
                 DropdownMenuItem(
-                    text = { Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    text = { MarqueeText(text) },
                     onClick = {
                         onSelect(value)
                         expanded = false
@@ -207,11 +207,9 @@ fun StatusBadge(status: String) {
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         shape = MaterialTheme.shapes.extraLarge,
     ) {
-        Text(
+        MarqueeText(
             status,
             style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .animateContentSize(MaterialTheme.motionScheme.fastSpatialSpec())
                 .padding(horizontal = 12.dp, vertical = 6.dp)

@@ -33,7 +33,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RichTooltip
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
@@ -232,7 +231,7 @@ private fun CapabilityTooltipButton(device: AudioDeviceInfo) {
                 contentDescription = "查看 ID ${device.id} 的设备能力"
             },
         ) {
-            Text("设备能力", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            MarqueeText("设备能力", style = MaterialTheme.typography.labelLarge)
             Icon(Icons.Outlined.Info, contentDescription = null, modifier = Modifier.size(20.dp))
         }
     }
@@ -261,7 +260,7 @@ private fun TestTooltipButton(device: AudioDeviceInfo) {
                 contentDescription = "测试 ID ${device.id}（暂未实现）"
             },
         ) {
-            Text("测试设备", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            MarqueeText("测试设备", style = MaterialTheme.typography.labelLarge)
             Icon(
                 Icons.Outlined.GraphicEq, contentDescription = null,
                 modifier = Modifier.size(20.dp),
@@ -286,7 +285,7 @@ private fun ParamsDialogButton(
             contentDescription = "设置 ID ${device.id} 的开流参数"
         },
     ) {
-        Text("设备参数", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+        MarqueeText("设备参数", style = MaterialTheme.typography.labelLarge)
         Icon(Icons.Outlined.Tune, contentDescription = null, modifier = Modifier.size(20.dp))
     }
     if (show) {
