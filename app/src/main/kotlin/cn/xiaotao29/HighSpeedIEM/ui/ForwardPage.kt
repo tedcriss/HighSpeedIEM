@@ -248,7 +248,7 @@ private fun ChannelMixCard(session: RelaySession, channel: Int) {
             MixerDialogButton(
                 session = session,
                 channel = channel,
-                label = if (selectedCount > 0) "混音输入 · 已选 $selectedCount" else "混音输入",
+                label = "混音输入 · 已选 $selectedCount",
                 enabled = !session.busy,
             )
             EffectsDialogButton(channel = channel, enabled = !session.busy)
