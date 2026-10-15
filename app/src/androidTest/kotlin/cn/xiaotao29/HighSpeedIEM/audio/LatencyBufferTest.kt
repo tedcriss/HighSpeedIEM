@@ -99,9 +99,9 @@ class LatencyBufferTest {
         val inChannels = arguments.getString("inputChannels")?.toInt() ?: 1
         return intArrayOf(
             inId, inChannels, 48000, AAudio.FORMAT_PCM_I16, 1,
-            AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0,
+            AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0, 0,
             outId, 2, 48000, AAudio.FORMAT_PCM_I16, 0,
-            performance, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC, capacity,
+            performance, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC, capacity, 0, 1, 0, 0,
         )
     }
 

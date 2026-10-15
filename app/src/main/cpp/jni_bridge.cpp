@@ -32,7 +32,7 @@ extern "C" {
 JNIEXPORT jstring JNICALL JNI_FN(nativeStart)(JNIEnv* env, jobject /*thiz*/, jintArray cfgArray,
                                               jintArray maskArray) {
     std::vector<int32_t> cfg = readIntArray(env, cfgArray);
-    if (cfg.size() < 17) {
+    if (cfg.size() < 22) {
         return env->NewStringUTF("启动转发被拒绝：原生配置参数不完整");
     }
     StartConfig cfgStruct;
@@ -44,15 +44,20 @@ JNIEXPORT jstring JNICALL JNI_FN(nativeStart)(JNIEnv* env, jobject /*thiz*/, jin
     cfgStruct.inPerformanceMode = cfg[5];
     cfgStruct.inInputPreset = cfg[6];
     cfgStruct.inBufferCapacity = cfg[7];
-    cfgStruct.outDeviceId = cfg[8];
-    cfgStruct.outChannelCount = cfg[9];
-    cfgStruct.outSampleRate = cfg[10];
-    cfgStruct.outFormat = cfg[11];
-    cfgStruct.outExclusive = cfg[12] != 0;
-    cfgStruct.outPerformanceMode = cfg[13];
-    cfgStruct.outUsage = cfg[14];
-    cfgStruct.outContentType = cfg[15];
-    cfgStruct.outBufferCapacity = cfg[16];
+    cfgStruct.inBufferSizeBursts = cfg[8];
+    cfgStruct.outDeviceId = cfg[9];
+    cfgStruct.outChannelCount = cfg[10];
+    cfgStruct.outSampleRate = cfg[11];
+    cfgStruct.outFormat = cfg[12];
+    cfgStruct.outExclusive = cfg[13] != 0;
+    cfgStruct.outPerformanceMode = cfg[14];
+    cfgStruct.outUsage = cfg[15];
+    cfgStruct.outContentType = cfg[16];
+    cfgStruct.outBufferCapacity = cfg[17];
+    cfgStruct.outBufferSizeBursts = cfg[18];
+    cfgStruct.outAutoBufferSize = cfg[19] != 0;
+    cfgStruct.inputReadThresholdBursts = cfg[20];
+    cfgStruct.inputReadThresholdExtraFrames = cfg[21];
     return toJString(env, RelayEngine::get().start(cfgStruct, readIntArray(env, maskArray)));
 }
 

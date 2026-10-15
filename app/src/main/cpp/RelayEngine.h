@@ -34,6 +34,9 @@ struct StartConfig {
     int32_t inPerformanceMode = AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;
     int32_t inInputPreset = AAUDIO_INPUT_PRESET_GENERIC;
     int32_t inBufferCapacity = 0;
+    // 0 = keep the system default buffer size (no setter call);
+    // N = request N * actual FramesPerBurst, capped at actual capacity.
+    int32_t inBufferSizeBursts = 0;
 
     int32_t outDeviceId = 0;
     int32_t outChannelCount = 0;
@@ -44,6 +47,16 @@ struct StartConfig {
     int32_t outUsage = AAUDIO_USAGE_MEDIA;
     int32_t outContentType = AAUDIO_CONTENT_TYPE_MUSIC;
     int32_t outBufferCapacity = 0;
+    int32_t outBufferSizeBursts = 0;
+    // true = existing initial 2-burst sizing plus tuneOutputBuffer() growth;
+    // false = manual outBufferSizeBursts sizing and no adaptive retuning.
+    bool outAutoBufferSize = true;
+
+    // Input read threshold F (minimum available input frames before the
+    // output callback may read): bursts * actual output FramesPerBurst +
+    // extra frames. 0 disables the gate entirely.
+    int32_t inputReadThresholdBursts = 0;
+    int32_t inputReadThresholdExtraFrames = 0;
 };
 
 class RelayEngine {
@@ -115,6 +128,12 @@ private:
     int32_t tuneCountdown = 0;
     int32_t previousXRunCount = 0;
     int32_t outputCapacity = 0;
+    // Input read threshold gate: F requested at open time (0 = gate off) and
+    // the stall safety valve that keeps exclusive-MMAP counter stalls from
+    // silencing the output forever. Callback-owned like the fields above.
+    int64_t inputThresholdFrames = 0;
+    int64_t gateStallFrames = 0;
+    bool gateStallLogged = false;
     std::atomic<uint32_t> startupFramesDiscarded{0};
 
     std::vector<uint8_t> scratch;

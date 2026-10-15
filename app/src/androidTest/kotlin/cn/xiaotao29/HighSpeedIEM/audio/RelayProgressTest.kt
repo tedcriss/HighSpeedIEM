@@ -86,9 +86,10 @@ class RelayProgressTest {
         val inChannels = arguments.getString("inputChannels")?.toInt() ?: 1
         val config = intArrayOf(
             inId, inChannels, 48000, format, if (exclusive) 1 else 0,
-            AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0,
+            AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0, 0,
             outId, 2, 48000, format, 0,
-            AAudio.PERFORMANCE_LOW_LATENCY, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC, 0,
+            AAudio.PERFORMANCE_LOW_LATENCY, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC,
+            0, 0, 1, 0, 0,
         )
         nativeError.set(null)
         assertNull(NativeRelay.nativeStart(config, intArrayOf(1, 1)))

@@ -165,6 +165,18 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         if (old.channelCount != params.channelCount) mixer.clear()
     }
 
+    // ---- session-level relay parameters ----
+
+    /** Device-independent relay parameters; survive device selection changes. */
+    var relayParams by mutableStateOf(RelayParams.DEFAULT)
+        private set
+
+    /** Edits are snapshot state; they apply the next time forwarding starts. */
+    fun updateRelayParams(params: RelayParams) {
+        if (operationsBlocked) return
+        relayParams = params
+    }
+
     // ---- mixer ----
 
     fun mixerMask(outChannel: Int): Int = mixer[outChannel] ?: 0
@@ -295,13 +307,16 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         val outId = selectedOutputId!!
         val inParams = paramsFor(true, inId)
         val outParams = paramsFor(false, outId)
+        val relay = relayParams
         return intArrayOf(
             inId, inParams.channelCount, inParams.sampleRate, inParams.format,
             if (inParams.exclusive) 1 else 0, inParams.performanceMode, inParams.inputPreset,
-            inParams.bufferCapacity,
+            relay.inBufferCapacity, relay.inBufferSizeBursts,
             outId, outParams.channelCount, outParams.sampleRate, outParams.format,
             if (outParams.exclusive) 1 else 0, outParams.performanceMode, outParams.usage,
-            outParams.contentType, outParams.bufferCapacity,
+            outParams.contentType, relay.outBufferCapacity, relay.outBufferSizeBursts,
+            if (relay.outAutoBufferSize) 1 else 0,
+            relay.inputReadThresholdBursts, relay.inputReadThresholdExtraFrames,
         )
     }
 

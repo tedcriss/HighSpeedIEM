@@ -22,9 +22,12 @@ object NativeRelay {
     /**
      * Flat int config, order fixed with jni_bridge.cpp:
      * in: deviceId, channelCount, sampleRate, format, exclusive, performanceMode,
-     *     inputPreset, bufferCapacity
+     *     inputPreset, bufferCapacity, bufferSizeBursts
      * out: deviceId, channelCount, sampleRate, format, exclusive, performanceMode,
-     *     usage, contentType, bufferCapacity
+     *     usage, contentType, bufferCapacity, bufferSizeBursts, autoBufferSize,
+     *     readThresholdBursts, readThresholdExtraFrames
+     * Buffer/threshold entries come from the session-level RelayParams, the
+     * rest from the per-device StreamParams.
      */
     external fun nativeStart(config: IntArray, mixerMasks: IntArray): String?
 

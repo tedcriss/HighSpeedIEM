@@ -3,7 +3,8 @@ package cn.xiaotao29.HighSpeedIEM.audio
 /**
  * Per-device AAudio open-stream request parameters edited in the params
  * dialog. Zero / false values mean "let AAudio decide" (AAUDIO_FORMAT_UNSPECIFIED,
- * channelCount 0, sampleRate 0, bufferCapacity 0, SHARED).
+ * channelCount 0, sampleRate 0, SHARED). Buffer capacity/size moved to the
+ * session-level [RelayParams]; they are device-independent.
  */
 data class StreamParams(
     val channelCount: Int = 0,
@@ -16,7 +17,6 @@ data class StreamParams(
     // Output only.
     val usage: Int = AAudio.USAGE_MEDIA,
     val contentType: Int = AAudio.CONTENT_MUSIC,
-    val bufferCapacity: Int = 0,
 ) {
     companion object {
         val DEFAULT = StreamParams()

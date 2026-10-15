@@ -67,7 +67,6 @@ fun StreamParamsDialog(
     val presetOptions = AAudio.INPUT_PRESETS.map { it to AAudio.presetName(it) }
     val usageOptions = AAudio.USAGES.map { it to AAudio.usageName(it) }
     val contentTypeOptions = AAudio.CONTENT_TYPES.map { it to AAudio.contentTypeName(it) }
-    val bufferOptions = AAudio.BUFFER_CAPACITIES.map { it to if (it == 0) "自动（0）" else "$it" }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -160,14 +159,8 @@ fun StreamParamsDialog(
                             onSelect = { update(params.copy(contentType = it)) },
                         )
                     }
-                    ParamDropdown(
-                        label = "BufferCapacityInFrames（缓冲容量）",
-                        selectedLabel = if (params.bufferCapacity == 0) "自动（0）" else "${params.bufferCapacity}",
-                        options = bufferOptions,
-                        onSelect = { update(params.copy(bufferCapacity = it)) },
-                    )
                     Text(
-                        "参数在下次启动转发时生效。",
+                        "参数在下次启动转发时生效。缓冲容量/大小已移至转发控制页的“转发参数设置”。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

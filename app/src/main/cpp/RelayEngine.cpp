@@ -25,6 +25,26 @@ constexpr int32_t kStartupDrainCallbacks = 20;
 constexpr int32_t kStartupCushionCallbacks = 0;
 constexpr int32_t kStartupDiscardCallbacks = 30;
 
+/**
+ * Shared availability probe used by the callback input gate and streamInfo():
+ * FramesWritten - FramesRead on one stream, via the 64-bit counters.
+ * Input stream: frames captured but not yet read by the app. Output stream:
+ * frames written but not yet consumed by the endpoint (queued for playback),
+ * NOT the free writable space. Returns a negative value when a counter query
+ * fails or the difference is nonsensical; callers must never treat a negative
+ * result as a frame count. Read-only and realtime-safe: never calls
+ * AAudioStream_read()/write(), never allocates.
+ */
+int64_t getAvailableFrames(AAudioStream* stream) {
+    if (!stream) return -1;
+    int64_t written = AAudioStream_getFramesWritten(stream);
+    if (written < 0) return written;
+    int64_t read = AAudioStream_getFramesRead(stream);
+    if (read < 0) return read;
+    int64_t available = written - read;
+    return available >= 0 ? available : -1;
+}
+
 // AAudio_setMMapPolicy / AAudioStream_isMMapUsed exist from API 29; resolve
 // them at runtime so minSdk 27 builds keep working.
 using SetMMapPolicyFn = aaudio_result_t (*)(aaudio_policy_t);
@@ -359,21 +379,67 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     outBurst = std::max(1, AAudioStream_getFramesPerBurst(output));
 
     // Capacity is an allocation limit, not the amount queued for playback.
-    // AAudio's default can be many bursts (8 on the tested Xiaomi). Match
-    // OboeTester's default of two bursts for the requested low-latency mode,
-    // including when a device falls back to PERFORMANCE_MODE_NONE.
+    // AAudio's default can be many bursts (8 on the tested Xiaomi). With the
+    // automatic output sizing, match OboeTester's default of two bursts for
+    // the requested low-latency mode, including when a device falls back to
+    // PERFORMANCE_MODE_NONE.
     outputCapacity = AAudioStream_getBufferCapacityInFrames(out);
-    tuneBuffer = cfg.outPerformanceMode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;
-    if (tuneBuffer) {
-        result = AAudioStream_setBufferSizeInFrames(out, std::min(outputCapacity, outBurst * 2));
-        if (result < 0) {
-            std::string err = std::string("AAudioStream_setBufferSizeInFrames(output): ") +
-                              AAudio_convertResultToText(result);
-            std::string ignored;
-            closeStreams(ignored);
-            return err;
+    if (cfg.outAutoBufferSize) {
+        tuneBuffer = cfg.outPerformanceMode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;
+        if (tuneBuffer) {
+            int32_t requested = std::min(outputCapacity, outBurst * 2);
+            result = AAudioStream_setBufferSizeInFrames(out, requested);
+            if (result < 0) {
+                std::string err = std::string("AAudioStream_setBufferSizeInFrames(output): ") +
+                                  AAudio_convertResultToText(result);
+                std::string ignored;
+                closeStreams(ignored);
+                return err;
+            }
+            LOGI("output BufferSizeInFrames auto: requested %d -> actual %d", requested, result);
+        }
+    } else {
+        // Manual sizing: never adaptively retune, tuneOutputBuffer() would
+        // override the user's choice. The setter may not honor the request
+        // exactly; record the actual value it returns.
+        tuneBuffer = false;
+        if (cfg.outBufferSizeBursts > 0) {
+            int32_t requested = outBurst * cfg.outBufferSizeBursts;
+            if (outputCapacity > 0) requested = std::min(requested, outputCapacity);
+            result = AAudioStream_setBufferSizeInFrames(out, requested);
+            if (result < 0) {
+                std::string err = std::string("AAudioStream_setBufferSizeInFrames(output): ") +
+                                  AAudio_convertResultToText(result);
+                std::string ignored;
+                closeStreams(ignored);
+                return err;
+            }
+            LOGI("output BufferSizeInFrames manual: requested %d -> actual %d", requested, result);
         }
     }
+
+    // Input sizing is best effort: not every backend honors it and it is not
+    // a guaranteed input-latency control, so log and continue on failure.
+    if (cfg.inBufferSizeBursts > 0) {
+        int32_t inBurst = std::max(1, AAudioStream_getFramesPerBurst(in));
+        int32_t inCapacity = AAudioStream_getBufferCapacityInFrames(in);
+        int32_t requested = inBurst * cfg.inBufferSizeBursts;
+        if (inCapacity > 0) requested = std::min(requested, inCapacity);
+        int32_t actual = AAudioStream_setBufferSizeInFrames(in, requested);
+        if (actual < 0) {
+            LOGE("AAudioStream_setBufferSizeInFrames(input): %s（按后端实际支持继续）",
+                 AAudio_convertResultToText(actual));
+        } else {
+            LOGI("input BufferSizeInFrames: requested %d -> actual %d", requested, actual);
+        }
+    }
+
+    // Input read threshold F = bursts * actual output burst + extra frames;
+    // 0 keeps the always-read path and skips every callback-side query.
+    inputThresholdFrames = static_cast<int64_t>(cfg.inputReadThresholdBursts) * outBurst +
+                           cfg.inputReadThresholdExtraFrames;
+    gateStallFrames = 0;
+    gateStallLogged = false;
     // Ignore startup underruns, then check at most four times per second.
     tuneCountdown = outRate / 2;
     previousXRunCount = -1;
@@ -475,6 +541,9 @@ std::string RelayEngine::stop() {
     scratch.shrink_to_fit();
     scratchFrames = 0;
     inChannels = outChannels = inRate = outRate = outBurst = 0;
+    inputThresholdFrames = 0;
+    gateStallFrames = 0;
+    gateStallLogged = false;
     return firstError;
 }
 
@@ -649,6 +718,47 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
         return AAUDIO_CALLBACK_RESULT_STOP;
     }
 
+    // Input read threshold gate (F), normal forwarding phase only: the
+    // startup drain/cushion/discard phases above always read, which also
+    // services the exclusive-MMAP timestamps and clock model before the gate
+    // ever runs. F == 0 keeps the legacy always-read path and skips every
+    // availability query below. Reads that pass the gate still request
+    // numFrames — F is a minimum-availability floor before reading, never the
+    // read size. No blocking, no locks, no allocation on any gate path.
+    if (inputThresholdFrames > 0) {
+        // Re-read the actual input buffer size every callback: the setter may
+        // not have honored the request exactly, and F must never exceed it.
+        int64_t threshold = inputThresholdFrames;
+        int32_t inBufferSize = AAudioStream_getBufferSizeInFrames(in);
+        if (inBufferSize > 0 && threshold > inBufferSize) threshold = inBufferSize;
+        int64_t available = getAvailableFrames(in);
+        if (available >= 0 && available < threshold) {
+            // Below the floor: do not consume input this callback; silence.
+            // Safety valve: the frame counters can stall (exclusive MMAP
+            // services them inside read()/timestamp processing), and a stalled
+            // low value would otherwise mute the output forever. After one
+            // second of continuous gating — far beyond any legitimate fill
+            // time, since threshold <= input buffer size — fall back to the
+            // normal non-blocking read, degrading to pre-gate behavior
+            // instead of permanent silence.
+            gateStallFrames += numFrames;
+            if (gateStallFrames <= std::max(1, outRate)) {
+                fillSilence(audioData, 0, numFrames);
+                return AAUDIO_CALLBACK_RESULT_CONTINUE;
+            }
+            if (!gateStallLogged) {
+                gateStallLogged = true;
+                LOGE("render: input gate stalled (available=%lld < F=%lld) for over 1s; "
+                     "falling back to ungated reads",
+                     static_cast<long long>(available), static_cast<long long>(threshold));
+            }
+        } else {
+            // Threshold met, or the availability query failed: fail open and
+            // read normally; a failed probe must never gate audio.
+            gateStallFrames = 0;
+        }
+    }
+
     Plan p;
     const uint32_t validInputs = UINT32_MAX >> (32 - inChannels);
     for (int32_t o = 0; o < outChannels; ++o) {
@@ -710,6 +820,15 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
     add("FramesPerBurst", valueOrError(AAudioStream_getFramesPerBurst(s)));
     add("FramesRead", std::to_string(AAudioStream_getFramesRead(s)));
     add("FramesWritten", std::to_string(AAudioStream_getFramesWritten(s)));
+    // FramesWritten - FramesRead via the shared probe (state-only, never
+    // consumes audio): input = captured but unread frames; output = queued
+    // frames not yet consumed by the endpoint. Negative probe results are
+    // surfaced as an explicit unavailable state, never as a frame count.
+    {
+        int64_t available = getAvailableFrames(s);
+        add("getAvailableFrames()",
+            available >= 0 ? std::to_string(available) : "Unavailable");
+    }
     if (__builtin_available(android 28, *)) {
         if (direction == AAUDIO_DIRECTION_INPUT) {
             add("InputPreset", presetName(AAudioStream_getInputPreset(s)));

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.GraphicEq
@@ -94,7 +95,7 @@ private val FadeSpec = tween<Float>(durationMillis = 260)
 /**
  * Forward-control tab. Bottom layer: one card per output channel (count
  * follows the selected output device / its requested channel count). Top
- * layer: a floating toolbar holding the three controls as equal-level
+ * layer: a floating toolbar holding the four controls as equal-level
  * transparent icon buttons — horizontal at the bottom in portrait, a
  * vertical floating toolbar lane in landscape. The realtime parameters open
  * as an in-page floating panel (not a popup window): popup tooltips resized
@@ -107,8 +108,12 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
     val landscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showRealtime by remember { mutableStateOf(false) }
+    var showRelayParams by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(session.forwarding) {
         if (!session.forwarding) showRealtime = false
+    }
+    if (showRelayParams) {
+        RelayParamsDialog(session) { showRelayParams = false }
     }
     Row(Modifier.fillMaxSize()) {
         if (landscape) {
@@ -129,9 +134,13 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        ForwardControlButtons(activity, session, showRealtime) {
-                            showRealtime = !showRealtime
-                        }
+                        ForwardControlButtons(
+                            activity,
+                            session,
+                            showRealtime,
+                            onRealtimeToggle = { showRealtime = !showRealtime },
+                            onRelayParams = { showRelayParams = true },
+                        )
                     }
                 }
             }
@@ -212,9 +221,13 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        ForwardControlButtons(activity, session, showRealtime) {
-                            showRealtime = !showRealtime
-                        }
+                        ForwardControlButtons(
+                            activity,
+                            session,
+                            showRealtime,
+                            onRealtimeToggle = { showRealtime = !showRealtime },
+                            onRelayParams = { showRelayParams = true },
+                        )
                     }
                 }
             }
@@ -223,9 +236,10 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
 }
 
 /**
- * The three toolbar controls on one level: battery optimization, realtime
- * parameters and start/stop, each a transparent icon-only IconButton. The
- * start/stop icon keeps the primary highlight tint to stand out.
+ * The four toolbar controls on one level: battery optimization, realtime
+ * parameters, relay params and start/stop, each a transparent icon-only
+ * IconButton. The start/stop icon keeps the primary highlight tint to stand
+ * out.
  */
 @Composable
 private fun ForwardControlButtons(
@@ -233,12 +247,25 @@ private fun ForwardControlButtons(
     session: RelaySession,
     realtimeOpen: Boolean,
     onRealtimeToggle: () -> Unit,
+    onRelayParams: () -> Unit,
 ) {
     BatteryIconButton(activity, session)
     RealtimeParamsIconButton(enabled = session.forwarding, open = realtimeOpen) {
         onRealtimeToggle()
     }
+    RelayParamsIconButton(session, onRelayParams)
     StartStopIconButton(activity, session)
+}
+
+@Composable
+private fun RelayParamsIconButton(session: RelaySession, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        enabled = !session.forwarding && !session.busy,
+        colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Transparent),
+    ) {
+        Icon(Icons.Filled.Settings, contentDescription = "转发参数设置")
+    }
 }
 
 @Composable
