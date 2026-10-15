@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name" translatable="false">高速耳返</string>
     <string name="developer_credit" translatable="false">小涛29开发</string>
-    <string name="app_description" translatable="false">多通道转发话筒收音至扬声器</string>
+    <string name="app_description" translatable="false">低延迟转发话筒收音至扬声器</string>
     <string name="developer_name" translatable="false">xiaotao29</string>
     <string name="developer_website" translatable="false">xiaotao29.cn</string>
     <string name="notice_title" translatable="false">高速耳返 · 转发已启用</string>

@@ -14,7 +14,7 @@
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <application
-        android:name=".MonitorApplication"
+        android:name=".MainApplication"
         android:label="@string/app_name"
         android:description="@string/app_description"
         android:icon="@mipmap/ic_launcher"
@@ -27,7 +27,6 @@
 
         <meta-data android:name="cn.xiaotao29.HighSpeedIEM.developer_name" android:value="@string/developer_name" />
         <meta-data android:name="cn.xiaotao29.HighSpeedIEM.website" android:value="@string/developer_website" />
-        <meta-data android:name="com.google.android.wearable.standalone" android:value="true" />
 
         <service
             android:name=".service.ForwardingService"

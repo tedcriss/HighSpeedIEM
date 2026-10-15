@@ -1,21 +1,34 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import androidx.compose.foundation.IndicationNodeFactory
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.node.DelegatableNode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+/** No-op indication: ripple is disabled app-wide (user preference). */
+private val NoIndication = object : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode =
+        object : Modifier.Node(), DelegatableNode {}
+    override fun hashCode(): Int = -1
+    override fun equals(other: Any?): Boolean = other === this
+}
+
+// Brand palette matched to the launcher icon (deep teal).
 private val LightScheme = lightColorScheme(
     primary = Color(0xFF006A60),
     onPrimary = Color(0xFFFFFFFF),
@@ -92,26 +105,11 @@ private val AppTypography = DefaultTypography.copy(
     titleMedium = DefaultTypography.titleMedium.copy(fontWeight = FontWeight.Medium),
 )
 
-/** Shared M3 disabled color roles, resolved on the current opaque surface. */
-internal object ActionStyle {
-    @Composable
-    fun buttonElevation() = ButtonDefaults.buttonElevation()
-
-    val disabledContainer: Color
-        @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-            .compositeOver(MaterialTheme.colorScheme.surface)
-    val disabledContent: Color
-        @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-
-    @Composable
-    fun primaryColors() = ButtonDefaults.buttonColors(
-        disabledContainerColor = disabledContainer,
-        disabledContentColor = disabledContent,
-    )
-
-}
-
-/** Material 3 theme following the system dark mode. */
+/**
+ * Material 3 theme following system dark mode. Ripple indication stays
+ * globally disabled (user preference); focus and selection states carry the
+ * interaction feedback instead.
+ */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HighSpeedIEMTheme(content: @Composable () -> Unit) {
@@ -120,6 +118,8 @@ fun HighSpeedIEMTheme(content: @Composable () -> Unit) {
         shapes = AppShapes,
         typography = AppTypography,
         motionScheme = MotionScheme.standard(),
-        content = { KeyboardFocusEnvironment(content) },
+        content = {
+            CompositionLocalProvider(LocalIndication provides NoIndication, content = content)
+        },
     )
 }

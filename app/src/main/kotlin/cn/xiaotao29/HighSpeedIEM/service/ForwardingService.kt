@@ -12,32 +12,40 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import cn.xiaotao29.HighSpeedIEM.MainActivity
-import cn.xiaotao29.HighSpeedIEM.MonitorApplication
+import cn.xiaotao29.HighSpeedIEM.MainApplication
 import cn.xiaotao29.HighSpeedIEM.R
+import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
 
 /**
- * Foreground service holding a microphone + mediaPlayback FGS type and a
- * partial wake lock while forwarding runs. Swiping the app from recents
- * stops forwarding and releases everything; the service never restarts itself.
+ * Foreground service (microphone + mediaPlayback, partial wake lock) that
+ * keeps the relay alive in the background. The ongoing notification opens the
+ * forward-control tab. Swiping the app from recents stops the relay at once
+ * and releases everything; the service never restarts itself.
  */
-class ForwardingService : Service(), cn.xiaotao29.HighSpeedIEM.audio.MonitorSession.ForwardingOwner {
-    private lateinit var session: cn.xiaotao29.HighSpeedIEM.audio.MonitorSession
+class ForwardingService : Service(), RelaySession.Owner {
+
+    private lateinit var session: RelaySession
     private var wake: PowerManager.WakeLock? = null
     private var closing = false
 
     override fun onCreate() {
         super.onCreate()
-        session = (application as MonitorApplication).session()
+        session = (application as MainApplication).session
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL, "实时耳返", NotificationManager.IMPORTANCE_LOW))
+            NotificationChannel(CHANNEL, "实时转发", NotificationManager.IMPORTANCE_LOW)
+        )
     }
 
     private fun notice(content: String): Notification {
         val intent = Intent(this, MainActivity::class.java)
-            .putExtra("task_tab", true)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(EXTRA_TAB, TAB_FORWARD)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
         val pending = PendingIntent.getActivity(
-            this, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            this, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(getText(R.string.notice_title))
@@ -51,52 +59,61 @@ class ForwardingService : Service(), cn.xiaotao29.HighSpeedIEM.audio.MonitorSess
         return builder.build()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, id: Int): Int {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            getSystemService(NotificationManager::class.java).cancel(11)
-            val n = notice("正在打开音频设备…")
+            val notification = notice("正在打开音频流…")
             if (Build.VERSION.SDK_INT >= 30) {
-                startForeground(NOTICE, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                startForeground(
+                    NOTICE, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
             } else {
-                startForeground(NOTICE, n)
+                startForeground(NOTICE, notification)
             }
             if (wake == null) {
                 wake = (getSystemService(Context.POWER_SERVICE) as PowerManager)
-                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "highspeediem:forwarding").apply {
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "highspeediem:relay")
+                    .apply {
                         setReferenceCounted(false)
                         acquire()
                     }
             }
-            session.begin(this)
+            session.startEngine(this)
         } catch (e: Exception) {
-            session.stop(e.toString(), false)
+            session.stopForwarding(e.toString())
         } catch (e: LinkageError) {
-            session.stop(e.toString(), false)
+            session.stopForwarding(e.toString())
         }
         return START_NOT_STICKY
     }
 
-    override fun running(count: Int) {
+    override fun relayStarted() {
         getSystemService(NotificationManager::class.java)
-            .notify(NOTICE, notice("有效转发通道数：$count · 点击管理任务"))
+            .notify(NOTICE, notice("转发进行中 · 点击打开转发控制"))
     }
 
-    override fun closed(error: String?) {
+    override fun relayClosed() {
         closing = true
-        wake?.let { if (it.isHeld) it.release() }
+        releaseWake()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        session.stop(null, true)
+        session.stopForwarding(null, clearSelection = true)
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        wake?.let { if (it.isHeld) it.release() }
-        if (!closing && !session.disposedPublic) session.stop(null, false)
+        releaseWake()
+        if (!closing) session.stopForwarding(null, clearSelection = true)
         super.onDestroy()
+    }
+
+    private fun releaseWake() {
+        wake?.let { if (it.isHeld) it.release() }
+        wake = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -104,5 +121,7 @@ class ForwardingService : Service(), cn.xiaotao29.HighSpeedIEM.audio.MonitorSess
     companion object {
         const val CHANNEL = "forwarding"
         const val NOTICE = 10
+        const val EXTRA_TAB = "tab"
+        const val TAB_FORWARD = 2
     }
 }

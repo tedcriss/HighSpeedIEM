@@ -15,8 +15,8 @@ android {
         applicationId = "cn.xiaotao29.HighSpeedIEM"
         minSdk = 27
         targetSdk = 37
-        versionCode = 29
-        versionName = "3.8"
+        versionCode = 30
+        versionName = "4.0"
         val abis = (project.findProperty("abi") as String?)
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
             ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
@@ -76,7 +76,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.test.uiautomator:uiautomator:2.4.0")
 
     testImplementation("junit:junit:4.13.2")
 }

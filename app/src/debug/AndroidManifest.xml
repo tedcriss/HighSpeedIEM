@@ -1,6 +1,0 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <instrumentation
-        android:name="cn.xiaotao29.HighSpeedIEM.test.UnifiedTestInstrumentation"
-        android:targetPackage="cn.xiaotao29.HighSpeedIEM"
-        android:label="HighSpeedIEM unified phone tests" />
-</manifest>
