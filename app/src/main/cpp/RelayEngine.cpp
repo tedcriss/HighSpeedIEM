@@ -337,11 +337,13 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
         return err;
     }
     format = outFormat;
-    inBurst = std::max(1, AAudioStream_getFramesPerBurst(input));
     outBurst = std::max(1, AAudioStream_getFramesPerBurst(output));
 
     scratchFrames = std::max(kMinScratchFrames, outBurst * 4);
     scratch.assign(static_cast<size_t>(scratchFrames) * inChannels * bytesPerFrame(format), 0);
+#ifndef NDEBUG
+    nonSilentOutputSeen = false;
+#endif
 
     pendingMasks = mixerMasks;
     applyPlanLocked();
@@ -429,7 +431,7 @@ std::string RelayEngine::stop() {
     scratch.clear();
     scratch.shrink_to_fit();
     scratchFrames = 0;
-    inChannels = outChannels = inRate = outRate = inBurst = outBurst = 0;
+    inChannels = outChannels = inRate = outRate = outBurst = 0;
     return firstError;
 }
 
@@ -505,6 +507,20 @@ void RelayEngine::mixFrames(const void* in, void* out, int32_t frames, int32_t o
             std::memset(dst, 0, static_cast<size_t>(frames) * frameBytes);
             break;
     }
+#ifndef NDEBUG
+    if (!nonSilentOutputSeen.load(std::memory_order_relaxed)) {
+        bool hasSignal;
+        if (format == AAUDIO_FORMAT_PCM_FLOAT) {
+            const auto* samples = reinterpret_cast<const float*>(dst);
+            hasSignal = std::any_of(samples, samples + static_cast<size_t>(frames) * outChannels,
+                                    [](float sample) { return std::isfinite(sample) && sample != 0; });
+        } else {
+            hasSignal = std::any_of(dst, dst + static_cast<size_t>(frames) * frameBytes,
+                                    [](uint8_t byte) { return byte != 0; });
+        }
+        if (hasSignal) nonSilentOutputSeen.store(true, std::memory_order_relaxed);
+    }
+#endif
 }
 
 aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFrames) {
@@ -519,24 +535,11 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 
-    // Input start is asynchronous; stay silent until it actually runs.
-    if (AAudioStream_getState(in) != AAUDIO_STREAM_STATE_STARTED) {
-        fillSilence(audioData, 0, numFrames);
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-
-    // InputMargin guard: only read when the input buffer already holds at
-    // least one output-burst worth of input frames (converted by sample rate,
-    // rounded up) plus one input burst. Otherwise emit silence and let the
-    // input accumulate, instead of underrunning every callback.
-    int64_t required =
-            static_cast<int64_t>(std::ceil(static_cast<double>(outBurst) * inRate / outRate)) +
-            inBurst;
-    int64_t available = AAudioStream_getFramesWritten(in) - AAudioStream_getFramesRead(in);
-    if (available < required) {
-        fillSilence(audioData, 0, numFrames);
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
+    // Always enter the non-blocking read below. Exclusive MMAP capture processes
+    // service timestamps and refreshes its clock model inside read(); frame
+    // getters alone can remain at zero until that happens. Gating the first
+    // read on those getters deadlocks capture while output keeps playing silence.
+    // read(..., 0) also processes pending input errors and never waits for data.
 
     // No resampling in this version: start() rejects mismatched rates, so the
     // converted frame count equals numFrames. The formula keeps the future
@@ -620,6 +623,11 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
         }
     }
     add("XRunCount", valueOrError(AAudioStream_getXRunCount(s)));
+#ifndef NDEBUG
+    if (direction == AAUDIO_DIRECTION_OUTPUT) {
+        add("NonSilentOutputSeen", nonSilentOutputSeen.load() ? "true" : "false");
+    }
+#endif
     if (auto fn = isMMapUsedFn()) {
         add("MMapUsed", fn(s) ? "true" : "false");
     } else {

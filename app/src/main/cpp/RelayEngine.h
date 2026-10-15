@@ -106,10 +106,14 @@ private:
     aaudio_format_t format = AAUDIO_FORMAT_UNSPECIFIED;
     int32_t inChannels = 0, outChannels = 0;
     int32_t inRate = 0, outRate = 0;
-    int32_t inBurst = 0, outBurst = 0;
+    int32_t outBurst = 0;
 
     std::vector<uint8_t> scratch;
     int32_t scratchFrames = 0;
+#ifndef NDEBUG
+    // Debug-only evidence that the callback has mixed real PCM, not just zeros.
+    std::atomic<bool> nonSilentOutputSeen{false};
+#endif
 
     JavaVM* jvm = nullptr;
     std::mutex listenerMutex;
