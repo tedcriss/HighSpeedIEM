@@ -368,6 +368,12 @@ private fun RealtimeParamsAnchor(
         positionProvider = TooltipDefaults.rememberRichTooltipPositionProvider(),
         state = state,
         focusable = true,
+        // The popup's own tap/drag-to-dismiss gestures fought the content
+        // scroll: a downward swipe dismissed the tooltip and the gesture's
+        // release then re-hit the anchor, reopening it. Dismissal is owned by
+        // the anchor toggle, the relay stop and tab switches instead.
+        enableUserInput = false,
+        onDismissRequest = { state.dismiss() },
         tooltip = {
             RichTooltip(
                 title = { MarqueeText("实时流参数") },
