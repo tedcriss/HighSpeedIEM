@@ -6,12 +6,20 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Speaker
@@ -20,6 +28,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -40,20 +50,25 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import cn.xiaotao29.HighSpeedIEM.MainActivity
 import cn.xiaotao29.HighSpeedIEM.R
 import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
 
 /**
- * App root. App-level navigation is owned by [NavigationSuiteScaffold]
- * (bottom navigation bar in portrait, wide navigation rail in landscape, per
- * the current Material 3 guidance); each destination hosts its own page
- * [Scaffold] for the portrait title bar, snackbar host and page content.
+ * App root. Portrait uses the official NavigationSuiteScaffold (bottom
+ * navigation bar) around the page Scaffold. Landscape uses the app's narrow
+ * navigation rail: brand icon and name on top, destinations centered with
+ * labels under their icons — the suite rail types place labels beside the
+ * icon and expose no brand header, so the rail stays hand-built there.
  */
 @OptIn(ExperimentalMaterial3AdaptiveNavigationSuiteApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -79,55 +94,32 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
             snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Long)
         }
 
-        NavigationSuiteScaffold(
-            navigationItems = {
-                NavigationSuiteItem(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
-                    icon = { Icon(Icons.Filled.Mic, contentDescription = null) },
-                    label = { Text("输入设备", maxLines = 1) },
-                )
-                NavigationSuiteItem(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
-                    icon = { Icon(Icons.Filled.Speaker, contentDescription = null) },
-                    label = { Text("输出设备", maxLines = 1) },
-                )
-                NavigationSuiteItem(
-                    selected = tab == 2,
-                    onClick = { tab = 2 },
-                    icon = { Icon(Icons.Filled.SwapHoriz, contentDescription = null) },
-                    label = { Text("转发控制", maxLines = 1) },
-                )
-            },
-            navigationSuiteType = if (portrait) {
-                NavigationSuiteType.NavigationBar
-            } else {
-                NavigationSuiteType.WideNavigationRailCollapsed
-            },
-        ) {
+        val pageScaffold: @Composable (Modifier) -> Unit = { modifier ->
             Scaffold(
-                // App title row; the suite rail has no brand header slot, so
-                // the bar carries the brand in both orientations.
+                modifier = modifier,
+                // Portrait-only app title row; landscape carries the brand in
+                // the rail header instead.
                 topBar = {
-                    TopAppBar(
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                        ),
-                        title = {
-                            Column {
-                                MarqueeText(
-                                    stringResource(R.string.app_name),
-                                    style = MaterialTheme.typography.titleLarge,
-                                )
-                                MarqueeText(
-                                    stringResource(R.string.developer_credit),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
-                    )
+                    if (portrait) {
+                        TopAppBar(
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                            ),
+                            title = {
+                                Column {
+                                    MarqueeText(
+                                        stringResource(R.string.app_name),
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    MarqueeText(
+                                        stringResource(R.string.developer_credit),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                        )
+                    }
                 },
                 snackbarHost = {
                     SnackbarHost(snackbarHostState, Modifier.padding(bottom = 96.dp))
@@ -150,6 +142,98 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                     }
                     if (session.busy) BlockingOverlay()
                 }
+            }
+        }
+
+        if (portrait) {
+            NavigationSuiteScaffold(
+                navigationItems = {
+                    NavigationSuiteItem(
+                        selected = tab == 0,
+                        onClick = { tab = 0 },
+                        icon = { Icon(Icons.Filled.Mic, contentDescription = null) },
+                        label = { Text("输入设备", maxLines = 1) },
+                    )
+                    NavigationSuiteItem(
+                        selected = tab == 1,
+                        onClick = { tab = 1 },
+                        icon = { Icon(Icons.Filled.Speaker, contentDescription = null) },
+                        label = { Text("输出设备", maxLines = 1) },
+                    )
+                    NavigationSuiteItem(
+                        selected = tab == 2,
+                        onClick = { tab = 2 },
+                        icon = { Icon(Icons.Filled.SwapHoriz, contentDescription = null) },
+                        label = { Text("转发控制", maxLines = 1) },
+                    )
+                },
+                navigationSuiteType = NavigationSuiteType.NavigationBar,
+            ) {
+                pageScaffold(Modifier)
+            }
+        } else {
+            Row(Modifier.fillMaxSize()) {
+                LandscapeNavigation(selected = tab) { tab = it }
+                pageScaffold(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/**
+ * Landscape navigation rail: brand icon and app name on top, the three tab
+ * destinations centered vertically with labels under their icons.
+ */
+@Composable
+private fun LandscapeNavigation(selected: Int, onSelect: (Int) -> Unit) {
+    NavigationRail(
+        modifier = Modifier.fillMaxHeight(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        windowInsets = WindowInsets(0, 0, 0, 0),
+    ) {
+        Box(Modifier.width(96.dp).fillMaxHeight()) {
+            Column(
+                Modifier.align(Alignment.TopCenter).padding(top = 12.dp, start = 4.dp, end = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.icon_foreground),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(colorResource(R.color.icon_background)),
+                )
+                MarqueeText(
+                    stringResource(R.string.app_name),
+                    style = MaterialTheme.typography.labelLarge,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Column(
+                Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                NavigationRailItem(
+                    selected = selected == 0,
+                    onClick = { onSelect(0) },
+                    icon = { Icon(Icons.Filled.Mic, contentDescription = null) },
+                    label = { Text("输入设备", maxLines = 1) },
+                )
+                NavigationRailItem(
+                    selected = selected == 1,
+                    onClick = { onSelect(1) },
+                    icon = { Icon(Icons.Filled.Speaker, contentDescription = null) },
+                    label = { Text("输出设备", maxLines = 1) },
+                )
+                NavigationRailItem(
+                    selected = selected == 2,
+                    onClick = { onSelect(2) },
+                    icon = { Icon(Icons.Filled.SwapHoriz, contentDescription = null) },
+                    label = { Text("转发控制", maxLines = 1) },
+                )
             }
         }
     }
