@@ -1,6 +1,14 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
 import android.content.res.Configuration
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,6 +66,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import cn.xiaotao29.HighSpeedIEM.MainActivity
@@ -70,6 +79,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 private val ToolbarShadowElevation = 6.dp
+
+/** Shared enter/exit specs for the realtime panel slide animation. */
+private val SlideSpec = tween<IntOffset>(durationMillis = 260)
+private val FadeSpec = tween<Float>(durationMillis = 260)
 
 /**
  * Forward-control tab. Bottom layer: one card per output channel (count
@@ -144,18 +157,29 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
                     }
                 }
             }
-            if (showRealtime) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showRealtime,
+                enter = if (landscape) {
+                    slideInHorizontally(SlideSpec) { -it } + fadeIn(FadeSpec)
+                } else {
+                    slideInVertically(SlideSpec) { it } + fadeIn(FadeSpec)
+                },
+                exit = if (landscape) {
+                    slideOutHorizontally(SlideSpec) { -it } + fadeOut(FadeSpec)
+                } else {
+                    slideOutVertically(SlideSpec) { it } + fadeOut(FadeSpec)
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .zIndex(1f)
+                    .padding(
+                        start = 16.dp,
+                        end = 16.dp,
+                        bottom = if (landscape) 16.dp else 104.dp,
+                    ),
+            ) {
                 RealtimeParamsPanel(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .zIndex(1f)
-                        .padding(
-                            start = 16.dp,
-                            end = 16.dp,
-                            bottom = if (landscape) 16.dp else 104.dp,
-                        )
-                        .fillMaxWidth()
-                        .heightIn(max = 520.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
                     onClose = { showRealtime = false },
                 )
             }
