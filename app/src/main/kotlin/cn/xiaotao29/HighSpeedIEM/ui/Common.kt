@@ -38,6 +38,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
@@ -56,6 +57,7 @@ fun MarqueeText(
     style: TextStyle = LocalTextStyle.current,
     color: Color = Color.Unspecified,
     fontWeight: FontWeight? = null,
+    textAlign: TextAlign? = null,
 ) {
     Text(
         text = text,
@@ -63,6 +65,7 @@ fun MarqueeText(
         style = style,
         color = color,
         fontWeight = fontWeight,
+        textAlign = textAlign,
         maxLines = 1,
         overflow = TextOverflow.Clip,
     )

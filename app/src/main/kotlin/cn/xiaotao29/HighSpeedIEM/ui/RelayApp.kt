@@ -6,12 +6,19 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import android.content.res.Configuration
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Speaker
@@ -19,8 +26,11 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -38,9 +48,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import cn.xiaotao29.HighSpeedIEM.MainActivity
 import cn.xiaotao29.HighSpeedIEM.R
@@ -98,7 +112,7 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                 SnackbarHost(snackbarHostState, Modifier.padding(bottom = 96.dp))
             },
             bottomBar = {
-                NavigationBar {
+                if (portrait) NavigationBar {
                     NavigationBarItem(
                         selected = tab == 0,
                         onClick = { tab = 0 },
@@ -120,7 +134,11 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                 }
             },
         ) { padding ->
-            Column(Modifier.padding(padding).fillMaxSize()) {
+            Row(Modifier.padding(padding).fillMaxSize()) {
+                if (!portrait) {
+                    LandscapeNavigation(selected = tab) { tab = it }
+                }
+                Column(Modifier.weight(1f).fillMaxHeight()) {
                 PageHeading(
                     title = when (tab) {
                         0 -> "输入设备"
@@ -154,7 +172,68 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                     }
                 }
                 if (session.busy) BlockingOverlay()
+                    }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Landscape navigation rail: brand icon and app name on top, the three tab
+ * destinations centered vertically — same layout language as the pre-rewrite
+ * app's landscape navigation.
+ */
+@Composable
+private fun LandscapeNavigation(selected: Int, onSelect: (Int) -> Unit) {
+    NavigationRail(
+        modifier = Modifier.fillMaxHeight(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        windowInsets = WindowInsets(0, 0, 0, 0),
+    ) {
+        Box(Modifier.width(96.dp).fillMaxHeight()) {
+            Column(
+                Modifier.align(Alignment.TopCenter).padding(top = 12.dp, start = 4.dp, end = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.icon_foreground),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(colorResource(R.color.icon_background)),
+                )
+                MarqueeText(
+                    stringResource(R.string.app_name),
+                    style = MaterialTheme.typography.labelLarge,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Column(
+                Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                NavigationRailItem(
+                    selected = selected == 0,
+                    onClick = { onSelect(0) },
+                    icon = { Icon(Icons.Filled.Mic, contentDescription = null) },
+                    label = { Text("输入设备", maxLines = 1) },
+                )
+                NavigationRailItem(
+                    selected = selected == 1,
+                    onClick = { onSelect(1) },
+                    icon = { Icon(Icons.Filled.Speaker, contentDescription = null) },
+                    label = { Text("输出设备", maxLines = 1) },
+                )
+                NavigationRailItem(
+                    selected = selected == 2,
+                    onClick = { onSelect(2) },
+                    icon = { Icon(Icons.Filled.SwapHoriz, contentDescription = null) },
+                    label = { Text("转发控制", maxLines = 1) },
+                )
             }
         }
     }
