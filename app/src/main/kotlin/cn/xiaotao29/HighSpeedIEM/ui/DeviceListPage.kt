@@ -1,6 +1,5 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
-import android.content.res.Configuration
 import android.media.AudioDeviceInfo
 import android.os.Build
 import androidx.compose.animation.animateColorAsState
@@ -48,7 +47,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -69,8 +67,6 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun DevicesPage(session: RelaySession, input: Boolean) {
-    val landscape =
-        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val devices = if (input) session.inputDevices else session.outputDevices
     val entries = devices.entries.sortedBy { it.key }
     if (entries.isEmpty()) {
@@ -84,7 +80,9 @@ fun DevicesPage(session: RelaySession, input: Boolean) {
         return
     }
     LazyVerticalGrid(
-        columns = GridCells.Fixed(if (landscape) 2 else 1),
+        // Width-adaptive column count: 1 on narrow screens up to N on very
+        // wide ones (each column at least 320dp), in both orientations.
+        columns = GridCells.Adaptive(minSize = 320.dp),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
