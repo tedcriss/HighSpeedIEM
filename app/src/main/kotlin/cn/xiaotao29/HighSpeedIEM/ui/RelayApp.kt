@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,8 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,17 +36,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import cn.xiaotao29.HighSpeedIEM.MainActivity
+import cn.xiaotao29.HighSpeedIEM.R
 import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
 
 /** App root: three tabs, snackbar errors, and the blocking overlay. */
 @Composable
 fun RelayApp(activity: MainActivity, session: RelaySession) {
     HighSpeedIEMTheme {
+        val portrait =
+            LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
         var tab by rememberSaveable { mutableIntStateOf(0) }
         val snackbarHostState = remember { SnackbarHostState() }
 
@@ -63,6 +71,29 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
         }
 
         Scaffold(
+            // Portrait-only app title row, matching the pre-rewrite app.
+            topBar = {
+                if (portrait) {
+                    TopAppBar(
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                        ),
+                        title = {
+                            Column {
+                                MarqueeText(
+                                    stringResource(R.string.app_name),
+                                    style = MaterialTheme.typography.titleLarge,
+                                )
+                                MarqueeText(
+                                    stringResource(R.string.developer_credit),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                    )
+                }
+            },
             snackbarHost = {
                 SnackbarHost(snackbarHostState, Modifier.padding(bottom = 96.dp))
             },
