@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
@@ -28,7 +29,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalFloatingToolbar
@@ -36,21 +36,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RichTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TooltipBox
-import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.VerticalFloatingToolbar
-import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
@@ -72,7 +67,6 @@ import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val ToolbarShadowElevation = 6.dp
@@ -82,7 +76,9 @@ private val ToolbarShadowElevation = 6.dp
  * follows the selected output device / its requested channel count). Top
  * layer: a floating toolbar holding the three controls as equal-level
  * transparent icon buttons — horizontal at the bottom in portrait, a
- * vertical floating toolbar lane in landscape.
+ * vertical floating toolbar lane in landscape. The realtime parameters open
+ * as an in-page floating panel (not a popup window): popup tooltips resized
+ * and repositioned themselves while their content scrolled.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -90,6 +86,10 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
     val outChannels = session.effectiveOutputChannels
     val landscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var showRealtime by remember { mutableStateOf(false) }
+    LaunchedEffect(session.forwarding) {
+        if (!session.forwarding) showRealtime = false
+    }
     Row(Modifier.fillMaxSize()) {
         if (landscape) {
             Column(
@@ -109,7 +109,9 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        ForwardControlButtons(activity, session)
+                        ForwardControlButtons(activity, session, showRealtime) {
+                            showRealtime = !showRealtime
+                        }
                     }
                 }
             }
@@ -142,6 +144,21 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
                     }
                 }
             }
+            if (showRealtime) {
+                RealtimeParamsPanel(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .zIndex(1f)
+                        .padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            bottom = if (landscape) 16.dp else 104.dp,
+                        )
+                        .fillMaxWidth()
+                        .heightIn(max = 520.dp),
+                    onClose = { showRealtime = false },
+                )
+            }
             if (!landscape) {
                 HorizontalFloatingToolbar(
                     expanded = true,
@@ -149,14 +166,16 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
                     collapsedShadowElevation = ToolbarShadowElevation,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .zIndex(1f)
+                        .zIndex(2f)
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        ForwardControlButtons(activity, session)
+                        ForwardControlButtons(activity, session, showRealtime) {
+                            showRealtime = !showRealtime
+                        }
                     }
                 }
             }
@@ -170,10 +189,15 @@ fun ForwardPage(activity: MainActivity, session: RelaySession) {
  * start/stop icon keeps the primary highlight tint to stand out.
  */
 @Composable
-private fun ForwardControlButtons(activity: MainActivity, session: RelaySession) {
+private fun ForwardControlButtons(
+    activity: MainActivity,
+    session: RelaySession,
+    realtimeOpen: Boolean,
+    onRealtimeToggle: () -> Unit,
+) {
     BatteryIconButton(activity, session)
-    RealtimeParamsAnchor(enabled = session.forwarding) { onClick ->
-        RealtimeParamsIconButton(enabled = session.forwarding, onClick = onClick)
+    RealtimeParamsIconButton(enabled = session.forwarding, open = realtimeOpen) {
+        onRealtimeToggle()
     }
     StartStopIconButton(activity, session)
 }
@@ -191,11 +215,17 @@ private fun BatteryIconButton(activity: MainActivity, session: RelaySession) {
 }
 
 @Composable
-private fun RealtimeParamsIconButton(enabled: Boolean, onClick: () -> Unit) {
+private fun RealtimeParamsIconButton(enabled: Boolean, open: Boolean, onClick: () -> Unit) {
     IconButton(
         onClick = onClick,
         enabled = enabled,
-        colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Transparent),
+        colors = IconButtonDefaults.iconButtonColors(
+            containerColor = if (open) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                Color.Transparent
+            },
+        ),
     ) {
         Icon(Icons.Outlined.Info, contentDescription = "查看实时流参数")
     }
@@ -218,6 +248,99 @@ private fun StartStopIconButton(activity: MainActivity, session: RelaySession) {
             if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
             contentDescription = if (running) "停止转发" else "启动转发",
         )
+    }
+}
+
+/**
+ * In-page floating panel with the live stream parameters. Its bounds come
+ * from the page layout, so scrolling the table can never resize or reposition
+ * it the way a popup tooltip did. Polls the engine once per second while
+ * composed; only changed value texts recompose.
+ */
+@Composable
+private fun RealtimeParamsPanel(modifier: Modifier = Modifier, onClose: () -> Unit) {
+    val inputValues = remember { mutableStateMapOf<String, String>() }
+    val outputValues = remember { mutableStateMapOf<String, String>() }
+    var inputKeys by remember { mutableStateOf<List<String>>(emptyList()) }
+    var outputKeys by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            val inPairs = withContext(Dispatchers.IO) { pollStream(AAudio.DIRECTION_INPUT) }
+            val outPairs = withContext(Dispatchers.IO) { pollStream(AAudio.DIRECTION_OUTPUT) }
+            if (inputKeys.isEmpty() && inPairs.isNotEmpty()) inputKeys = inPairs.map { it.first }
+            if (outputKeys.isEmpty() && outPairs.isNotEmpty()) outputKeys = outPairs.map { it.first }
+            applyPoll(inputValues, inPairs)
+            applyPoll(outputValues, outPairs)
+            delay(1000)
+        }
+    }
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        tonalElevation = 6.dp,
+        shadowElevation = 6.dp,
+    ) {
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MarqueeText(
+                    "实时流参数",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭实时流参数")
+                }
+            }
+            Column(
+                Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "输入流",
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (inputKeys.isEmpty()) {
+                    Text(
+                        "无已打开的输入流",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    RealtimeTable(inputKeys, inputValues)
+                }
+                Text(
+                    "输出流",
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (outputKeys.isEmpty()) {
+                    Text(
+                        "无已打开的输出流",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    RealtimeTable(outputKeys, outputValues)
+                }
+            }
+        }
     }
 }
 
@@ -349,110 +472,6 @@ private fun EffectsDialogButton(channel: Int, enabled: Boolean) {
             title = { MarqueeText("输出通道 $channel · 输入音效") },
             text = { Box(Modifier.fillMaxWidth().height(48.dp)) },
         )
-    }
-}
-
-/** Realtime stream parameters tooltip; polls the engine while open. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RealtimeParamsAnchor(
-    enabled: Boolean,
-    anchor: @Composable (onClick: () -> Unit) -> Unit,
-) {
-    val state = rememberTooltipState(isPersistent = true)
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(enabled) {
-        if (!enabled) state.dismiss()
-    }
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberRichTooltipPositionProvider(),
-        state = state,
-        focusable = true,
-        // The popup's own tap/drag-to-dismiss gestures fought the content
-        // scroll: a downward swipe dismissed the tooltip and the gesture's
-        // release then re-hit the anchor, reopening it. Dismissal is owned by
-        // the anchor toggle, the relay stop and tab switches instead.
-        enableUserInput = false,
-        onDismissRequest = { state.dismiss() },
-        tooltip = {
-            RichTooltip(
-                title = { MarqueeText("实时流参数") },
-                text = { RealtimeParamsContent(visible = state.isVisible) },
-            )
-        },
-    ) {
-        anchor {
-            scope.launch {
-                if (state.isVisible) state.dismiss() else state.show()
-            }
-        }
-    }
-}
-
-@Composable
-private fun RealtimeParamsContent(visible: Boolean) {
-    // Values live in snapshot maps and the key order is fixed on first poll,
-    // so the table structure never rebuilds: only changed value texts recompose.
-    val inputValues = remember { mutableStateMapOf<String, String>() }
-    val outputValues = remember { mutableStateMapOf<String, String>() }
-    var inputKeys by remember { mutableStateOf<List<String>>(emptyList()) }
-    var outputKeys by remember { mutableStateOf<List<String>>(emptyList()) }
-    LaunchedEffect(visible) {
-        if (!visible) return@LaunchedEffect
-        while (isActive) {
-            val inPairs = withContext(Dispatchers.IO) { pollStream(AAudio.DIRECTION_INPUT) }
-            val outPairs = withContext(Dispatchers.IO) { pollStream(AAudio.DIRECTION_OUTPUT) }
-            if (inputKeys.isEmpty() && inPairs.isNotEmpty()) inputKeys = inPairs.map { it.first }
-            if (outputKeys.isEmpty() && outPairs.isNotEmpty()) outputKeys = outPairs.map { it.first }
-            applyPoll(inputValues, inPairs)
-            applyPoll(outputValues, outPairs)
-            // One second keeps the readout live without starving the main
-            // thread on slow renderers (200ms polling caused frame skips).
-            delay(1000)
-        }
-    }
-    Column(
-        Modifier
-            .heightIn(max = 460.dp)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp)
-            .padding(bottom = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            "输入流",
-            style = MaterialTheme.typography.titleSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (inputKeys.isEmpty()) {
-            Text(
-                "无已打开的输入流",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        } else {
-            RealtimeTable(inputKeys, inputValues)
-        }
-        Text(
-            "输出流",
-            style = MaterialTheme.typography.titleSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (outputKeys.isEmpty()) {
-            Text(
-                "无已打开的输出流",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        } else {
-            RealtimeTable(outputKeys, outputValues)
-        }
     }
 }
 
