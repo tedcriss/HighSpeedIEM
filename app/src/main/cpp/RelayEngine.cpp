@@ -16,6 +16,9 @@ namespace {
 
 constexpr int64_t kStateTimeoutNs = 2'000'000'000LL;
 constexpr int32_t kMinScratchFrames = 8192;
+// Like Oboe's full-duplex helper, discard startup capture backlog. Each
+// callback performs bounded non-blocking reads, including on MMAP.
+constexpr int32_t kStartupDrainCallbacks = 20;
 
 // AAudio_setMMapPolicy / AAudioStream_isMMapUsed exist from API 29; resolve
 // them at runtime so minSdk 27 builds keep working.
@@ -142,35 +145,41 @@ void pack24(uint8_t* p, int32_t v) {
 
 template <typename T, typename Acc>
 void mixTyped(const T* in, int32_t inChannels, T* out, int32_t outChannels, int32_t frames,
-              const std::vector<std::vector<int32_t>>& sources) {
+              const std::array<uint32_t, 32>& masks, const std::array<int32_t, 32>& counts) {
     for (int32_t f = 0; f < frames; ++f) {
         const T* src = in + static_cast<size_t>(f) * inChannels;
         T* dst = out + static_cast<size_t>(f) * outChannels;
         for (int32_t o = 0; o < outChannels; ++o) {
-            const auto& chans = sources[o];
-            if (chans.empty()) {
+            uint32_t mask = masks[o];
+            if (!mask) {
                 dst[o] = T{0};
                 continue;
             }
             Acc sum = Acc{0};
-            for (int32_t c : chans) sum += static_cast<Acc>(src[c]);
-            dst[o] = static_cast<T>(sum / static_cast<Acc>(chans.size()));
+            while (mask) {
+                sum += static_cast<Acc>(src[__builtin_ctz(mask)]);
+                mask &= mask - 1;
+            }
+            dst[o] = static_cast<T>(sum / static_cast<Acc>(counts[o]));
         }
     }
 }
 
 void mix24(const uint8_t* in, int32_t inChannels, uint8_t* out, int32_t outChannels, int32_t frames,
-           const std::vector<std::vector<int32_t>>& sources) {
+           const std::array<uint32_t, 32>& masks, const std::array<int32_t, 32>& counts) {
     for (int32_t f = 0; f < frames; ++f) {
         const uint8_t* src = in + static_cast<size_t>(f) * inChannels * 3;
         uint8_t* dst = out + static_cast<size_t>(f) * outChannels * 3;
         for (int32_t o = 0; o < outChannels; ++o) {
-            const auto& chans = sources[o];
+            uint32_t mask = masks[o];
             int32_t value = 0;
-            if (!chans.empty()) {
+            if (mask) {
                 int64_t sum = 0;
-                for (int32_t c : chans) sum += unpack24(src + static_cast<size_t>(c) * 3);
-                value = static_cast<int32_t>(sum / static_cast<int64_t>(chans.size()));
+                while (mask) {
+                    sum += unpack24(src + static_cast<size_t>(__builtin_ctz(mask)) * 3);
+                    mask &= mask - 1;
+                }
+                value = static_cast<int32_t>(sum / static_cast<int64_t>(counts[o]));
             }
             pack24(dst + static_cast<size_t>(o) * 3, value);
         }
@@ -322,6 +331,11 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
         closeStreams(ignored);
         return err;
     }
+    if (inChannels > 32 || outChannels > 32) {
+        std::string ignored;
+        closeStreams(ignored);
+        return "转发已停止：混音矩阵最多支持 32 个输入和 32 个输出声道";
+    }
     if (inRate != outRate) {
         std::string err = "转发已停止：输入流采样率 " + std::to_string(inRate) + " Hz 与输出流采样率 " +
                           std::to_string(outRate) + " Hz 不一致（当前版本暂不支持重采样）";
@@ -339,14 +353,40 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     format = outFormat;
     outBurst = std::max(1, AAudioStream_getFramesPerBurst(output));
 
+    // Capacity is an allocation limit, not the amount queued for playback.
+    // AAudio's default can be many bursts (8 on the tested Xiaomi). Match
+    // OboeTester's default of two bursts for the requested low-latency mode,
+    // including when a device falls back to PERFORMANCE_MODE_NONE.
+    outputCapacity = AAudioStream_getBufferCapacityInFrames(out);
+    tuneBuffer = cfg.outPerformanceMode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;
+    if (tuneBuffer) {
+        result = AAudioStream_setBufferSizeInFrames(out, std::min(outputCapacity, outBurst * 2));
+        if (result < 0) {
+            std::string err = std::string("AAudioStream_setBufferSizeInFrames(output): ") +
+                              AAudio_convertResultToText(result);
+            std::string ignored;
+            closeStreams(ignored);
+            return err;
+        }
+    }
+    // Ignore startup underruns, then check at most four times per second.
+    tuneCountdown = outRate / 2;
+    previousXRunCount = -1;
+    startupDrainCallbacks = kStartupDrainCallbacks;
+    startupFramesDiscarded = 0;
+
     scratchFrames = std::max(kMinScratchFrames, outBurst * 4);
     scratch.assign(static_cast<size_t>(scratchFrames) * inChannels * bytesPerFrame(format), 0);
+    inputDrainFrames = std::max(1, AAudioStream_getBufferCapacityInFrames(in));
 #ifndef NDEBUG
     nonSilentOutputSeen = false;
 #endif
 
-    pendingMasks = mixerMasks;
-    applyPlanLocked();
+    for (int32_t o = 0; o < outChannels; ++o) {
+        routingMasks[o].store(o < static_cast<int32_t>(mixerMasks.size())
+                             ? static_cast<uint32_t>(mixerMasks[o]) : 0,
+                             std::memory_order_relaxed);
+    }
 
     // ---- start: input first, then the callback-driven output ----
     aaudio_stream_state_t nextState = AAUDIO_STREAM_STATE_UNKNOWN;
@@ -417,10 +457,6 @@ void RelayEngine::closeStreams(std::string& firstError) {
     }
     output = nullptr;
     input = nullptr;
-    {
-        std::lock_guard<std::mutex> g(planMutex);
-        plan.reset();
-    }
 }
 
 std::string RelayEngine::stop() {
@@ -435,31 +471,11 @@ std::string RelayEngine::stop() {
     return firstError;
 }
 
-void RelayEngine::applyPlanLocked() {
-    auto p = std::make_shared<Plan>();
-    p->inputChannels = inChannels;
-    p->outputChannels = outChannels;
-    p->sources.resize(outChannels);
-    for (int32_t o = 0; o < outChannels; ++o) {
-        int32_t mask = o < static_cast<int32_t>(pendingMasks.size()) ? pendingMasks[o] : 0;
-        for (int32_t i = 0; i < inChannels; ++i) {
-            if (mask & (1 << i)) p->sources[o].push_back(i);
-        }
-    }
-    {
-        std::lock_guard<std::mutex> g(planMutex);
-        plan = p;
-    }
-}
-
 void RelayEngine::setMixerMask(int32_t outChannel, int32_t mask) {
     std::lock_guard<std::mutex> lock(lifecycleMutex);
-    if (outChannel < 0) return;
-    if (outChannel >= static_cast<int32_t>(pendingMasks.size())) {
-        pendingMasks.resize(outChannel + 1, 0);
+    if (outChannel >= 0 && outChannel < outChannels) {
+        routingMasks[outChannel].store(static_cast<uint32_t>(mask), std::memory_order_relaxed);
     }
-    pendingMasks[outChannel] = mask;
-    if (running.load()) applyPlanLocked();
 }
 
 aaudio_data_callback_result_t RelayEngine::dataCallback(AAudioStream* stream, void* userData,
@@ -488,20 +504,20 @@ void RelayEngine::mixFrames(const void* in, void* out, int32_t frames, int32_t o
     switch (format) {
         case AAUDIO_FORMAT_PCM_FLOAT:
             mixTyped<float, float>(static_cast<const float*>(in), inChannels,
-                                   reinterpret_cast<float*>(dst), outChannels, frames, p.sources);
+                                   reinterpret_cast<float*>(dst), outChannels, frames, p.masks, p.counts);
             break;
         case AAUDIO_FORMAT_PCM_I16:
             mixTyped<int16_t, int32_t>(static_cast<const int16_t*>(in), inChannels,
                                        reinterpret_cast<int16_t*>(dst), outChannels, frames,
-                                       p.sources);
+                                       p.masks, p.counts);
             break;
         case AAUDIO_FORMAT_PCM_I32:
             mixTyped<int32_t, int64_t>(static_cast<const int32_t*>(in), inChannels,
                                        reinterpret_cast<int32_t*>(dst), outChannels, frames,
-                                       p.sources);
+                                       p.masks, p.counts);
             break;
         case AAUDIO_FORMAT_PCM_I24_PACKED:
-            mix24(static_cast<const uint8_t*>(in), inChannels, dst, outChannels, frames, p.sources);
+            mix24(static_cast<const uint8_t*>(in), inChannels, dst, outChannels, frames, p.masks, p.counts);
             break;
         default:
             std::memset(dst, 0, static_cast<size_t>(frames) * frameBytes);
@@ -523,14 +539,33 @@ void RelayEngine::mixFrames(const void* in, void* out, int32_t frames, int32_t o
 #endif
 }
 
-aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFrames) {
-    std::shared_ptr<const Plan> p;
-    {
-        std::lock_guard<std::mutex> g(planMutex);
-        p = plan;
+aaudio_result_t RelayEngine::tuneOutputBuffer(int32_t numFrames) {
+    if (!tuneBuffer) return AAUDIO_OK;
+    tuneCountdown -= numFrames;
+    if (tuneCountdown > 0) return AAUDIO_OK;
+    tuneCountdown = std::max(1, outRate / 4);
+    AAudioStream* out = output.load();
+    int32_t xruns = AAudioStream_getXRunCount(out);
+    if (xruns < 0) {
+        // Some backends cannot report xruns. Keep the initial buffer size.
+        tuneBuffer = false;
+        return AAUDIO_OK;
     }
+    if (previousXRunCount >= 0 && xruns > previousXRunCount) {
+        int32_t size = AAudioStream_getBufferSizeInFrames(out);
+        if (size < outputCapacity) {
+            int32_t result = AAudioStream_setBufferSizeInFrames(
+                    out, std::min(outputCapacity, size + outBurst));
+            if (result < 0) return result;
+        }
+    }
+    previousXRunCount = xruns;
+    return AAUDIO_OK;
+}
+
+aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFrames) {
     AAudioStream* in = input;
-    if (!p || !in || !running.load()) {
+    if (!in || !running.load()) {
         fillSilence(audioData, 0, numFrames);
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
@@ -541,11 +576,47 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
     // read on those getters deadlocks capture while output keeps playing silence.
     // read(..., 0) also processes pending input errors and never waits for data.
 
-    // No resampling in this version: start() rejects mismatched rates, so the
-    // converted frame count equals numFrames. The formula keeps the future
-    // resampling path explicit.
-    int32_t framesToRead = static_cast<int32_t>(
-            std::ceil(static_cast<double>(numFrames) * inRate / outRate));
+    if (startupDrainCallbacks > 0) {
+        int32_t total = 0;
+        // Drain in callback-sized chunks as Oboe does, but cap the work to
+        // one input capacity so a continuously producing device cannot loop
+        // forever. Re-entering read also refreshes MMAP service timestamps.
+        while (total < inputDrainFrames) {
+            int32_t want = std::min({numFrames, scratchFrames, inputDrainFrames - total});
+            int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
+            if (got < 0) {
+                notifyError(std::string("AAudioStream_read(input): ") + AAudio_convertResultToText(got));
+                fillSilence(audioData, 0, numFrames);
+                return AAUDIO_CALLBACK_RESULT_STOP;
+            }
+            total += got;
+            if (got < want) break;
+        }
+        fillSilence(audioData, 0, numFrames);
+        if (total > 0) {
+            --startupDrainCallbacks;
+            startupFramesDiscarded.fetch_add(static_cast<uint32_t>(total), std::memory_order_relaxed);
+        }
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
+    int32_t tuneResult = tuneOutputBuffer(numFrames);
+    if (tuneResult < 0) {
+        notifyError(std::string("AAudioStream_setBufferSizeInFrames(output): ") +
+                    AAudio_convertResultToText(tuneResult));
+        fillSilence(audioData, 0, numFrames);
+        return AAUDIO_CALLBACK_RESULT_STOP;
+    }
+
+    Plan p;
+    const uint32_t validInputs = UINT32_MAX >> (32 - inChannels);
+    for (int32_t o = 0; o < outChannels; ++o) {
+        p.masks[o] = routingMasks[o].load(std::memory_order_relaxed) & validInputs;
+        p.counts[o] = __builtin_popcount(p.masks[o]);
+    }
+
+    // Equal sample rates are validated before starting; frames map 1:1.
+    int32_t framesToRead = numFrames;
 
     int32_t readOffset = 0;
     int32_t outOffset = 0;
@@ -559,7 +630,7 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
             return AAUDIO_CALLBACK_RESULT_STOP;
         }
         if (got > 0) {
-            mixFrames(scratch.data(), audioData, got, outOffset, *p);
+            mixFrames(scratch.data(), audioData, got, outOffset, p);
             outOffset += got;  // equal rates: input frames map 1:1 to output
             readOffset += got;
         }
@@ -583,6 +654,7 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
         info.emplace_back(key, std::move(value));
     };
     add("BufferCapacityInFrames", valueOrError(AAudioStream_getBufferCapacityInFrames(s)));
+    add("BufferSizeInFrames", valueOrError(AAudioStream_getBufferSizeInFrames(s)));
     add("ChannelCount", valueOrError(AAudioStream_getChannelCount(s)));
     if (__builtin_available(android 28, *)) {
         if (direction == AAUDIO_DIRECTION_OUTPUT) {
@@ -623,6 +695,9 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
         }
     }
     add("XRunCount", valueOrError(AAudioStream_getXRunCount(s)));
+    if (direction == AAUDIO_DIRECTION_INPUT) {
+        add("StartupFramesDiscarded", std::to_string(startupFramesDiscarded.load()));
+    }
 #ifndef NDEBUG
     if (direction == AAUDIO_DIRECTION_OUTPUT) {
         add("NonSilentOutputSeen", nonSilentOutputSeen.load() ? "true" : "false");

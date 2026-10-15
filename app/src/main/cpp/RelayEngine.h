@@ -4,8 +4,8 @@
 #include <aaudio/AAudio.h>
 
 #include <atomic>
+#include <array>
 #include <cstdint>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -22,8 +22,8 @@
  * output sample (mixer mask = bit i set means input channel i feeds it).
  *
  * Threading: start()/stop() are blocking and serialize on lifecycleMutex.
- * Callbacks never take that mutex. The mixing plan is swapped as an
- * atomically-published shared_ptr so setMixerMask() stays realtime-safe.
+ * Callbacks never take that mutex. Routing uses lock-free 32-bit masks;
+ * the callback snapshots them without allocating or releasing heap objects.
  */
 struct StartConfig {
     int32_t inDeviceId = 0;
@@ -76,10 +76,8 @@ private:
     RelayEngine() = default;
 
     struct Plan {
-        int32_t inputChannels = 0;
-        int32_t outputChannels = 0;
-        // Per output channel: list of input channel indices to average.
-        std::vector<std::vector<int32_t>> sources;
+        std::array<uint32_t, 32> masks{};
+        std::array<int32_t, 32> counts{};
     };
 
     aaudio_data_callback_result_t render(void* audioData, int32_t numFrames);
@@ -88,8 +86,7 @@ private:
     void fillSilence(void* audioData, int32_t fromFrame, int32_t toFrame);
     std::string openStreams(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks);
     void closeStreams(std::string& firstError);
-    // Rebuild the published mixing plan from pendingMasks and cached geometry.
-    void applyPlanLocked();
+    aaudio_result_t tuneOutputBuffer(int32_t numFrames);
 
     std::mutex lifecycleMutex;
     // Atomic so the audio callback can snapshot them without the mutex.
@@ -98,15 +95,22 @@ private:
     std::atomic<bool> running{false};
     std::atomic<bool> errorNotified{false};
 
-    std::mutex planMutex;
-    std::shared_ptr<const Plan> plan;
-    std::vector<int32_t> pendingMasks;   // masks given at start, used to (re)build the plan
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+    std::array<std::atomic<uint32_t>, 32> routingMasks{};
 
     // Cached stream geometry, valid while running.
     aaudio_format_t format = AAUDIO_FORMAT_UNSPECIFIED;
     int32_t inChannels = 0, outChannels = 0;
     int32_t inRate = 0, outRate = 0;
     int32_t outBurst = 0;
+    int32_t inputDrainFrames = 0;
+    // Callback-owned state, initialized before requestStart(output).
+    int32_t startupDrainCallbacks = 0;
+    bool tuneBuffer = false;
+    int32_t tuneCountdown = 0;
+    int32_t previousXRunCount = 0;
+    int32_t outputCapacity = 0;
+    std::atomic<uint32_t> startupFramesDiscarded{0};
 
     std::vector<uint8_t> scratch;
     int32_t scratchFrames = 0;

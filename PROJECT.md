@@ -25,7 +25,13 @@ Kotlin + Jetpack Compose（Material Design 3）前端，C++ 直接调用 AAudio�
     不使用输入帧计数作为读取门槛：独占 MMAP 输入需要在 read 内处理服务时间戳，
     首次 read 前计数可能一直为零，门槛会导致永久静音。
     每输出通道按位掩码选择 0..N 个输入通道做逐帧平均混音，
-    混音计划以 `shared_ptr` 原子发布，回调内不加锁不分配。
+    路由以始终无锁的 32 位原子掩码发布，回调复制到固定大小的栈内快照；
+    正常混音路径不获取互斥锁，也不分配或释放堆内存。最多支持 32 个输入/输出声道。
+    启动时先用零超时读取清空输入积压（20 个读到数据的回调），期间输出静音；
+    每次最多读取一个输入缓冲容量，避免持续输入导致清空循环无界。
+    请求低延迟模式时将实际输出缓冲设为两个 burst，由系统裁定实际值；
+    启动稳定后每 0.25 秒检查输出欠载，若计数增加则增大一个 burst，最多到容量上限。
+    普通/省电模式保留平台的实际缓冲大小，用户设置的缓冲容量仍用于开流。
   - 开流：输入先开先启动，输出随后；开流后校验两端实际采样率/格式一致（当前不支持
     重采样/格式转换），不一致立即关流报错。`AAudioStreamBuilder_setErrorCallback`
     回调式报错 → JNI → 主线程停止转发 + 清除选中 + Snackbar 原文。
@@ -73,6 +79,39 @@ FramesRead/FramesWritten 均停留在 0；移除读取门槛后，1.5 秒读取�
 移除和原生错误。测试使用真实音频流，通过系统设备回调模拟移除事件；虚拟机测试
 不等同于实体机实际拔出 USB。另需检查 release 的 R8 映射保留 `onNativeError` 原名，
 并确认启动日志不再出现 `listener missing onNativeError(String)`。
+
+## v4.46 延迟优化与验证
+
+对比对象为 OboeTester 的 Echo Input to Output，用户反馈来自听感，没有端到端测量值。
+主要差异是本应用原来只请求缓冲容量，未设置实际使用大小，本机输出默认值等于容量。
+根据 [Android 官方低延迟建议](https://developer.android.com/games/sdk/oboe/low-latency-audio)
+采用两个 burst，并参考 [Oboe FullDuplexStream](https://github.com/google/oboe/blob/main/include/oboe/FullDuplexStream.h)
+清空启动积压；没有引入 Oboe 依赖，没有改动用户的设备、共享模式、采样率或音频用途。
+
+2026-10-15，48 kHz、双声道 I16、小米 2304FPN6DC，输入 ID 23 独占 MMAP、输出 ID 2 共享：
+
+| 输出参数 | 优化前 | 优化后 |
+| --- | --- | --- |
+| FramesPerBurst | 192 | 192 |
+| BufferCapacityInFrames | 1536 | 1536 |
+| BufferSizeInFrames | 1536（32 ms） | 384（8 ms） |
+
+该差值是输出实际缓冲对应的时间，**不能等同于端到端延迟减少 24 ms**。
+手机反复启停时还观测到 AAudio MMAP 输入时间戳迟到约 60–80 ms；替换回原版引擎的
+对照测试同样出现，移除启动清空或延后缩小输出缓冲也未消除。其确切成因尚未确定，
+当前优化不声称修复该系统/设备侧时间戳现象，最终效果仍需相同链路听音或硬件回环测量。
+
+`LatencyBufferTest` 记录实际缓冲与启动丢弃帧，验证数据持续流动、密集路由更新及无效
+路由边界；另验证普通性能模式不自动改变缓冲、显式容量设置仍生效。实体机可增加
+`-e requireTwoBursts true` 检查平台确实接受两个 burst；其余设备只验证平台返回的有效值。
+`BufferSizeInFrames` 和 `StartupFramesDiscarded` 也会出现在应用实时参数中，
+用于区分容量、实际大小和启动清空行为。
+
+验证结果：四 ABI debug/release 编译及 release 签名校验通过；手机虚拟机 13 项仪器测试
+通过（含横竖屏），小米指定 ID 23/2 的 5 项测试通过，独占输入和输出的采样记录中
+XRunCount=0、已输出非零 PCM。共享输入测试仍有输入 XRun，测试通过只表示数据流
+持续推进，不能作为无爆音或端到端低延迟的证明。release Lint 为 0 errors / 8 warnings
+（现有权限查询、资源/图标、依赖版本、备份和唤醒锁提示，本次未调整）。
 
 ## 设备类型映射
 
