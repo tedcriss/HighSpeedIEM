@@ -23,8 +23,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import cn.xiaotao29.HighSpeedIEM.audio.AAudio
@@ -43,6 +47,8 @@ fun StreamParamsDialog(
     input: Boolean,
     device: AudioDeviceInfo,
     onDismiss: () -> Unit,
+    onMenu: (() -> Unit)? = null,
+    requestInitialFocus: Boolean = false,
 ) {
     val params = session.paramsFor(input, device.id)
     fun update(next: StreamParams) { session.setParams(input, device.id, next) }
@@ -62,7 +68,11 @@ fun StreamParamsDialog(
     val contentTypeOptions = AAudio.CONTENT_TYPES.map { it to AAudio.contentTypeName(it) }
 
     ImmersiveDialog(onDismissRequest = onDismiss) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+        val initialFocus = remember { FocusRequester() }
+        LaunchedEffect(requestInitialFocus) {
+            if (requestInitialFocus) initialFocus.requestFocus()
+        }
+        Surface(Modifier.fillMaxSize().onMenuKey(onMenu), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxSize().windowInsetsPadding(safeContentInsets())) {
                 Row(
                     Modifier.fillMaxWidth().padding(start = 24.dp, end = 8.dp, top = 8.dp),
@@ -86,12 +96,15 @@ fun StreamParamsDialog(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     ParamDropdown(
+                        modifier = Modifier.focusRequester(initialFocus),
+                        onMenu = onMenu,
                         label = "ChannelCount（通道数）",
                         selectedLabel = if (params.channelCount == 0) "自动（0）" else "${params.channelCount}",
                         options = channelOptions,
                         onSelect = { update(params.copy(channelCount = it)) },
                     )
                     ParamDropdown(
+                        onMenu = onMenu,
                         label = "SampleRate（采样率）",
                         selectedLabel = when {
                             params.sampleRateMode == cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT -> "同步输出采样率"
@@ -107,6 +120,7 @@ fun StreamParamsDialog(
                         })) },
                     )
                     ParamDropdown(
+                        onMenu = onMenu,
                         label = "Format（采样格式）",
                         selectedLabel = AAudio.formatName(params.format),
                         options = formatOptions,
@@ -131,6 +145,7 @@ fun StreamParamsDialog(
                         )
                     }
                     ParamDropdown(
+                        onMenu = onMenu,
                         label = "PerformanceMode（性能模式）",
                         selectedLabel = AAudio.performanceName(params.performanceMode),
                         options = performanceOptions,
@@ -138,6 +153,7 @@ fun StreamParamsDialog(
                     )
                     if (input) {
                         ParamDropdown(
+                            onMenu = onMenu,
                             label = "InputPreset（输入预设）",
                             selectedLabel = AAudio.presetName(params.inputPreset),
                             options = presetOptions,
@@ -146,12 +162,14 @@ fun StreamParamsDialog(
                     }
                     if (!input && Build.VERSION.SDK_INT >= 28) {
                         ParamDropdown(
+                            onMenu = onMenu,
                             label = "Usage（用途）",
                             selectedLabel = AAudio.usageName(params.usage),
                             options = usageOptions,
                             onSelect = { update(params.copy(usage = it)) },
                         )
                         ParamDropdown(
+                            onMenu = onMenu,
                             label = "ContentType（内容类型）",
                             selectedLabel = AAudio.contentTypeName(params.contentType),
                             options = contentTypeOptions,

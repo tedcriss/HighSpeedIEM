@@ -2,9 +2,14 @@ package cn.xiaotao29.HighSpeedIEM.ui
 
 import android.media.AudioDeviceInfo
 import android.os.Build
+import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +19,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -35,18 +41,28 @@ import androidx.compose.material3.RichTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -66,7 +82,7 @@ import kotlinx.coroutines.launch
  * split). Portrait lists one column, landscape two.
  */
 @Composable
-fun DevicesPage(session: RelaySession, input: Boolean) {
+internal fun DevicesPage(session: RelaySession, input: Boolean, menu: DeviceMenuState) {
     val devices = if (input) session.inputDevices else session.outputDevices
     val entries = devices.entries.sortedBy { it.key }
     if (entries.isEmpty()) {
@@ -102,14 +118,14 @@ fun DevicesPage(session: RelaySession, input: Boolean) {
             )
         }
         items(entries, key = { it.key }) { entry ->
-            DeviceCard(session, input, entry.value)
+            DeviceCard(session, input, entry.value, menu)
         }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DeviceCard(session: RelaySession, input: Boolean, device: AudioDeviceInfo) {
+private fun DeviceCard(session: RelaySession, input: Boolean, device: AudioDeviceInfo, menu: DeviceMenuState) {
     val selected =
         (if (input) session.selectedInputId else session.selectedOutputId) == device.id
     val locked = session.operationsBlocked
@@ -123,6 +139,21 @@ private fun DeviceCard(session: RelaySession, input: Boolean, device: AudioDevic
         label = "device-card-content",
     )
     var focused by remember { mutableStateOf(false) }
+    val cardFocus = remember { FocusRequester() }
+    val active = menu.deviceId == device.id && menu.input == input
+    val panel = menu.panel.takeIf { active }
+    val restoreFocus = menu.restoreId == device.id && menu.restoreInput == input
+    fun nextPanel() {
+        if (locked) return
+        menu.next(input, device.id)
+    }
+    LaunchedEffect(panel, restoreFocus, locked) {
+        if (panel == null && restoreFocus && !locked) {
+            cardFocus.requestFocus()
+            menu.focusRestored()
+        }
+        if (locked && panel != null) menu.dismiss()
+    }
     val shape = MaterialTheme.shapes.large
     val maxChannels = device.channelCounts.maxOrNull() ?: 0
     Card(
@@ -133,6 +164,8 @@ private fun DeviceCard(session: RelaySession, input: Boolean, device: AudioDevic
         },
         modifier = Modifier
             .fillMaxWidth()
+            .focusRequester(cardFocus)
+            .onMenuKey(::nextPanel)
             .onFocusChanged { focused = it.isFocused }
             .then(
                 if (selected || focused) Modifier.border(BorderStroke(2.dp, colors.primary), shape)
@@ -185,9 +218,26 @@ private fun DeviceCard(session: RelaySession, input: Boolean, device: AudioDevic
                 }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CapabilityTooltipButton(device)
-                TestTooltipButton(device)
-                ParamsDialogButton(session, input, device, enabled = !locked)
+                for (action in listOf(DevicePanel.Capabilities, DevicePanel.Test)) {
+                    DeviceTooltipButton(
+                        device = device,
+                        action = action,
+                        open = panel == action,
+                        onOpen = { menu.open(input, device.id, action) },
+                        onDismiss = menu::dismiss,
+                        onMenu = ::nextPanel,
+                    )
+                }
+                TextButton(
+                    onClick = { menu.open(input, device.id, DevicePanel.Params) },
+                    enabled = !locked,
+                    modifier = Modifier.focusProperties { canFocus = false }.semantics {
+                        contentDescription = "设置 ID ${device.id} 的开流参数"
+                    },
+                ) {
+                    MarqueeText("设备参数", style = MaterialTheme.typography.labelLarge)
+                    Icon(Icons.Outlined.Tune, contentDescription = null, modifier = Modifier.size(20.dp))
+                }
             }
         }
     }
@@ -208,90 +258,88 @@ private fun capabilityEntries(device: AudioDeviceInfo): List<Pair<String, String
     return entries
 }
 
-/** Capability key: raw AudioDeviceInfo data in a two-column tooltip table. */
+/** Native tooltip with one focusable scroll region; touch buttons stay out of D-pad traversal. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CapabilityTooltipButton(device: AudioDeviceInfo) {
-    val state = rememberTooltipState(isPersistent = true)
-    val scope = rememberCoroutineScope()
-    val entries = remember(device) { capabilityEntries(device) }
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberRichTooltipPositionProvider(),
-        state = state,
-        focusable = true,
-        tooltip = {
-            RichTooltip(
-                title = { MarqueeText("设备能力 · ID ${device.id}") },
-                text = { InfoTable(entries, Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) },
-            )
-        },
-    ) {
-        TextButton(
-            onClick = { scope.launch { state.show() } },
-            modifier = Modifier.semantics {
-                contentDescription = "查看 ID ${device.id} 的设备能力"
-            },
-        ) {
-            MarqueeText("设备能力", style = MaterialTheme.typography.labelLarge)
-            Icon(Icons.Outlined.Info, contentDescription = null, modifier = Modifier.size(20.dp))
-        }
-    }
-}
-
-/** Test key: reserved, shows an empty tooltip for now. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun TestTooltipButton(device: AudioDeviceInfo) {
-    val state = rememberTooltipState(isPersistent = true)
-    val scope = rememberCoroutineScope()
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberRichTooltipPositionProvider(),
-        state = state,
-        focusable = true,
-        tooltip = {
-            RichTooltip(
-                title = { MarqueeText("测试设备 · ID ${device.id}") },
-                text = { Box(Modifier.fillMaxWidth().padding(vertical = 24.dp)) },
-            )
-        },
-    ) {
-        TextButton(
-            onClick = { scope.launch { state.show() } },
-            modifier = Modifier.semantics {
-                contentDescription = "测试 ID ${device.id}（暂未实现）"
-            },
-        ) {
-            MarqueeText("测试设备", style = MaterialTheme.typography.labelLarge)
-            Icon(
-                Icons.Outlined.GraphicEq, contentDescription = null,
-                modifier = Modifier.size(20.dp),
-            )
-        }
-    }
-}
-
-/** Params key: opens the full-screen stream parameter dialog. */
-@Composable
-private fun ParamsDialogButton(
-    session: RelaySession,
-    input: Boolean,
+private fun DeviceTooltipButton(
     device: AudioDeviceInfo,
-    enabled: Boolean,
+    action: DevicePanel,
+    open: Boolean,
+    onOpen: () -> Unit,
+    onDismiss: () -> Unit,
+    onMenu: () -> Unit,
 ) {
-    // Saveable so the dialog survives rotation and its window re-applies the
-    // orientation-dependent status-bar rules immediately after recreation.
-    var show by rememberSaveable(device.id) { mutableStateOf(false) }
-    TextButton(
-        onClick = { show = true },
-        enabled = enabled,
-        modifier = Modifier.semantics {
-            contentDescription = "设置 ID ${device.id} 的开流参数"
+    // Each visibility change replaces the popup state immediately. This avoids
+    // an outgoing popup animation retaining focus during a menu-key handoff.
+    val state = key(open) { rememberTooltipState(initialIsVisible = open, isPersistent = true) }
+    // TooltipBox may re-key its content when native placement changes sides.
+    // Keep scrolling outside that content so a placement pass cannot reset it.
+    val scrollState = key(open) { rememberScrollState() }
+    val scope = rememberCoroutineScope()
+    val capabilities = action == DevicePanel.Capabilities
+    val entries = remember(device) { capabilityEntries(device) }
+    val windowHeight = LocalWindowInfo.current.containerSize.height
+    val maxContentHeight = with(LocalDensity.current) {
+        (windowHeight * 0.35f).toDp().coerceAtMost(320.dp)
+    }
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+        state = state,
+        focusable = true,
+        enableUserInput = false,
+        onDismissRequest = onDismiss,
+        tooltip = {
+            val popupFocus = remember { FocusRequester() }
+            val rowHeight = with(LocalDensity.current) {
+                MaterialTheme.typography.bodyMedium.lineHeight.toPx() + 8.dp.toPx()
+            }
+            LaunchedEffect(Unit) { popupFocus.requestFocus() }
+            RichTooltip(
+                modifier = Modifier.onMenuKey(onMenu),
+                title = { MarqueeText("${if (capabilities) "设备能力" else "测试设备"} · ID ${device.id}") },
+                text = {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp, max = maxContentHeight)
+                            .focusRequester(popupFocus)
+                            // ScrollState handles bounds, touch, wheel and accessibility.
+                            // Read-only scroll regions need arrow-key mapping in Compose;
+                            // its default key handler only supports page up/down.
+                            .onPreviewKeyEvent { event ->
+                                val direction = when (event.nativeKeyEvent.keyCode) {
+                                    AndroidKeyEvent.KEYCODE_DPAD_DOWN -> 1
+                                    AndroidKeyEvent.KEYCODE_DPAD_UP -> -1
+                                    else -> 0
+                                }
+                                if (direction == 0) false else {
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        scope.launch { scrollState.scrollBy(rowHeight * direction) }
+                                    }
+                                    true
+                                }
+                            }
+                            .verticalScroll(scrollState)
+                            .focusable(),
+                    ) {
+                        if (capabilities) {
+                            InfoTable(entries, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        }
+                    }
+                },
+            )
         },
     ) {
-        MarqueeText("设备参数", style = MaterialTheme.typography.labelLarge)
-        Icon(Icons.Outlined.Tune, contentDescription = null, modifier = Modifier.size(20.dp))
-    }
-    if (show) {
-        StreamParamsDialog(session, input, device, onDismiss = { show = false })
+        TextButton(
+            onClick = onOpen,
+            modifier = Modifier.focusProperties { canFocus = false }.semantics {
+                contentDescription = if (capabilities) "查看 ID ${device.id} 的设备能力"
+                    else "测试 ID ${device.id}（暂未实现）"
+            },
+        ) {
+            MarqueeText(if (capabilities) "设备能力" else "测试设备", style = MaterialTheme.typography.labelLarge)
+            Icon(if (capabilities) Icons.Outlined.Info else Icons.Outlined.GraphicEq,
+                contentDescription = null, modifier = Modifier.size(20.dp))
+        }
     }
 }

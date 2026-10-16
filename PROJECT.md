@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v5.5
+# HighSpeedIEM（高速耳返）v5.6
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -153,6 +153,49 @@ adb -s emulator-5554 shell am instrument -w -r cn.xiaotao29.HighSpeedIEM.test/an
 `MMapPolicyTest` 迁移到准备/启动两步，保留 NEVER/UNSPECIFIED 恢复、共享/独占请求、
 I16/Float、连续推进及混音更新；`ErrorReportingTest` 和 `MixerDialogTest` 保留旋转、
 重建、后台、遥控/键盘与长列表覆盖。
+
+### v5.6 设备卡片菜单键操作
+
+键盘/遥控器只聚焦整个设备卡片，卡片内三个按钮通过 `focusProperties.canFocus`
+排除在键盘焦点遍历之外，触摸点击与无障碍动作仍保留。聚焦卡片后，原生
+`KEYCODE_MENU` 按松开一次依次打开设备能力 → 测试设备 → 设备参数 → 设备能力；
+无需先选中设备。返回、Escape、点击外部或关闭按钮会结束当前循环，下一次菜单键
+从设备能力重新开始；遥控操作关闭后焦点回到原卡片。
+
+设备动作状态由导航布局之外唯一的 `DeviceMenuState` 管理，`rememberSaveable` /
+`listSaver` 保留设备、当前面板及遥控来源。三种面板互斥；原生 TooltipBox 禁用自动
+悬停/焦点触发，弹出后将焦点交给内容区域。能力表使用原生 ScrollState，方向键每次
+滚动一行，PageUp/PageDown、触摸和无障碍滚动仍由 Compose 处理。窗口高度及定位
+使用 `LocalWindowInfo` 和 Material 3 当前原生定位器，横屏内容过长时在控件内部滚动。
+滚动状态置于 TooltipBox 内容作用域之外，原生弹窗重新定位时不会重置到顶部。
+
+参数 Dialog 由根界面承载，横竖屏布局切换及 Activity 重建后保留当前面板，遥控打开时
+聚焦首个参数。Dialog 内部下拉菜单同样处理菜单键，避免焦点进入独立弹窗后快捷键失效。
+菜单键只在完整松开时切换，长按重复的按下事件不会连续跳过多个面板。开流、关闭或
+转发期间继续遵守原有操作锁，设备移除会关闭对应面板。
+
+开发依据：[Compose 焦点控制](https://developer.android.com/develop/ui/compose/touch-input/focus/change-focus-behavior)、
+[按键事件传播](https://developer.android.com/reference/kotlin/androidx/compose/ui/input/key/onPreviewKeyEvent)、
+[界面状态保存](https://developer.android.com/develop/ui/compose/state-saving)。
+
+本次验证（2026-10-17）：四 ABI Debug / Release、测试 APK、5 项 JVM 测试及
+`lintRelease` 构建通过（0 errors / 9 warnings）。API37 / x86_64 手机模拟器完整
+35 项仪器测试通过。新增 `DeviceMenuNavigationTest` 覆盖输入/输出卡片、未选中/
+已选中、Tab/方向键跳过三个按钮、菜单键循环、各阶段返回重置、Escape 关闭、
+触摸/无障碍入口、连续滚动至能力表末行并返回顶部、参数界面旋转保留及下拉菜单
+中的菜单键。Release 另实看浅色竖屏及深色横屏，确认控件焦点、循环、末行滚动和
+关闭返回原卡片正常。最终 Debug / Release crash buffer 均为空。
+
+最终安装 5.6 / versionCode 61 的非 debuggable 签名 Release，手机模拟器保留运行，
+恢复浅色竖屏、未选设备的默认输入页。证据在
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/qa56/`，包括 `build.txt`、`tests.txt`、
+`release-portrait-capabilities.png`、`release-portrait-test.png`、
+`release-portrait-params.png`、`release-landscape-dark-scrolled-bottom.png`、
+`release-landscape-dark-params.png`、`release-final-home.png`。
+四 ABI APK：
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_5.6.apk`；
+v2 签名验证通过，SHA-256：
+`7B0DDFEEA3932C8B12E039CBD14BD2B76D4138457AF0DCB3E767878C0D1CC7BA`。
 
 ### v5.5 设备参数与混音焦点
 

@@ -87,6 +87,7 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
         var tab by rememberSaveable { mutableIntStateOf(0) }
         // Keep dialog state outside the portrait/landscape navigation branches.
         var mixingOutput by rememberSaveable { mutableStateOf<Int?>(null) }
+        val deviceMenu = rememberSaveable(saver = DeviceMenuState.Saver) { DeviceMenuState() }
         val snackbarHostState = remember { SnackbarHostState() }
 
         LaunchedEffect(session.pendingTab) {
@@ -170,8 +171,8 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                         modifier = Modifier.fillMaxSize(),
                     ) { current ->
                         when (current) {
-                            0 -> DevicesPage(session, input = true)
-                            1 -> DevicesPage(session, input = false)
+                            0 -> DevicesPage(session, input = true, menu = deviceMenu)
+                            1 -> DevicesPage(session, input = false, menu = deviceMenu)
                             else -> ForwardPage(activity, session, onEditMixer = { mixingOutput = it })
                         }
                     }
@@ -227,6 +228,20 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
         }
         mixingOutput?.let { channel ->
             MixerDialog(session, channel, onDismiss = { mixingOutput = null })
+        }
+        val device = deviceMenu.deviceId?.let {
+            (if (deviceMenu.input) session.inputDevices else session.outputDevices)[it]
+        }
+        LaunchedEffect(device, session.operationsBlocked) {
+            if (deviceMenu.panel != null && (device == null || session.operationsBlocked)) deviceMenu.dismiss()
+        }
+        if (deviceMenu.panel == DevicePanel.Params && device != null) {
+            StreamParamsDialog(
+                session, deviceMenu.input, device,
+                onDismiss = deviceMenu::dismiss,
+                onMenu = { deviceMenu.next(deviceMenu.input, device.id) },
+                requestInitialFocus = deviceMenu.remote,
+            )
         }
     }
 }

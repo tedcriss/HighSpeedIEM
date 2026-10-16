@@ -4,6 +4,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.view.Window
 import android.view.WindowManager
+import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.basicMarquee
@@ -39,6 +40,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalFocusManager
@@ -101,6 +105,7 @@ fun ParamDropdown(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    onMenu: (() -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -123,6 +128,7 @@ fun ParamDropdown(
         )
         ExposedDropdownMenu(
             expanded = expanded,
+            modifier = Modifier.onMenuKey(onMenu),
             onDismissRequest = {
                 expanded = false
                 focusManager.clearFocus()
@@ -141,6 +147,15 @@ fun ParamDropdown(
         }
     }
 }
+
+/** Consume the native menu key once per completed press, including in popup windows. */
+internal fun Modifier.onMenuKey(onMenu: (() -> Unit)?): Modifier =
+    if (onMenu == null) this else onPreviewKeyEvent { event ->
+        if (event.nativeKeyEvent.keyCode == AndroidKeyEvent.KEYCODE_MENU) {
+            if (event.type == KeyEventType.KeyUp && !event.nativeKeyEvent.isCanceled) onMenu()
+            true
+        } else false
+    }
 
 /**
  * Two-column key/value table used by the capability and realtime-parameter
