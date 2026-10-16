@@ -42,7 +42,7 @@ data class RelayParams(
      */
     val inputBacklogThresholdFrames: Int = 0,
     /**
-     * true = request AAUDIO_POLICY_AUTO for the input (system may use MMAP
+     * true = preserve the platform MMAP policy for the input (system may use MMAP
      * and falls back by capability); false = request AAUDIO_POLICY_NEVER.
      * AAUDIO_POLICY_ALWAYS is never used. Independent of per-device
      * exclusive sharing mode; the realtime MMapUsed value shows the actual

@@ -102,3 +102,22 @@ JNIEXPORT jint JNICALL JNI_FN(nativeResyncEvents)(JNIEnv* /*env*/, jobject /*thi
 }
 
 }  // extern "C"
+
+#ifndef NDEBUG
+// Debug-only instrumentation seam: simulate a platform that disables MMAP.
+#include <dlfcn.h>
+extern "C" JNIEXPORT jint JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_MMapPolicyTest_nativePolicy(
+        JNIEnv*, jobject, jint policy) {
+    using GetPolicy = aaudio_policy_t (*)();
+    using SetPolicy = aaudio_result_t (*)(aaudio_policy_t);
+    auto get = reinterpret_cast<GetPolicy>(dlsym(RTLD_DEFAULT, "AAudio_getMMapPolicy"));
+    auto set = reinterpret_cast<SetPolicy>(dlsym(RTLD_DEFAULT, "AAudio_setMMapPolicy"));
+    if (!get || !set) return AAUDIO_ERROR_UNAVAILABLE;
+    if (policy >= 0) {
+        const auto result = set(policy);
+        if (result != AAUDIO_OK) return result;
+    }
+    return get();
+}
+#endif

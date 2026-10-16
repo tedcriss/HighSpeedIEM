@@ -159,7 +159,7 @@ class RelayParamsTest {
             outId, 2, 48000, AAudio.FORMAT_PCM_I16, 0,
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC,
             0, outBufferSizeBursts, if (outAutoBufferSize) 1 else 0,
-            thresholdBursts, thresholdExtraFrames,
+            thresholdBursts, thresholdExtraFrames, 0, 1, 1,
         )
     }
 

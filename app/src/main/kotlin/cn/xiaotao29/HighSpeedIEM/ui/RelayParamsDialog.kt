@@ -118,8 +118,8 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                         onCheckedChange = { update(params.copy(inMMapEnabled = it)) },
                     )
                     SectionNote(
-                        "开启＝请求 AAUDIO_POLICY_AUTO，系统可用时使用 MMAP 并按能力回退；" +
-                            "关闭＝请求 AAUDIO_POLICY_NEVER（需要 Android 10 / API 29 及以上，" +
+                        "开启＝遵循系统 MMAP 策略，系统允许时使用 MMAP；" +
+                            "关闭＝请求 AAUDIO_POLICY_NEVER（需要系统提供策略接口，" +
                             "无法兑现时启动将明确报错）。实际是否使用 MMAP 以实时流参数中的 " +
                             "MMapUsed 为准，开关状态不代表实际结果。",
                     )
@@ -169,7 +169,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                         onCheckedChange = { update(params.copy(outMMapEnabled = it)) },
                     )
                     SectionNote(
-                        "含义与输入侧相同：开启＝AAUDIO_POLICY_AUTO，关闭＝AAUDIO_POLICY_NEVER。" +
+                        "含义与输入侧相同：开启＝遵循系统策略，关闭＝禁止 MMAP。" +
                             "策略为进程级，引擎在分别打开输出、输入流之前串行设置各自策略，" +
                             "结束后恢复原策略。",
                     )

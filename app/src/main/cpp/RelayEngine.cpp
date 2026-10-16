@@ -291,35 +291,29 @@ void RelayEngine::notifyError(const std::string& text) {
 std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks) {
     callbackReady = false;
 
-    // AAudio_setMMapPolicy is a process-global policy: apply the requested
-    // policy immediately before opening its stream so "set policy + open"
-    // stay serial per direction, and restore the original policy once both
-    // opens have settled (success or failure). NEVER, not ALWAYS, expresses
-    // "MMAP off"; AUTO expresses "MMAP allowed with capability fallback".
+    // "Allow MMAP" preserves the platform policy, including UNSPECIFIED (0).
+    // Forcing AUTO bypasses Android 8/9's default NEVER on devices without
+    // media.aaudio, where service lookup can block for minutes before fallback.
+    // A disabled direction temporarily uses NEVER; the next enabled direction
+    // must restore the captured policy instead of inheriting that override.
     SetMMapPolicyFn setPolicy = setMMapPolicyFn();
     GetMMapPolicyFn getPolicy = getMMapPolicyFn();
-    aaudio_policy_t originalPolicy = getPolicy ? getPolicy() : AAUDIO_POLICY_AUTO;
+    const aaudio_policy_t originalPolicy = getPolicy ? getPolicy() : AAUDIO_UNSPECIFIED;
     bool policyChanged = false;
-    // Returns a non-empty error only when an explicit "no MMAP" choice
-    // cannot be honored; AUTO failures are logged and tolerated because AUTO
-    // is the system default anyway.
     auto applyMMapPolicy = [&](bool allow, const char* what) -> std::string {
-        if (!setPolicy) {
-            if (allow) return "";
-            return std::string("无法关闭 MMAP（") + what +
-                   "）: AAudio_setMMapPolicy 不可用（需要 Android 10 / API 29 及以上）";
+        if (allow && !policyChanged) return "";
+        if (!setPolicy || !getPolicy) {
+            return std::string("无法设置 MMAP 策略（") + what +
+                   "）: AAudio_setMMapPolicy / AAudio_getMMapPolicy 不可用";
         }
-        aaudio_result_t r = setPolicy(allow ? AAUDIO_POLICY_AUTO : AAUDIO_POLICY_NEVER);
+        const aaudio_policy_t requested = allow ? originalPolicy : AAUDIO_POLICY_NEVER;
+        const aaudio_result_t r = setPolicy(requested);
         if (r == AAUDIO_OK) {
             policyChanged = true;
             return "";
         }
-        if (allow) {
-            LOGE("AAudio_setMMapPolicy(AUTO) for %s: %s", what, AAudio_convertResultToText(r));
-            return "";
-        }
-        return std::string("关闭 MMAP 策略设置失败（") + what +
-               "）: AAudio_setMMapPolicy(NEVER): " + AAudio_convertResultToText(r);
+        return std::string("MMAP 策略设置失败（") + what +
+               "）: AAudio_setMMapPolicy: " + AAudio_convertResultToText(r);
     };
     auto restoreMMapPolicy = [&] {
         if (!policyChanged || !setPolicy) return;
@@ -391,10 +385,13 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);
     AAudioStreamBuilder_setDeviceId(builder, cfg.inDeviceId);
     if (cfg.inChannelCount > 0) AAudioStreamBuilder_setChannelCount(builder, cfg.inChannelCount);
-    if (cfg.inSampleRate > 0) AAudioStreamBuilder_setSampleRate(builder, cfg.inSampleRate);
-    if (cfg.inFormat != AAUDIO_FORMAT_UNSPECIFIED) {
-        AAudioStreamBuilder_setFormat(builder, static_cast<aaudio_format_t>(cfg.inFormat));
-    }
+    // The relay has no resampler/converter. An automatic input must use the
+    // already-open output's PCM settings rather than independently choosing
+    // another hardware default (e.g. USB 44100 Hz vs speaker 48000 Hz).
+    AAudioStreamBuilder_setSampleRate(builder, cfg.inSampleRate > 0
+            ? cfg.inSampleRate : AAudioStream_getSampleRate(output));
+    AAudioStreamBuilder_setFormat(builder, cfg.inFormat != AAUDIO_FORMAT_UNSPECIFIED
+            ? static_cast<aaudio_format_t>(cfg.inFormat) : AAudioStream_getFormat(output));
     AAudioStreamBuilder_setSharingMode(builder,
             cfg.inExclusive ? AAUDIO_SHARING_MODE_EXCLUSIVE : AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setPerformanceMode(builder,

@@ -43,7 +43,7 @@ Kotlin + Jetpack Compose（Material Design 3）前端，C++ 直接调用 AAudio�
     设备移除先记录是否在使用，再清除选中项。开流期间收到停止请求会在开流结束后
     立即关流，完成前保持阻塞；移除无关设备不清除正在使用的混音配置。
   - 空间音频固定 `AAUDIO_SPATIALIZATION_BEHAVIOR_NEVER`（API 32+）；MMAP 策略
-    `AAudio_setMMapPolicy(AAUDIO_POLICY_AUTO)`（dlsym 保护，API 29+）。
+    默认遵循平台 MMAP 策略；关闭时临时请求 NEVER（策略接口通过 dlsym 探测）。
 
 ## 构建
 
@@ -143,3 +143,36 @@ XRunCount=0、已输出非零 PCM。共享输入测试仍有输入 XRun，测试
 ## 设备类型映射
 
 `AudioDeviceTypes` 维护 TYPE_* 数字 ID → 中文名与原始枚举名；详见 `设备类型映射.md`。
+
+## v5.2 电视开流长时间等待修复
+
+2026-10-16 在小米 MiTV-ASTP0（Android 9 / API 28）读取原版日志，使用输入
+ID 29（USB-Audio - MI KARAOKE）及输出 ID 2（内置扬声器）复现：输出与输入开流
+各等待约 25 秒；每 5 秒重复 `Service media.aaudio didn't start. Returning NULL`，
+最终返回 `AAUDIO_ERROR_NO_SERVICE` 后才回退传统 AudioTrack / AudioRecord。
+`service list` 没有 `media.aaudio`，`aaudio.*` 系统属性未设置。
+
+原因是“允许 MMAP”原来强制设置进程策略 AUTO，绕过了旧平台缺省 NEVER 的策略。
+现在开启表示保留原始平台策略（包含 UNSPECIFIED=0，由平台解析属性及默认值），
+关闭仍临时设置 NEVER；两端不同开关时在开流前恢复各自策略，完成或失败后恢复
+进程原值。无需查询隐藏 Binder 服务，也不对无法取消的原生开流创建超时逃逸线程。
+
+原版日志还确认自动输出选择 48000 Hz、USB 输入选择 44100 Hz，随后一致性校验失败。
+输入采样率/格式设为自动时，现在请求已打开输出流的实际采样率/格式，由 Android
+音频后端处理设备兼容；用户显式参数仍优先，并保留开流后的严格校验及原文错误提示。
+
+参考 Android 9 AOSP：
+- https://android.googlesource.com/platform/frameworks/av/+/android-9.0.0_r1/media/libaaudio/src/core/AudioStreamBuilder.cpp
+- https://android.googlesource.com/platform/frameworks/av/+/android-9.0.0_r1/media/libaaudio/src/binding/AAudioBinderClient.cpp
+
+新增 MMapPolicyTest 在手机虚拟机上模拟平台 NEVER，验证允许开关不强制启用 MMAP、
+两端混合开关及失败释放后策略恢复，并覆盖 UNSPECIFIED 策略恢复。
+RelayProgressTest 增加 44100 Hz / I16 输出与全自动输入的协商测试；现有三组原生测试
+配置补齐当前 JNI 所需的积压阈值和两端 MMAP 字段。
+
+验证：四 ABI debug/release 和测试 APK 编译成功，release v2 签名校验通过。
+手机虚拟机首轮 16 项仪器测试、横屏参数回归 5 项全部通过；release 横竖屏截图
+已检查，最后安装 5.2 release 并恢复竖屏默认输入设备页，虚拟机保持运行。
+完整 lintRelease 检查发现基线已有 4 项 NewApi 错误（values / values-night 中的
+API 29 系统栏对比度属性）及 9 项警告；这些资源在本次提交中未改动。
+电视仅用于原版复现和日志诊断，修复版按要求仅在手机虚拟机测试，未验证电视实际听音。

@@ -65,7 +65,7 @@ struct StartConfig {
     // clamped to the input BufferSizeInFrames.
     int32_t inputBacklogThresholdFrames = 0;
 
-    // Per-direction MMAP policy request: true = AAUDIO_POLICY_AUTO (system
+    // Per-direction MMAP policy request: true = platform policy (system
     // decides, may fall back to non-MMAP), false = AAUDIO_POLICY_NEVER.
     // AAUDIO_POLICY_ALWAYS is deliberately never used. Independent of the
     // inExclusive/outExclusive sharing-mode choices.

@@ -80,16 +80,24 @@ class RelayProgressTest {
         }
     }
 
-    private fun verifyProgress(exclusive: Boolean, format: Int) {
+    @Test
+    fun automaticInputUsesOutputPcmSettings() {
+        verifyProgress(exclusive = false, format = AAudio.FORMAT_PCM_I16,
+            sampleRate = 44100, automaticInput = true)
+    }
+
+    private fun verifyProgress(exclusive: Boolean, format: Int,
+        sampleRate: Int = 48000, automaticInput: Boolean = false) {
         val inId = arguments.getString("inputDeviceId")?.toInt() ?: 0
         val outId = arguments.getString("outputDeviceId")?.toInt() ?: 0
         val inChannels = arguments.getString("inputChannels")?.toInt() ?: 1
         val config = intArrayOf(
-            inId, inChannels, 48000, format, if (exclusive) 1 else 0,
+            inId, inChannels, if (automaticInput) 0 else sampleRate,
+            if (automaticInput) AAudio.FORMAT_UNSPECIFIED else format, if (exclusive) 1 else 0,
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0, 0,
-            outId, 2, 48000, format, 0,
+            outId, 2, sampleRate, format, 0,
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC,
-            0, 0, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 1,
         )
         nativeError.set(null)
         assertNull(NativeRelay.nativeStart(config, intArrayOf(1, 1)))
@@ -100,6 +108,8 @@ class RelayProgressTest {
         val output = streamInfo(AAudio.DIRECTION_OUTPUT)
         Log.i("RelayProgressTest", "exclusive=$exclusive input=$input output=$output")
         assertNull(nativeError.get())
+        assertEquals(sampleRate.toString(), input["SampleRate"])
+        assertEquals(output["Format"], input["Format"])
         assertEquals("AAUDIO_STREAM_STATE_STARTED", input["State"])
         assertTrue("Input stalled: $input", input.getValue("FramesRead").toLong() >= 4800)
         assertTrue("Output stalled: $output", output.getValue("FramesWritten").toLong() >= 4800)
