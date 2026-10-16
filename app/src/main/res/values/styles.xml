@@ -1,13 +1,11 @@
 <resources>
     <!-- DayNight theme that Compose Material3 overrides at the content level. -->
-    <style name="Theme.HighSpeedIEM" parent="android:Theme.Material.NoActionBar">
+    <style name="Base.HighSpeedIEM" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/window_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
-        <!-- No system contrast scrim behind the transparent bars: the window
-             background extends under them (API 29+; ignored below). -->
-        <item name="android:enforceStatusBarContrast">false</item>
-        <item name="android:enforceNavigationBarContrast">false</item>
     </style>
+    <!-- API-specific themes inherit this shared day/night base. -->
+    <style name="Theme.HighSpeedIEM" parent="Base.HighSpeedIEM" />
 </resources>

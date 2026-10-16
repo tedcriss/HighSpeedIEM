@@ -176,3 +176,14 @@ RelayProgressTest 增加 44100 Hz / I16 输出与全自动输入的协商测试�
 完整 lintRelease 检查发现基线已有 4 项 NewApi 错误（values / values-night 中的
 API 29 系统栏对比度属性）及 9 项警告；这些资源在本次提交中未改动。
 电视仅用于原版复现和日志诊断，修复版按要求仅在手机虚拟机测试，未验证电视实际听音。
+
+## v5.3 系统栏主题 API 版本修复
+
+将 API 29 才提供的 enforceStatusBarContrast / enforceNavigationBarContrast 移到
+values-v29/styles.xml，基础 Theme.HighSpeedIEM 继承 Base.HighSpeedIEM。
+浅色、深色的基础主题保留原窗口背景、透明系统栏和图标明暗；API 27/28 使用基础
+主题，API 29+ 追加关闭对比度遮罩的属性。没有屏蔽 Lint，也未提高最低 API 版本。
+
+验证：四 ABI debug/release 编译通过，完整 lintRelease 为 0 errors / 9 warnings，
+此前四项 NewApi 错误全部消除。手机虚拟机 debug 浅色/深色各横竖屏截图检查通过；
+签名 release（v5.3 / versionCode 58）校验并安装成功，最后恢复浅色竖屏默认首页。

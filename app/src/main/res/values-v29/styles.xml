@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.HighSpeedIEM" parent="Base.HighSpeedIEM">
+        <!-- Contrast controls were introduced in API 29. The base supplies
+             colors and icon brightness for the current day/night mode. -->
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+    </style>
+</resources>

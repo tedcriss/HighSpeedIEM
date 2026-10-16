@@ -15,8 +15,8 @@ android {
         applicationId = "cn.xiaotao29.HighSpeedIEM"
         minSdk = 27
         targetSdk = 37
-        versionCode = 57
-        versionName = "5.2"
+        versionCode = 58
+        versionName = "5.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val abis = (project.findProperty("abi") as String?)
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
