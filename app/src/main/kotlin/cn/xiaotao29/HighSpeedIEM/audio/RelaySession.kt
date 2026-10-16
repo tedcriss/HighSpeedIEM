@@ -16,6 +16,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -68,6 +70,44 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     private val errors = mutableStateListOf<ErrorNotice>()
     private var nextErrorId = 0L
     val pendingError: ErrorNotice? get() = errors.firstOrNull()
+
+    // Runtime backlog resync notices. The audio callback only bumps a
+    // lightweight atomic counter in the engine; this session polls it from a
+    // non-realtime coroutine while forwarding and hands one notice per
+    // detected batch to the UI snackbar. A new detection while a notice is
+    // still pending overwrites it, so episodes never queue up into repeated
+    // snackbars for the same recovery.
+    private var pendingResyncId by mutableStateOf<Long?>(null)
+    private var nextResyncId = 0L
+    val pendingResync: Long? get() = pendingResyncId
+
+    fun consumeResync(id: Long) {
+        if (pendingResyncId == id) pendingResyncId = null
+    }
+
+    private var resyncPollJob: Job? = null
+    private var lastResyncEvents = 0
+
+    private fun startResyncPolling() {
+        lastResyncEvents = 0
+        resyncPollJob?.cancel()
+        resyncPollJob = scope.launch {
+            while (isActive) {
+                delay(500)
+                val count = withContext(Dispatchers.IO) {
+                    try {
+                        NativeRelay.nativeResyncEvents()
+                    } catch (t: Throwable) {
+                        -1
+                    }
+                }
+                if (count > lastResyncEvents) {
+                    lastResyncEvents = count
+                    pendingResyncId = ++nextResyncId
+                }
+            }
+        }
+    }
 
     /** Deep-link request from the ongoing notification (forward tab). */
     var pendingTab by mutableStateOf<Int?>(null)
@@ -289,6 +329,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
             if (failure == null && !stopRequested) {
                 forwarding = true
                 busy = false
+                startResyncPolling()
                 owner?.relayStarted()
             } else {
                 if (failure != null) {
@@ -317,6 +358,8 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
             outParams.contentType, relay.outBufferCapacity, relay.outBufferSizeBursts,
             if (relay.outAutoBufferSize) 1 else 0,
             relay.inputReadThresholdBursts, relay.inputReadThresholdExtraFrames,
+            relay.inputBacklogThresholdFrames,
+            if (relay.inMMapEnabled) 1 else 0, if (relay.outMMapEnabled) 1 else 0,
         )
     }
 
@@ -346,6 +389,8 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     }
 
     private suspend fun finishStopping() {
+        resyncPollJob?.cancel()
+        resyncPollJob = null
         val currentOwner = owner
         val closeError = withContext(Dispatchers.IO) {
             try {

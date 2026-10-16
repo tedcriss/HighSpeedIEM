@@ -57,6 +57,20 @@ struct StartConfig {
     // extra frames. 0 disables the gate entirely.
     int32_t inputReadThresholdBursts = 0;
     int32_t inputReadThresholdExtraFrames = 0;
+
+    // Runtime backlog recovery: when the input availability hint exceeds
+    // this many frames during normal forwarding, one bounded resync-discard
+    // episode is triggered. 0 disables runtime recovery entirely (startup
+    // sync is unaffected). Independent of the read threshold gate and NOT
+    // clamped to the input BufferSizeInFrames.
+    int32_t inputBacklogThresholdFrames = 0;
+
+    // Per-direction MMAP policy request: true = AAUDIO_POLICY_AUTO (system
+    // decides, may fall back to non-MMAP), false = AAUDIO_POLICY_NEVER.
+    // AAUDIO_POLICY_ALWAYS is deliberately never used. Independent of the
+    // inExclusive/outExclusive sharing-mode choices.
+    bool inMMapEnabled = true;
+    bool outMMapEnabled = true;
 };
 
 class RelayEngine {
@@ -68,6 +82,11 @@ public:
     // Blocking and idempotent; safe when streams already died from an error.
     std::string stop();
     bool isRunning() const { return running.load(); }
+
+    // Total runtime backlog-resync episodes since the last successful start.
+    // Written by the audio callback (relaxed atomic), polled off the
+    // realtime thread; cheap and thread-safe.
+    uint32_t resyncEventCount() const { return resyncEvents.load(std::memory_order_relaxed); }
 
     // Realtime-safe mixer update; outChannel is 0-based.
     void setMixerMask(int32_t outChannel, int32_t mask);
@@ -106,6 +125,11 @@ private:
     std::atomic<AAudioStream*> input{nullptr};
     std::atomic<AAudioStream*> output{nullptr};
     std::atomic<bool> running{false};
+    // Independent of running: enabled once cached geometry and callback
+    // state are initialized and before requestStart(output), so callbacks
+    // firing while the output STARTED wait is still in progress already run
+    // the startup input drain instead of being gated by running == false.
+    std::atomic<bool> callbackReady{false};
     std::atomic<bool> errorNotified{false};
 
     static_assert(std::atomic<uint32_t>::is_always_lock_free);
@@ -120,10 +144,31 @@ private:
     // Callback-owned state, initialized before requestStart(output).
     // Startup sync phases, used in order (OboeTester FullDuplexStream):
     // drain the capture backlog, cushion the input, discard to equilibrium,
-    // then forward.
+    // then forward. The nominal counts are caps, not the completion signal:
+    // a phase ends when actual non-blocking read results plus the input
+    // availability hint confirm sync (stableCount), and phases may extend
+    // while an obvious backlog remains, bounded by hard callback caps and a
+    // total frame budget so anomalous MMAP counters can never loop forever.
     int32_t startupDrainCallbacks = 0;
     int32_t startupCushionCallbacks = 0;
     int32_t startupDiscardCallbacks = 0;
+    int32_t startupDrainHardLeft = 0;
+    int32_t startupDiscardHardLeft = 0;
+    int32_t startupStableCount = 0;
+    int64_t startupPrevAvailable = -1;
+    int64_t startupBudgetFrames = 0;
+    // Runtime backlog recovery (callback-owned): threshold 0 = disabled.
+    // One episode = bounded timeout-0 discards until the availability hint
+    // drops to the hysteresis target; hysteresis + cooldown + episode budget
+    // + no-progress abort keep it from flapping or silencing the output.
+    int64_t backlogThresholdFrames = 0;
+    bool backlogRecovering = false;
+    int64_t backlogEpisodeBudget = 0;
+    int64_t backlogPrevAvailable = -1;
+    int64_t backlogCooldownFrames = 0;
+    // Bumped once per resync episode inside the callback; polled by the
+    // session off the realtime thread and surfaced as a snackbar.
+    std::atomic<uint32_t> resyncEvents{0};
     bool tuneBuffer = false;
     int32_t tuneCountdown = 0;
     int32_t previousXRunCount = 0;

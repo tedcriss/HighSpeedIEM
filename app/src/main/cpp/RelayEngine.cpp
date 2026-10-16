@@ -17,13 +17,33 @@ namespace {
 constexpr int64_t kStateTimeoutNs = 2'000'000'000LL;
 constexpr int32_t kMinScratchFrames = 8192;
 // Like Oboe's full-duplex helper, discard startup capture backlog. Each
-// callback performs bounded non-blocking reads, including on MMAP.
+// callback performs bounded non-blocking reads, including on MMAP. The
+// nominal counts are caps: phases may end earlier on confirmed stability
+// and the drain may extend while an obvious backlog remains, always bounded
+// by the hard caps and the total startup frame budget below.
 constexpr int32_t kStartupDrainCallbacks = 20;
 // OboeTester FullDuplexStream startup sequence: after the drain, optionally
 // let input accumulate a cushion (0 = skip), then run discard callbacks so
 // input and output reach equilibrium before forwarding starts.
 constexpr int32_t kStartupCushionCallbacks = 0;
 constexpr int32_t kStartupDiscardCallbacks = 30;
+// Consecutive "stable" callbacks (actual short reads plus a settled
+// availability hint) that confirm a startup phase is done.
+constexpr int32_t kStartupStableCallbacks = 3;
+// The discard phase must not enter normal forwarding on its count alone:
+// after the nominal count runs out it keeps confirming equilibrium until
+// this many consecutive stable callbacks, bounded by the hard cap.
+constexpr int32_t kDiscardStableCallbacks = 5;
+// Absolute callback caps for the drain/discard phases, including any
+// extensions granted while a backlog remains (~2s and ~1.5s of callbacks).
+constexpr int32_t kStartupDrainHardCap = 200;
+constexpr int32_t kStartupDiscardHardCap = 150;
+// Total frames the whole startup sync may discard (4 seconds of input).
+constexpr int64_t kStartupBudgetSeconds = 4;
+// Runtime backlog recovery: per-episode discard budget (1 second of input)
+// and post-episode cooldown (1 second of output) before a retrigger.
+constexpr int64_t kBacklogEpisodeSeconds = 1;
+constexpr int64_t kBacklogCooldownSeconds = 1;
 
 /**
  * Shared availability probe used by the callback input gate and streamInfo():
@@ -45,15 +65,24 @@ int64_t getAvailableFrames(AAudioStream* stream) {
     return available >= 0 ? available : -1;
 }
 
-// AAudio_setMMapPolicy / AAudioStream_isMMapUsed exist from API 29; resolve
-// them at runtime so minSdk 27 builds keep working.
+// AAudio_setMMapPolicy / AAudio_getMMapPolicy / AAudioStream_isMMapUsed
+// exist from API 29; resolve them at runtime so minSdk 27 builds keep working.
 using SetMMapPolicyFn = aaudio_result_t (*)(aaudio_policy_t);
+using GetMMapPolicyFn = aaudio_policy_t (*)();
 using IsMMapUsedFn = bool (*)(AAudioStream*);
 
 SetMMapPolicyFn setMMapPolicyFn() {
     static SetMMapPolicyFn fn = [] {
         void* lib = dlopen("libaaudio.so", RTLD_NOW);
         return lib ? reinterpret_cast<SetMMapPolicyFn>(dlsym(lib, "AAudio_setMMapPolicy")) : nullptr;
+    }();
+    return fn;
+}
+
+GetMMapPolicyFn getMMapPolicyFn() {
+    static GetMMapPolicyFn fn = [] {
+        void* lib = dlopen("libaaudio.so", RTLD_NOW);
+        return lib ? reinterpret_cast<GetMMapPolicyFn>(dlsym(lib, "AAudio_getMMapPolicy")) : nullptr;
     }();
     return fn;
 }
@@ -260,47 +289,53 @@ void RelayEngine::notifyError(const std::string& text) {
 }
 
 std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks) {
+    callbackReady = false;
+
+    // AAudio_setMMapPolicy is a process-global policy: apply the requested
+    // policy immediately before opening its stream so "set policy + open"
+    // stay serial per direction, and restore the original policy once both
+    // opens have settled (success or failure). NEVER, not ALWAYS, expresses
+    // "MMAP off"; AUTO expresses "MMAP allowed with capability fallback".
+    SetMMapPolicyFn setPolicy = setMMapPolicyFn();
+    GetMMapPolicyFn getPolicy = getMMapPolicyFn();
+    aaudio_policy_t originalPolicy = getPolicy ? getPolicy() : AAUDIO_POLICY_AUTO;
+    bool policyChanged = false;
+    // Returns a non-empty error only when an explicit "no MMAP" choice
+    // cannot be honored; AUTO failures are logged and tolerated because AUTO
+    // is the system default anyway.
+    auto applyMMapPolicy = [&](bool allow, const char* what) -> std::string {
+        if (!setPolicy) {
+            if (allow) return "";
+            return std::string("无法关闭 MMAP（") + what +
+                   "）: AAudio_setMMapPolicy 不可用（需要 Android 10 / API 29 及以上）";
+        }
+        aaudio_result_t r = setPolicy(allow ? AAUDIO_POLICY_AUTO : AAUDIO_POLICY_NEVER);
+        if (r == AAUDIO_OK) {
+            policyChanged = true;
+            return "";
+        }
+        if (allow) {
+            LOGE("AAudio_setMMapPolicy(AUTO) for %s: %s", what, AAudio_convertResultToText(r));
+            return "";
+        }
+        return std::string("关闭 MMAP 策略设置失败（") + what +
+               "）: AAudio_setMMapPolicy(NEVER): " + AAudio_convertResultToText(r);
+    };
+    auto restoreMMapPolicy = [&] {
+        if (!policyChanged || !setPolicy) return;
+        aaudio_result_t r = setPolicy(originalPolicy);
+        if (r != AAUDIO_OK) {
+            LOGE("恢复 MMAP 策略失败 AAudio_setMMapPolicy: %s", AAudio_convertResultToText(r));
+        }
+    };
+
+    // ---- output stream first (owns the data callback that pulls the input) ----
+    std::string policyError = applyMMapPolicy(cfg.outMMapEnabled, "输出");
+    if (!policyError.empty()) return policyError;
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t result = AAudio_createStreamBuilder(&builder);
     if (result != AAUDIO_OK) {
-        return std::string("AAudio_createStreamBuilder: ") + AAudio_convertResultToText(result);
-    }
-
-    // ---- input stream (read from the output data callback, no own callback) ----
-    AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);
-    AAudioStreamBuilder_setDeviceId(builder, cfg.inDeviceId);
-    if (cfg.inChannelCount > 0) AAudioStreamBuilder_setChannelCount(builder, cfg.inChannelCount);
-    if (cfg.inSampleRate > 0) AAudioStreamBuilder_setSampleRate(builder, cfg.inSampleRate);
-    if (cfg.inFormat != AAUDIO_FORMAT_UNSPECIFIED) {
-        AAudioStreamBuilder_setFormat(builder, static_cast<aaudio_format_t>(cfg.inFormat));
-    }
-    AAudioStreamBuilder_setSharingMode(builder,
-            cfg.inExclusive ? AAUDIO_SHARING_MODE_EXCLUSIVE : AAUDIO_SHARING_MODE_SHARED);
-    AAudioStreamBuilder_setPerformanceMode(builder,
-            static_cast<aaudio_performance_mode_t>(cfg.inPerformanceMode));
-    if (__builtin_available(android 28, *)) {
-        AAudioStreamBuilder_setInputPreset(builder,
-                static_cast<aaudio_input_preset_t>(cfg.inInputPreset));
-    }
-    if (cfg.inBufferCapacity > 0) {
-        AAudioStreamBuilder_setBufferCapacityInFrames(builder, cfg.inBufferCapacity);
-    }
-    AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
-    AAudioStream* inStream = nullptr;
-    result = AAudioStreamBuilder_openStream(builder, &inStream);
-    AAudioStreamBuilder_delete(builder);
-    if (result != AAUDIO_OK) {
-        return std::string("打开输入流失败 AAudioStreamBuilder_openStream(input): ") +
-               AAudio_convertResultToText(result);
-    }
-    input = inStream;
-
-    // ---- output stream (owns the data callback that pulls the input) ----
-    builder = nullptr;
-    result = AAudio_createStreamBuilder(&builder);
-    if (result != AAUDIO_OK) {
-        std::string ignored;
-        closeStreams(ignored);
+        restoreMMapPolicy();
         return std::string("AAudio_createStreamBuilder: ") + AAudio_convertResultToText(result);
     }
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
@@ -331,13 +366,61 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     result = AAudioStreamBuilder_openStream(builder, &outStream);
     AAudioStreamBuilder_delete(builder);
     if (result != AAUDIO_OK) {
-        std::string err = std::string("打开输出流失败 AAudioStreamBuilder_openStream(output): ") +
+        restoreMMapPolicy();
+        return std::string("打开输出流失败 AAudioStreamBuilder_openStream(output): ") +
+               AAudio_convertResultToText(result);
+    }
+    output = outStream;
+
+    // ---- input stream (read from the output data callback, no own callback) ----
+    policyError = applyMMapPolicy(cfg.inMMapEnabled, "输入");
+    if (!policyError.empty()) {
+        restoreMMapPolicy();
+        std::string ignored;
+        closeStreams(ignored);
+        return policyError;
+    }
+    builder = nullptr;
+    result = AAudio_createStreamBuilder(&builder);
+    if (result != AAUDIO_OK) {
+        restoreMMapPolicy();
+        std::string ignored;
+        closeStreams(ignored);
+        return std::string("AAudio_createStreamBuilder: ") + AAudio_convertResultToText(result);
+    }
+    AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);
+    AAudioStreamBuilder_setDeviceId(builder, cfg.inDeviceId);
+    if (cfg.inChannelCount > 0) AAudioStreamBuilder_setChannelCount(builder, cfg.inChannelCount);
+    if (cfg.inSampleRate > 0) AAudioStreamBuilder_setSampleRate(builder, cfg.inSampleRate);
+    if (cfg.inFormat != AAUDIO_FORMAT_UNSPECIFIED) {
+        AAudioStreamBuilder_setFormat(builder, static_cast<aaudio_format_t>(cfg.inFormat));
+    }
+    AAudioStreamBuilder_setSharingMode(builder,
+            cfg.inExclusive ? AAUDIO_SHARING_MODE_EXCLUSIVE : AAUDIO_SHARING_MODE_SHARED);
+    AAudioStreamBuilder_setPerformanceMode(builder,
+            static_cast<aaudio_performance_mode_t>(cfg.inPerformanceMode));
+    if (__builtin_available(android 28, *)) {
+        AAudioStreamBuilder_setInputPreset(builder,
+                static_cast<aaudio_input_preset_t>(cfg.inInputPreset));
+    }
+    if (cfg.inBufferCapacity > 0) {
+        AAudioStreamBuilder_setBufferCapacityInFrames(builder, cfg.inBufferCapacity);
+    }
+    AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
+    AAudioStream* inStream = nullptr;
+    result = AAudioStreamBuilder_openStream(builder, &inStream);
+    AAudioStreamBuilder_delete(builder);
+    if (result != AAUDIO_OK) {
+        restoreMMapPolicy();
+        std::string err = std::string("打开输入流失败 AAudioStreamBuilder_openStream(input): ") +
                           AAudio_convertResultToText(result);
         std::string ignored;
         closeStreams(ignored);
         return err;
     }
-    output = outStream;
+    input = inStream;
+    // Both streams are open; the process-global policy no longer matters.
+    restoreMMapPolicy();
 
     // ---- post-open validation: no resampling / format conversion yet ----
     AAudioStream* in = input.load();
@@ -446,7 +529,19 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     startupDrainCallbacks = kStartupDrainCallbacks;
     startupCushionCallbacks = kStartupCushionCallbacks;
     startupDiscardCallbacks = kStartupDiscardCallbacks;
+    startupDrainHardLeft = kStartupDrainHardCap;
+    startupDiscardHardLeft = kStartupDiscardHardCap;
+    startupStableCount = 0;
+    startupPrevAvailable = -1;
+    startupBudgetFrames = kStartupBudgetSeconds * std::max(inRate, outRate);
     startupFramesDiscarded = 0;
+    // Runtime backlog recovery: 0 keeps the feature fully disabled.
+    backlogThresholdFrames = std::max(0, cfg.inputBacklogThresholdFrames);
+    backlogRecovering = false;
+    backlogEpisodeBudget = 0;
+    backlogPrevAvailable = -1;
+    backlogCooldownFrames = 0;
+    resyncEvents.store(0, std::memory_order_relaxed);
 
     scratchFrames = std::max(kMinScratchFrames, outBurst * 4);
     scratch.assign(static_cast<size_t>(scratchFrames) * inChannels * bytesPerFrame(format), 0);
@@ -461,7 +556,11 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
                              std::memory_order_relaxed);
     }
 
-    // ---- start: input first, then the callback-driven output ----
+    // ---- start: request input, wait for input STARTED, request output,
+    // wait for output STARTED. callbackReady arms the data callback before
+    // the output request so callbacks firing during the output STARTED wait
+    // already run the startup drain instead of being gated by running. ----
+    callbackReady.store(true, std::memory_order_release);
     aaudio_stream_state_t nextState = AAUDIO_STREAM_STATE_UNKNOWN;
     result = AAudioStream_requestStart(input);
     if (result == AAUDIO_OK) {
@@ -505,16 +604,17 @@ std::string RelayEngine::start(const StartConfig& cfg, const std::vector<int32_t
         return "启动转发被拒绝：引擎仍持有未释放的音频流，请先停止转发";
     }
     errorNotified = false;
-    if (auto fn = setMMapPolicyFn()) {
-        aaudio_result_t r = fn(AAUDIO_POLICY_AUTO);
-        if (r != AAUDIO_OK) LOGE("AAudio_setMMapPolicy(AUTO): %s", AAudio_convertResultToText(r));
-    }
+    // The MMAP policy is per-direction now and applied inside openStreams
+    // right before each open; no process-global default is forced here.
     std::string error = openStreams(cfg, mixerMasks);
     if (error.empty()) running = true;
     return error;
 }
 
 void RelayEngine::closeStreams(std::string& firstError) {
+    // Disarm the data callback before touching the streams so any callback
+    // still in flight (or firing during requestStop) outputs silence.
+    callbackReady.store(false, std::memory_order_release);
     AAudioStream* streams[2] = {output, input};
     for (AAudioStream* s : streams) {
         if (!s) continue;
@@ -544,6 +644,17 @@ std::string RelayEngine::stop() {
     inputThresholdFrames = 0;
     gateStallFrames = 0;
     gateStallLogged = false;
+    startupDrainCallbacks = 0;
+    startupCushionCallbacks = 0;
+    startupDiscardCallbacks = 0;
+    startupStableCount = 0;
+    startupPrevAvailable = -1;
+    startupBudgetFrames = 0;
+    backlogThresholdFrames = 0;
+    backlogRecovering = false;
+    backlogEpisodeBudget = 0;
+    backlogPrevAvailable = -1;
+    backlogCooldownFrames = 0;
     return firstError;
 }
 
@@ -641,7 +752,7 @@ aaudio_result_t RelayEngine::tuneOutputBuffer(int32_t numFrames) {
 
 aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFrames) {
     AAudioStream* in = input;
-    if (!in || !running.load()) {
+    if (!in || !callbackReady.load(std::memory_order_acquire)) {
         fillSilence(audioData, 0, numFrames);
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
@@ -653,12 +764,17 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
     // read(..., 0) also processes pending input errors and never waits for data.
 
     if (startupDrainCallbacks > 0) {
+        // Per-callback work is bounded by one input capacity and by the
+        // remaining startup budget, so neither a continuously producing
+        // device nor an anomalous MMAP counter can make this loop unbounded.
+        int32_t cap = inputDrainFrames;
+        if (startupBudgetFrames < cap) {
+            cap = static_cast<int32_t>(std::max<int64_t>(0, startupBudgetFrames));
+        }
         int32_t total = 0;
-        // Drain in callback-sized chunks as Oboe does, but cap the work to
-        // one input capacity so a continuously producing device cannot loop
-        // forever. Re-entering read also refreshes MMAP service timestamps.
-        while (total < inputDrainFrames) {
-            int32_t want = std::min({numFrames, scratchFrames, inputDrainFrames - total});
+        bool shortRead = false;
+        while (total < cap) {
+            int32_t want = std::min({numFrames, scratchFrames, cap - total});
             int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
             if (got < 0) {
                 notifyError(std::string("AAudioStream_read(input): ") + AAudio_convertResultToText(got));
@@ -666,12 +782,47 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
                 return AAUDIO_CALLBACK_RESULT_STOP;
             }
             total += got;
-            if (got < want) break;
+            if (got < want) {
+                shortRead = true;  // actual reads found nothing more right now
+                break;
+            }
+        }
+        if (total > 0) {
+            startupFramesDiscarded.fetch_add(static_cast<uint32_t>(total), std::memory_order_relaxed);
+            startupBudgetFrames -= total;
         }
         fillSilence(audioData, 0, numFrames);
-        if (total > 0) {
+
+        // Completion is confirmed by the actual read result first: a short
+        // read means the input was consumed to the last immediately-readable
+        // frame. The availability hint only corroborates that no obvious
+        // backlog remains — it is never treated as the readable count.
+        int64_t available = getAvailableFrames(in);
+        int64_t slack = std::max(numFrames * 2, outBurst * 2);
+        bool backlogHint = available > slack;
+        bool hitCap = cap > 0 && total >= cap && !shortRead;
+        if (shortRead && !backlogHint) ++startupStableCount;
+        else startupStableCount = 0;
+
+        bool drainDone;
+        if (startupStableCount >= kStartupStableCallbacks || startupBudgetFrames <= 0 ||
+            startupDrainHardLeft <= 0) {
+            drainDone = true;  // sync confirmed, or a hard bound forces the exit
+        } else if (hitCap && backlogHint) {
+            // Work cap hit with an obvious backlog left: keep the nominal
+            // count and continue draining on subsequent callbacks. Only the
+            // hard cap and the total budget bound this extension.
+            --startupDrainHardLeft;
+            drainDone = false;
+        } else {
             --startupDrainCallbacks;
-            startupFramesDiscarded.fetch_add(static_cast<uint32_t>(total), std::memory_order_relaxed);
+            --startupDrainHardLeft;
+            drainDone = startupDrainCallbacks <= 0;
+        }
+        if (drainDone) {
+            startupDrainCallbacks = 0;
+            startupStableCount = 0;
+            startupPrevAvailable = -1;
         }
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
@@ -685,13 +836,17 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
     }
 
     if (startupDiscardCallbacks > 0) {
-        // Equilibrium phase: one non-blocking attempt at exactly this
+        // Equilibrium phase: one bounded non-blocking attempt at up to this
         // callback's numFrames, discarded. Never loop-drain the whole input
-        // here and never wait for a full read.
-        --startupDiscardCallbacks;
+        // here and never wait for a full read; the remaining startup budget
+        // caps the total work.
+        int32_t cap = numFrames;
+        if (startupBudgetFrames < cap) {
+            cap = static_cast<int32_t>(std::max<int64_t>(0, startupBudgetFrames));
+        }
         int32_t readOffset = 0;
-        while (readOffset < numFrames) {
-            int32_t want = std::min(numFrames - readOffset, scratchFrames);
+        while (readOffset < cap) {
+            int32_t want = std::min(cap - readOffset, scratchFrames);
             int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
             if (got < 0) {
                 notifyError(std::string("AAudioStream_read(input): ") +
@@ -699,14 +854,43 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
                 fillSilence(audioData, 0, numFrames);
                 return AAUDIO_CALLBACK_RESULT_STOP;
             }
-            if (got == 0) break;  // no data yet; do not wait
+            if (got == 0) break;  // nothing immediately readable; do not spin
             readOffset += got;
         }
         if (readOffset > 0) {
             startupFramesDiscarded.fetch_add(static_cast<uint32_t>(readOffset),
                                              std::memory_order_relaxed);
+            startupBudgetFrames -= readOffset;
         }
         fillSilence(audioData, 0, numFrames);
+
+        // Equilibrium confirmation combines the actual read result (a short
+        // read consumed everything immediately readable) with a settled
+        // availability hint across callbacks. The hint is never trusted as
+        // the readable count on its own.
+        int64_t available = getAvailableFrames(in);
+        int64_t drift = (available >= 0 && startupPrevAvailable >= 0)
+                        ? (available > startupPrevAvailable ? available - startupPrevAvailable
+                                                            : startupPrevAvailable - available)
+                        : -1;
+        bool settled = readOffset < cap || (drift >= 0 && drift <= numFrames);
+        if (available >= 0) startupPrevAvailable = available;
+        if (settled) ++startupStableCount;
+        else startupStableCount = 0;
+
+        --startupDiscardHardLeft;
+        bool forced = startupDiscardHardLeft <= 0 || startupBudgetFrames <= 0;
+        if (startupDiscardCallbacks > 1 && !forced) {
+            --startupDiscardCallbacks;
+        } else if (startupStableCount >= kDiscardStableCallbacks || forced) {
+            // Nominal count exhausted: normal forwarding starts only with
+            // confirmed equilibrium, or when a hard bound forces the exit.
+            startupDiscardCallbacks = 0;
+            startupStableCount = 0;
+            startupPrevAvailable = -1;
+        }
+        // else: count exhausted but equilibrium not yet confirmed — keep
+        // confirming on subsequent callbacks, bounded by the hard cap.
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 
@@ -716,6 +900,66 @@ aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFr
                     AAudio_convertResultToText(tuneResult));
         fillSilence(audioData, 0, numFrames);
         return AAUDIO_CALLBACK_RESULT_STOP;
+    }
+
+    // Runtime backlog recovery, independent of the startup sync above and of
+    // the read-threshold gate below; threshold 0 disables it completely. The
+    // availability hint is not the immediately-readable count, so recovery
+    // acts only through bounded timeout-0 reads and aborts whenever they
+    // stop making progress — a stale counter can never discard into
+    // ever-longer silence. Hysteresis (recover to half the threshold) plus a
+    // post-episode cooldown prevent retrigger flapping. One lightweight
+    // atomic event is recorded per episode; the UI polls it off the realtime
+    // thread. The output is silent while an episode discards old input.
+    if (backlogThresholdFrames > 0) {
+        if (backlogCooldownFrames > 0) backlogCooldownFrames -= numFrames;
+        int64_t available = getAvailableFrames(in);
+        if (!backlogRecovering && backlogCooldownFrames <= 0 &&
+            available > backlogThresholdFrames) {
+            backlogRecovering = true;
+            backlogEpisodeBudget = kBacklogEpisodeSeconds * std::max(inRate, 1);
+            backlogPrevAvailable = available;
+            resyncEvents.fetch_add(1, std::memory_order_relaxed);
+            LOGI("输入积压恢复触发: available=%lld > threshold=%lld",
+                 static_cast<long long>(available),
+                 static_cast<long long>(backlogThresholdFrames));
+        }
+        if (backlogRecovering) {
+            int32_t cap = inputDrainFrames;
+            if (backlogEpisodeBudget < cap) {
+                cap = static_cast<int32_t>(std::max<int64_t>(0, backlogEpisodeBudget));
+            }
+            int32_t total = 0;
+            while (total < cap) {
+                int32_t want = std::min({numFrames, scratchFrames, cap - total});
+                int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
+                if (got < 0) {
+                    notifyError(std::string("AAudioStream_read(input): ") +
+                                AAudio_convertResultToText(got));
+                    fillSilence(audioData, 0, numFrames);
+                    return AAUDIO_CALLBACK_RESULT_STOP;
+                }
+                total += got;
+                if (got < want) break;
+            }
+            if (total > 0) backlogEpisodeBudget -= total;
+            int64_t after = getAvailableFrames(in);
+            bool recovered = after >= 0 && after <= backlogThresholdFrames / 2;
+            // Reads found nothing, or the hint did not drop although frames
+            // were consumed: no progress, end the episode now.
+            bool noProgress = total == 0 ||
+                              (after >= 0 && backlogPrevAvailable >= 0 &&
+                               after >= backlogPrevAvailable);
+            if (recovered || noProgress || backlogEpisodeBudget <= 0) {
+                backlogRecovering = false;
+                backlogPrevAvailable = -1;
+                backlogCooldownFrames = kBacklogCooldownSeconds * std::max(outRate, 1);
+            } else {
+                backlogPrevAvailable = after;
+            }
+            fillSilence(audioData, 0, numFrames);
+            return AAUDIO_CALLBACK_RESULT_CONTINUE;
+        }
     }
 
     // Input read threshold gate (F), normal forwarding phase only: the
@@ -857,6 +1101,7 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
     add("XRunCount", valueOrError(AAudioStream_getXRunCount(s)));
     if (direction == AAUDIO_DIRECTION_INPUT) {
         add("StartupFramesDiscarded", std::to_string(startupFramesDiscarded.load()));
+        add("BacklogResyncEvents", std::to_string(resyncEvents.load(std::memory_order_relaxed)));
     }
 #ifndef NDEBUG
     if (direction == AAUDIO_DIRECTION_OUTPUT) {

@@ -32,7 +32,7 @@ extern "C" {
 JNIEXPORT jstring JNICALL JNI_FN(nativeStart)(JNIEnv* env, jobject /*thiz*/, jintArray cfgArray,
                                               jintArray maskArray) {
     std::vector<int32_t> cfg = readIntArray(env, cfgArray);
-    if (cfg.size() < 22) {
+    if (cfg.size() < 25) {
         return env->NewStringUTF("启动转发被拒绝：原生配置参数不完整");
     }
     StartConfig cfgStruct;
@@ -58,6 +58,9 @@ JNIEXPORT jstring JNICALL JNI_FN(nativeStart)(JNIEnv* env, jobject /*thiz*/, jin
     cfgStruct.outAutoBufferSize = cfg[19] != 0;
     cfgStruct.inputReadThresholdBursts = cfg[20];
     cfgStruct.inputReadThresholdExtraFrames = cfg[21];
+    cfgStruct.inputBacklogThresholdFrames = cfg[22];
+    cfgStruct.inMMapEnabled = cfg[23] != 0;
+    cfgStruct.outMMapEnabled = cfg[24] != 0;
     return toJString(env, RelayEngine::get().start(cfgStruct, readIntArray(env, maskArray)));
 }
 
@@ -92,6 +95,10 @@ JNIEXPORT jobjectArray JNICALL JNI_FN(nativeStreamInfo)(JNIEnv* env, jobject /*t
 JNIEXPORT void JNICALL JNI_FN(nativeAttachListener)(JNIEnv* env, jobject /*thiz*/,
                                                     jobject listener) {
     RelayEngine::get().attachListener(env, listener);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nativeResyncEvents)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(RelayEngine::get().resyncEventCount());
 }
 
 }  // extern "C"

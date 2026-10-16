@@ -125,6 +125,22 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
             }
         }
 
+        // Runtime backlog-resync episodes surface as a short informational
+        // snackbar: no error route, no stop, one notice per detected batch
+        // (the session polls the engine's atomic episode counter, so the
+        // audio callback never repeats per-callback notices).
+        LaunchedEffect(session, activity) {
+            activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                snapshotFlow { session.pendingResync }.filterNotNull().collect { id ->
+                    snackbarHostState.showSnackbar(
+                        message = "检测到输入帧积压过高，已触发重新同步",
+                        duration = SnackbarDuration.Short,
+                    )
+                    session.consumeResync(id)
+                }
+            }
+        }
+
         val pageScaffold: @Composable (Modifier) -> Unit = { modifier ->
             Scaffold(
                 modifier = modifier,

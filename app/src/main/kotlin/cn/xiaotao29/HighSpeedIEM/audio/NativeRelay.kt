@@ -25,9 +25,10 @@ object NativeRelay {
      *     inputPreset, bufferCapacity, bufferSizeBursts
      * out: deviceId, channelCount, sampleRate, format, exclusive, performanceMode,
      *     usage, contentType, bufferCapacity, bufferSizeBursts, autoBufferSize,
-     *     readThresholdBursts, readThresholdExtraFrames
-     * Buffer/threshold entries come from the session-level RelayParams, the
-     * rest from the per-device StreamParams.
+     *     readThresholdBursts, readThresholdExtraFrames,
+     *     inputBacklogThresholdFrames, inMMapEnabled, outMMapEnabled
+     * Buffer/threshold/MMAP entries come from the session-level RelayParams,
+     * the rest from the per-device StreamParams.
      */
     external fun nativeStart(config: IntArray, mixerMasks: IntArray): String?
 
@@ -39,6 +40,12 @@ object NativeRelay {
 
     /** Flat key/value pairs for one direction (0 = output, 1 = input); null when closed. */
     external fun nativeStreamInfo(direction: Int): Array<String>?
+
+    /**
+     * Runtime backlog-resync episode count since the last start. Cheap atomic
+     * read; polled from a non-realtime thread to surface snackbar notices.
+     */
+    external fun nativeResyncEvents(): Int
 
     external fun nativeAttachListener(listener: Listener?)
 }

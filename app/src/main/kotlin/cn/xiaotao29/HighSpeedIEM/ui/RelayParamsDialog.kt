@@ -60,6 +60,8 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
     val extraFrameOptions = (listOf(0) + (0..10).map { 1 shl it }).map {
         it to if (it == 0) "0 帧" else "$it 帧"
     }
+    val backlogOptions = (listOf(0) + (1..10).map { it * 100 } + (2..10).map { it * 1000 })
+        .map { it to if (it == 0) "关闭（0）" else "$it" }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -114,6 +116,17 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                             "FramesPerBurst，且不超过实际 BufferCapacityInFrames。输入侧按后端" +
                             "实际支持情况生效，不构成保证有效的输入延迟控制。",
                     )
+                    ParamCheckboxRow(
+                        label = "允许 MMAP（输入）",
+                        checked = params.inMMapEnabled,
+                        onCheckedChange = { update(params.copy(inMMapEnabled = it)) },
+                    )
+                    SectionNote(
+                        "开启＝请求 AAUDIO_POLICY_AUTO，系统可用时使用 MMAP 并按能力回退；" +
+                            "关闭＝请求 AAUDIO_POLICY_NEVER（需要 Android 10 / API 29 及以上，" +
+                            "无法兑现时启动将明确报错）。实际是否使用 MMAP 以实时流参数中的 " +
+                            "MMapUsed 为准，开关状态不代表实际结果。",
+                    )
                     HorizontalDivider()
                     SectionHeader("输出流")
                     ParamDropdown(
@@ -143,30 +156,26 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                             onSelect = { update(params.copy(outBufferSizeBursts = it)) },
                             modifier = Modifier.weight(1f),
                         )
-                        Row(
-                            Modifier
-                                .toggleable(
-                                    value = params.outAutoBufferSize,
-                                    role = Role.Checkbox,
-                                    onValueChange = { update(params.copy(outAutoBufferSize = it)) },
-                                )
-                                .padding(4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = params.outAutoBufferSize,
-                                onCheckedChange = null,
-                            )
-                            MarqueeText(
-                                "程序自动设置",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
+                        ParamCheckboxRow(
+                            label = "程序自动设置",
+                            checked = params.outAutoBufferSize,
+                            onCheckedChange = { update(params.copy(outAutoBufferSize = it)) },
+                        )
                     }
                     SectionNote(
                         "勾选“程序自动设置”：沿用低延迟模式下 2 × FramesPerBurst 的初始" +
                             "缓冲并在欠载时自适应增大，输出缓冲大小下拉框禁用。取消勾选：采用" +
                             "手动配置（0＝不调用 setter，保留系统默认），并禁用自动调节。",
+                    )
+                    ParamCheckboxRow(
+                        label = "允许 MMAP（输出）",
+                        checked = params.outMMapEnabled,
+                        onCheckedChange = { update(params.copy(outMMapEnabled = it)) },
+                    )
+                    SectionNote(
+                        "含义与输入侧相同：开启＝AAUDIO_POLICY_AUTO，关闭＝AAUDIO_POLICY_NEVER。" +
+                            "策略为进程级，引擎在分别打开输出、输入流之前串行设置各自策略，" +
+                            "结束后恢复原策略。",
                     )
                     HorizontalDivider()
                     SectionHeader("输入读取门槛")
@@ -206,6 +215,25 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                             "两项均为 0 时不做门槛判断。",
                     )
                     HorizontalDivider()
+                    SectionHeader("输入积压恢复")
+                    ParamDropdown(
+                        label = "输入高积压阈值（帧）",
+                        selectedLabel = if (params.inputBacklogThresholdFrames == 0) {
+                            "关闭（0）"
+                        } else {
+                            "${params.inputBacklogThresholdFrames}"
+                        },
+                        options = backlogOptions,
+                        onSelect = { update(params.copy(inputBacklogThresholdFrames = it)) },
+                    )
+                    SectionNote(
+                        "转发中输入可用帧数超过该阈值时，触发一次有上限的重新同步：以非阻塞" +
+                            "读取丢弃旧数据，恢复到阈值一半以下再继续转发，期间允许短暂静音。" +
+                            "带迟滞与冷却，同一次恢复只提示一次 Snackbar，不报错、不停止转发。" +
+                            "关闭（0）＝完全禁用运行期间恢复，启动排空不受影响。该阈值独立于" +
+                            "输入读取门槛，不受输入缓冲大小裁剪。",
+                    )
+                    HorizontalDivider()
                     Text(
                         "参数在下次启动转发时生效。",
                         style = MaterialTheme.typography.bodySmall,
@@ -220,6 +248,25 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
 @Composable
 private fun SectionHeader(title: String) {
     MarqueeText(title, style = MaterialTheme.typography.titleMedium)
+}
+
+/** The app's shared checkbox row: native Checkbox inside a toggleable row. */
+@Composable
+private fun ParamCheckboxRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange)
+            .padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
+        MarqueeText(label, style = MaterialTheme.typography.bodyMedium)
+    }
 }
 
 @Composable

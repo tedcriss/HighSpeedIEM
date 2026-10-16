@@ -33,6 +33,24 @@ data class RelayParams(
      */
     val inputReadThresholdBursts: Int = 0,
     val inputReadThresholdExtraFrames: Int = 0,
+    /**
+     * Runtime backlog recovery threshold in frames: while forwarding, an
+     * input availability above this value triggers one bounded resync-discard
+     * episode (snackbar notice, no error, no stop). 0 disables the runtime
+     * recovery entirely; startup sync is unaffected. Independent of the read
+     * threshold above and NOT clamped to the input BufferSizeInFrames.
+     */
+    val inputBacklogThresholdFrames: Int = 0,
+    /**
+     * true = request AAUDIO_POLICY_AUTO for the input (system may use MMAP
+     * and falls back by capability); false = request AAUDIO_POLICY_NEVER.
+     * AAUDIO_POLICY_ALWAYS is never used. Independent of per-device
+     * exclusive sharing mode; the realtime MMapUsed value shows the actual
+     * result, not this request.
+     */
+    val inMMapEnabled: Boolean = true,
+    /** Output counterpart of [inMMapEnabled]. */
+    val outMMapEnabled: Boolean = true,
 ) {
     companion object {
         val DEFAULT = RelayParams()
