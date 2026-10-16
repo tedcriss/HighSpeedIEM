@@ -1,10 +1,13 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import android.content.res.Configuration
 import android.os.Build
+import android.view.Window
 import android.view.WindowManager
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -235,15 +239,17 @@ fun StatusBadge(status: String) {
 }
 
 /**
- * Full-screen immersive dialog shared by every full-screen dialog in the app.
+ * Full-screen dialog shared by every full-screen dialog in the app.
  *
- * The dialog owns its window: it extends under the system bars and the display
- * cutout (edge-to-edge background, no letterbox black bars), hides the system
- * bars with transient swipe-back, and lays out into cutout areas on the short
- * edges — which is the top edge in portrait and the left/right edge in either
- * landscape rotation. Bar visibility is configured on the dialog window only,
- * so the activity window keeps its own show/hide rules after dismiss. Content
- * must apply [safeContentInsets] once at its root to stay in the safe area.
+ * The dialog owns its window: it is edge-to-edge (background paints under the
+ * transparent system bars and the display cutout, no letterbox black bars) and
+ * lays out into cutout areas on the short edges — the top edge in portrait and
+ * the left/right edge in either landscape rotation. Bar visibility follows the
+ * orientation only (status bar visible in portrait, hidden in landscape; the
+ * navigation bar and gesture pill always remain), configured on the dialog
+ * window itself so the activity window keeps its own rules after dismiss.
+ * Content must apply [safeContentInsets] once at its root to stay in the safe
+ * area beneath the visible bars and the cutout.
  */
 @Composable
 fun ImmersiveDialog(onDismissRequest: () -> Unit, content: @Composable () -> Unit) {
@@ -255,9 +261,10 @@ fun ImmersiveDialog(onDismissRequest: () -> Unit, content: @Composable () -> Uni
         ),
     ) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        LaunchedEffect(window) {
+        val darkTheme = isSystemInDarkTheme()
+        val orientation = LocalConfiguration.current.orientation
+        LaunchedEffect(window, darkTheme, orientation) {
             window ?: return@LaunchedEffect
-            WindowCompat.setDecorFitsSystemWindows(window, false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 // SHORT_EDGES covers the cutout on the top edge in portrait and
                 // on the left/right edge in both landscape rotations; the
@@ -267,12 +274,45 @@ fun ImmersiveDialog(onDismissRequest: () -> Unit, content: @Composable () -> Uni
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
                 }
             }
-            val controller = WindowCompat.getInsetsController(window, window.decorView)
-            controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            controller.hide(WindowInsetsCompat.Type.systemBars())
+            configureEdgeToEdgeWindow(window, darkTheme, orientation)
         }
         content()
+    }
+}
+
+/**
+ * Official edge-to-edge configuration for any window, activity or dialog:
+ * transparent system bars without the system contrast scrim so the caller's
+ * own background shows through beneath them, icon luminosity matching the
+ * theme, and status-bar visibility driven by orientation only — visible in
+ * portrait, hidden in landscape — while the navigation bar and the gesture
+ * pill always remain visible.
+ */
+fun configureEdgeToEdgeWindow(window: Window, darkTheme: Boolean, orientation: Int) {
+    WindowCompat.setDecorFitsSystemWindows(window, false)
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+        // From API 35 the bars are always transparent and these setters are
+        // deprecated no-ops; below that, clear the translucent defaults.
+        @Suppress("DEPRECATION")
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // The scrim-based bar styles enforce a system contrast layer behind
+        // the bars; disable it so the window background stays continuous.
+        window.isStatusBarContrastEnforced = false
+        window.isNavigationBarContrastEnforced = false
+    }
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    controller.isAppearanceLightStatusBars = !darkTheme
+    controller.isAppearanceLightNavigationBars = !darkTheme
+    if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.statusBars())
+    } else {
+        controller.show(WindowInsetsCompat.Type.statusBars())
     }
 }
 

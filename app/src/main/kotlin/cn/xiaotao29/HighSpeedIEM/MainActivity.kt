@@ -48,6 +48,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Edge-to-edge is required for reliable status-bar hiding in landscape.
         enableEdgeToEdge()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // enableEdgeToEdge's default scrim styles enforce a system contrast
+            // layer behind the bars; the theme background extends under them
+            // instead, so the scrim is disabled (see also styles.xml).
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
         // Draw into cutout areas on the short edges: the top edge in portrait
         // and the left/right edge in both landscape rotations. Content avoids
         // the cutout through insets, not through letterboxing. The attribute

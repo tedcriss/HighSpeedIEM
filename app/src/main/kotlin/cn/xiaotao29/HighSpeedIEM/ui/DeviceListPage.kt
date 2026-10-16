@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -277,7 +278,9 @@ private fun ParamsDialogButton(
     device: AudioDeviceInfo,
     enabled: Boolean,
 ) {
-    var show by remember(device.id) { mutableStateOf(false) }
+    // Saveable so the dialog survives rotation and its window re-applies the
+    // orientation-dependent status-bar rules immediately after recreation.
+    var show by rememberSaveable(device.id) { mutableStateOf(false) }
     TextButton(
         onClick = { show = true },
         enabled = enabled,
