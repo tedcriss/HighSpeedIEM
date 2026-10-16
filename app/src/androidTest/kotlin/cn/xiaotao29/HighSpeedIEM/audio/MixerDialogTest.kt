@@ -80,9 +80,17 @@ class MixerDialogTest {
         assertMask(1)
         openDialog()
         // Keyboard / remote focus and activation must toggle the entire row.
-        assertTrue(row(1)!!.performAction(AccessibilityNodeInfo.ACTION_FOCUS))
+        assertTrue(row(0)!!.performAction(AccessibilityNodeInfo.ACTION_FOCUS))
+        await { row(0)?.isFocused == true }
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
+        await { row(1)?.isFocused == true }
+        assertEquals(false, row(1)?.isChecked)
         instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
         await { row(1)?.isChecked == true }
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_UP)
+        await { row(0)?.isFocused == true }
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_TAB)
+        await { row(1)?.isFocused == true }
         clickText("确定")
         await { row(1) == null }
         assertMask(3)

@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
@@ -68,7 +67,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -498,16 +496,12 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
                         items(inputChannels, key = { it }) { channel ->
                             val checked = (draftMask and (1 shl channel)) != 0
                             ListItem(
-                                headlineContent = { MarqueeText("ID $inputId · 通道 $channel") },
+                                checked = checked,
+                                onCheckedChange = { draftMask = draftMask xor (1 shl channel) },
+                                enabled = !session.busy,
                                 leadingContent = { Checkbox(checked = checked, onCheckedChange = null) },
                                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                                modifier = Modifier.toggleable(
-                                    value = checked,
-                                    enabled = !session.busy,
-                                    role = Role.Checkbox,
-                                    onValueChange = { draftMask = draftMask xor (1 shl channel) },
-                                ),
-                            )
+                            ) { MarqueeText("ID $inputId · 通道 $channel") }
                         }
                     }
                 }

@@ -126,7 +126,7 @@ fun StreamParamsDialog(
                     ) {
                         Checkbox(checked = params.exclusive, onCheckedChange = null)
                         MarqueeText(
-                            "Exclusive（AAUDIO_SHARING_MODE_EXCLUSIVE）",
+                            "Exclusive",
                             style = MaterialTheme.typography.bodyLarge,
                         )
                     }

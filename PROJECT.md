@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v5.4
+# HighSpeedIEM（高速耳返）v5.5
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -154,7 +154,36 @@ adb -s emulator-5554 shell am instrument -w -r cn.xiaotao29.HighSpeedIEM.test/an
 I16/Float、连续推进及混音更新；`ErrorReportingTest` 和 `MixerDialogTest` 保留旋转、
 重建、后台、遥控/键盘与长列表覆盖。
 
-### 2026-10-16 至 2026-10-17 验收结果
+### v5.5 设备参数与混音焦点
+
+输入、输出设备的 `StreamParams.exclusive` 均默认 `true`，界面标签统一为
+`Exclusive`；用户仍可取消勾选。该值是 AAudio 开流请求，实际共享模式仍由平台决定。
+
+混音输入对话框使用 Material 3 原生 `ListItem(checked, onCheckedChange)`，由组件
+提供焦点高亮、选中态、方向键/键盘操作和 Checkbox 无障碍语义，不再给展示型列表项
+额外挂载 `toggleable`。复选框本身仍不单独响应点击，整行只有一个操作目标。
+草稿、取消/返回丢弃、确定提交、旋转保留及 busy 锁保持原有逻辑。
+
+开发依据：[Android Compose 焦点指示](https://developer.android.com/develop/ui/compose/touch-input/focus/focused-state)，
+以及工程当前 Material 3 1.5.0-beta01 的多选列表项实现，无需升级依赖。
+
+本次验证（2026-10-17）：四 ABI Debug / Release、测试 APK、5 项 JVM 测试和
+`lintRelease` 通过（0 errors / 9 warnings）。API37 / x86_64 手机模拟器全套
+32 项仪器测试通过，混音测试增加方向键上下移动、确定键勾选及 Tab 导航断言。
+实看浅色竖屏、深色横屏的混音焦点与勾选状态，以及输入/输出 Exclusive 默认值；
+取消勾选、重新勾选正常。Debug 和非 debuggable Release 均完成前端选择设备、混音
+配置、默认 Exclusive 请求启动转发并停止。两版 crash buffer 均为空。
+
+最终安装 5.5 / versionCode 60 的签名 Release，恢复浅色竖屏、未选设备的默认输入页。
+日志、界面 XML 和截图在 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/qa55/`，
+包含 `build.txt`、`tests.txt`、`debug-mixer-landscape-dark-focused.png`、
+`debug-mixer-portrait-light.png`、`release-mixer-focused.png`、`release-final-home.png`。
+四 ABI APK 为
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_5.5.apk`，
+v2 签名验证通过，SHA-256：
+`C05B7B942CC77EB72E413A59D2BBA0E32A9DB03923ADB828807565912E43C0FF`。
+
+### v5.4：2026-10-16 至 2026-10-17 验收结果
 
 - 四 ABI debug / release、测试 APK、JVM 测试与完整 lintRelease 构建通过。
 - 5 项 JVM 测试通过，包含 84,480 组有限选项/几何/修改来源的归一化检查。
