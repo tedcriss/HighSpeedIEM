@@ -12,12 +12,11 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -71,42 +70,17 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     private var nextErrorId = 0L
     val pendingError: ErrorNotice? get() = errors.firstOrNull()
 
-    // Runtime backlog resync notices. The audio callback only bumps a
-    // lightweight atomic counter in the engine; this session polls it from a
-    // non-realtime coroutine while forwarding and hands one notice per
-    // detected batch to the UI snackbar. A new detection while a notice is
-    // still pending overwrites it, so episodes never queue up into repeated
-    // snackbars for the same recovery.
-    private var pendingResyncId by mutableStateOf<Long?>(null)
-    private var nextResyncId = 0L
-    val pendingResync: Long? get() = pendingResyncId
-
-    fun consumeResync(id: Long) {
-        if (pendingResyncId == id) pendingResyncId = null
-    }
-
-    private var resyncPollJob: Job? = null
-    private var lastResyncEvents = 0
-
-    private fun startResyncPolling() {
-        lastResyncEvents = 0
-        resyncPollJob?.cancel()
-        resyncPollJob = scope.launch {
-            while (isActive) {
-                delay(500)
-                val count = withContext(Dispatchers.IO) {
-                    try {
-                        NativeRelay.nativeResyncEvents()
-                    } catch (t: Throwable) {
-                        -1
-                    }
-                }
-                if (count > lastResyncEvents) {
-                    lastResyncEvents = count
-                    pendingResyncId = ++nextResyncId
-                }
-            }
-        }
+    data class StatusNotice(val sequence: Long, val text: String)
+    var pendingStatus by mutableStateOf<StatusNotice?>(null)
+        private set
+    var parameterAdjustment by mutableStateOf<String?>(null)
+        private set
+    var activeSessionId = 0L
+        private set
+    private var lastEventSequence = 0L
+    private var errorHandledSessionId = -1L
+    fun consumeStatus(sequence: Long) {
+        if (pendingStatus?.sequence == sequence) pendingStatus = null
     }
 
     /** Deep-link request from the ongoing notification (forward tab). */
@@ -142,6 +116,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
                 .forEach { inputDevices[it.id] = it }
             audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
                 .forEach { outputDevices[it.id] = it }
+            normalizeSampleRates()
         } catch (e: Exception) {
             showError(e.toString())
         }
@@ -152,6 +127,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         val devices = if (input) inputDevices else outputDevices
         // Key uniqueness means a re-added id overwrites the stale entry.
         devices[device.id] = device
+        normalizeSampleRates()
         if (deviceInUse(input, device.id) && (forwarding || busy)) {
             stopForwarding("转发已停止：音频设备 ID ${device.id} 被系统重新枚举")
         }
@@ -166,6 +142,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         params.remove(device.id)
         if (input && selectedInputId == device.id) selectedInputId = null
         if (!input && selectedOutputId == device.id) selectedOutputId = null
+        normalizeSampleRates()
         if (wasInUse) mixer.clear()
         if (wasInUse && (forwarding || busy)) {
             // The native error callback may already have stopped the relay;
@@ -185,24 +162,30 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         if (operationsBlocked) return
         selectedInputId = if (selectedInputId == id) null else id
         mixer.clear()
+        normalizeSampleRates()
+        normalizeThresholds()
     }
 
     fun toggleOutputSelection(id: Int) {
         if (operationsBlocked) return
         selectedOutputId = if (selectedOutputId == id) null else id
         mixer.clear()
+        normalizeSampleRates()
+        normalizeThresholds()
     }
 
     // ---- per-device stream parameters ----
 
     fun paramsFor(input: Boolean, id: Int): StreamParams =
-        (if (input) inputParams else outputParams)[id] ?: StreamParams.DEFAULT
+        (if (input) inputParams else outputParams)[id] ?: StreamParams.defaultFor(input)
 
     fun setParams(input: Boolean, id: Int, params: StreamParams) {
         if (busy) return
         val old = paramsFor(input, id)
         (if (input) inputParams else outputParams)[id] = params
         if (old.channelCount != params.channelCount) mixer.clear()
+        normalizeSampleRates()
+        normalizeThresholds()
     }
 
     // ---- session-level relay parameters ----
@@ -211,10 +194,44 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     var relayParams by mutableStateOf(RelayParams.DEFAULT)
         private set
 
-    /** Edits are snapshot state; they apply the next time forwarding starts. */
     fun updateRelayParams(params: RelayParams) {
         if (operationsBlocked) return
-        relayParams = params
+        val changed = when {
+            params.inputReadThresholdBursts != relayParams.inputReadThresholdBursts -> RelayParamRules.ChangedField.BURSTS
+            params.inputReadThresholdExtraFrames != relayParams.inputReadThresholdExtraFrames -> RelayParamRules.ChangedField.EXTRA
+            params.inputBacklogThresholdFrames != relayParams.inputBacklogThresholdFrames -> RelayParamRules.ChangedField.BACKLOG
+            else -> RelayParamRules.ChangedField.GEOMETRY
+        }
+        val result = RelayParamRules.normalize(params, changed)
+        Snapshot.withMutableSnapshot { relayParams = result.params; parameterAdjustment = result.reason }
+    }
+
+    private fun normalizeThresholds(burst: Int? = null, size: Int? = null) {
+        val result = RelayParamRules.normalize(relayParams, RelayParamRules.ChangedField.GEOMETRY, burst, size)
+        Snapshot.withMutableSnapshot { relayParams = result.params; parameterAdjustment = result.reason }
+    }
+
+    fun sampleRateOptions(input: Boolean, id: Int): List<Int> {
+        if (input) return RelayParamRules.inputRates(inputDevices[id]?.sampleRates ?: intArrayOf())
+        val selected = selectedInputId?.let { inputDevices[it] }
+        val sync = selected?.let { paramsFor(true, it.id).sampleRateMode == SampleRateMode.SYNC_OUTPUT } ?: false
+        return RelayParamRules.outputRates(outputDevices[id]?.sampleRates ?: intArrayOf(), selected?.sampleRates, sync)
+    }
+
+    private fun normalizeSampleRates() {
+        Snapshot.withMutableSnapshot {
+            for ((id, device) in inputDevices) {
+                if (RelayParamRules.positiveRates(device.sampleRates).isEmpty())
+                    inputParams[id] = paramsFor(true, id).copy(sampleRateMode = SampleRateMode.SYNC_OUTPUT, sampleRate = 0)
+            }
+            for (id in outputDevices.keys) {
+                val options = sampleRateOptions(false, id)
+                val old = paramsFor(false, id)
+                val rate = if (old.sampleRate in options) old.sampleRate else options.firstOrNull() ?: 0
+                outputParams[id] = old.copy(sampleRate = rate,
+                    sampleRateMode = if (rate > 0) SampleRateMode.EXPLICIT else SampleRateMode.AUTO)
+            }
+        }
     }
 
     // ---- mixer ----
@@ -285,7 +302,10 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         if (!outputDevices.containsKey(outId)) return "转发未设置：输出设备 ID $outId 已不存在"
         val inParams = paramsFor(true, inId)
         val outParams = paramsFor(false, outId)
-        if (inParams.sampleRate > 0 && outParams.sampleRate > 0 &&
+        if (sampleRateOptions(false, outId).isEmpty()) return "转发已阻止：输出暂无可用采样率，请选择输入设备"
+        if (inParams.sampleRateMode == SampleRateMode.SYNC_OUTPUT && outParams.sampleRate <= 0)
+            return "转发已阻止：同步输出需要明确的输出采样率"
+        if (inParams.sampleRateMode == SampleRateMode.EXPLICIT && inParams.sampleRate > 0 && outParams.sampleRate > 0 &&
             inParams.sampleRate != outParams.sampleRate
         ) {
             return "转发已阻止：输入请求采样率 ${inParams.sampleRate} Hz 与输出请求采样率 " +
@@ -318,26 +338,31 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         clearSelectionOnStop = false
         val config = buildConfig()
         val masks = IntArray(effectiveOutputChannels) { mixerMask(it) }
+        activeSessionId = NativeRelay.nativeSessionId() + 1
         lifecycleJob = scope.launch {
-            val failure = withContext(Dispatchers.IO) {
-                try {
-                    NativeRelay.nativeStart(config, masks)
-                } catch (t: Throwable) {
-                    t.toString()
+            var failure: String? = null
+            try {
+                lastEventSequence = 0
+                pendingStatus = null
+                failure = withContext(Dispatchers.IO) { NativeRelay.nativePrepare(config, masks) }
+                if (failure == null && !stopRequested) {
+                    val geometry = withContext(Dispatchers.IO) {
+                        fun info(direction: Int) = NativeRelay.nativeStreamInfo(direction).orEmpty()
+                            .asList().chunked(2).associate { it[0] to it[1] }
+                        info(0)["FramesPerBurst"]?.toIntOrNull() to info(1)["BufferSizeInFrames"]?.toIntOrNull()
+                    }
+                    normalizeThresholds(geometry.first, geometry.second)
+                    val final = relayParams
+                    if (!stopRequested) failure = withContext(Dispatchers.IO) {
+                        NativeRelay.nativeStartPrepared(intArrayOf(final.inputReadThresholdBursts,
+                            final.inputReadThresholdExtraFrames, final.inputBacklogThresholdFrames))
+                    }
                 }
-            }
+            } catch (t: Throwable) { failure = t.toString() }
             if (failure == null && !stopRequested) {
-                forwarding = true
-                busy = false
-                startResyncPolling()
-                owner?.relayStarted()
+                forwarding = true; busy = false; owner?.relayStarted()
             } else {
-                if (failure != null) {
-                    showError(failure)
-                    clearSelectionOnStop = true
-                }
-                // A removal/error received during nativeStart must close the
-                // newly opened streams before the UI becomes usable again.
+                if (failure != null && !stopRequested) { showError(failure); errorHandledSessionId = activeSessionId; clearSelectionOnStop = true }
                 finishStopping()
             }
         }
@@ -348,19 +373,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         val outId = selectedOutputId!!
         val inParams = paramsFor(true, inId)
         val outParams = paramsFor(false, outId)
-        val relay = relayParams
-        return intArrayOf(
-            inId, inParams.channelCount, inParams.sampleRate, inParams.format,
-            if (inParams.exclusive) 1 else 0, inParams.performanceMode, inParams.inputPreset,
-            relay.inBufferCapacity, relay.inBufferSizeBursts,
-            outId, outParams.channelCount, outParams.sampleRate, outParams.format,
-            if (outParams.exclusive) 1 else 0, outParams.performanceMode, outParams.usage,
-            outParams.contentType, relay.outBufferCapacity, relay.outBufferSizeBursts,
-            if (relay.outAutoBufferSize) 1 else 0,
-            relay.inputReadThresholdBursts, relay.inputReadThresholdExtraFrames,
-            relay.inputBacklogThresholdFrames,
-            if (relay.inMMapEnabled) 1 else 0, if (relay.outMMapEnabled) 1 else 0,
-        )
+        return relayConfig(inId, inParams, outId, outParams, relayParams)
     }
 
     /**
@@ -389,8 +402,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     }
 
     private suspend fun finishStopping() {
-        resyncPollJob?.cancel()
-        resyncPollJob = null
+        pendingStatus = null
         val currentOwner = owner
         val closeError = withContext(Dispatchers.IO) {
             try {
@@ -413,12 +425,36 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         selectedInputId = null
         selectedOutputId = null
         mixer.clear()
+        normalizeSampleRates()
     }
 
     // ---- NativeRelay.Listener (arbitrary native thread) ----
 
-    @Keep // JNI looks up this exact method name; R8 cannot discover that reference.
-    override fun onNativeError(text: String) {
-        mainHandler.post { stopForwarding(text) }
+    @Keep
+    override fun onNativeError(sessionId: Long, text: String) {
+        mainHandler.post {
+            if (sessionId == activeSessionId && errorHandledSessionId != sessionId && (busy || forwarding)) {
+                errorHandledSessionId = sessionId
+                pendingStatus = null
+                stopForwarding(text)
+            }
+        }
+    }
+
+    @Keep
+    override fun onNativeEvent(sessionId: Long, sequence: Long, type: Int, value1: Long, value2: Long) {
+        mainHandler.post {
+            if (sessionId != activeSessionId || sequence <= lastEventSequence || stopRequested || (!busy && !forwarding)) return@post
+            lastEventSequence = sequence
+            val text = when (type) {
+                1 -> "清空积压缓冲"
+                2 -> "正在同步"
+                3 -> "开始正常转发"
+                4 -> "XRun 增加：输入 +$value1，输出 +$value2"
+                5 -> "输入读取门槛停滞，已放行一次非阻塞读取（available=$value1，F=$value2）"
+                else -> return@post
+            }
+            pendingStatus = StatusNotice(sequence, text)
+        }
     }
 }

@@ -6,7 +6,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(relay SHARED
         RelayEngine.cpp
+        RelayCallbackMachine.cpp
+        RelayEventDispatcher.cpp
         jni_bridge.cpp)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_sources(relay PRIVATE RelayCallbackMachineTest.cpp)
+endif()
 
 # Newer-than-minSdk AAudio symbols become weak references so the
 # __builtin_available guards work instead of failing the build.

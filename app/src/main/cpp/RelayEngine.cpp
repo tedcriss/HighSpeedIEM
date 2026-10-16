@@ -15,36 +15,6 @@
 namespace {
 
 constexpr int64_t kStateTimeoutNs = 2'000'000'000LL;
-constexpr int32_t kMinScratchFrames = 8192;
-// Like Oboe's full-duplex helper, discard startup capture backlog. Each
-// callback performs bounded non-blocking reads, including on MMAP. The
-// nominal counts are caps: phases may end earlier on confirmed stability
-// and the drain may extend while an obvious backlog remains, always bounded
-// by the hard caps and the total startup frame budget below.
-constexpr int32_t kStartupDrainCallbacks = 20;
-// OboeTester FullDuplexStream startup sequence: after the drain, optionally
-// let input accumulate a cushion (0 = skip), then run discard callbacks so
-// input and output reach equilibrium before forwarding starts.
-constexpr int32_t kStartupCushionCallbacks = 0;
-constexpr int32_t kStartupDiscardCallbacks = 30;
-// Consecutive "stable" callbacks (actual short reads plus a settled
-// availability hint) that confirm a startup phase is done.
-constexpr int32_t kStartupStableCallbacks = 3;
-// The discard phase must not enter normal forwarding on its count alone:
-// after the nominal count runs out it keeps confirming equilibrium until
-// this many consecutive stable callbacks, bounded by the hard cap.
-constexpr int32_t kDiscardStableCallbacks = 5;
-// Absolute callback caps for the drain/discard phases, including any
-// extensions granted while a backlog remains (~2s and ~1.5s of callbacks).
-constexpr int32_t kStartupDrainHardCap = 200;
-constexpr int32_t kStartupDiscardHardCap = 150;
-// Total frames the whole startup sync may discard (4 seconds of input).
-constexpr int64_t kStartupBudgetSeconds = 4;
-// Runtime backlog recovery: per-episode discard budget (1 second of input)
-// and post-episode cooldown (1 second of output) before a retrigger.
-constexpr int64_t kBacklogEpisodeSeconds = 1;
-constexpr int64_t kBacklogCooldownSeconds = 1;
-
 /**
  * Shared availability probe used by the callback input gate and streamInfo():
  * FramesWritten - FramesRead on one stream, via the 64-bit counters.
@@ -248,44 +218,76 @@ RelayEngine& RelayEngine::get() {
 }
 
 void RelayEngine::attachListener(JNIEnv* env, jobject newListener) {
-    env->GetJavaVM(&jvm);
+    JavaVM* vm = nullptr;
+    env->GetJavaVM(&vm);
+    jvm.store(vm, std::memory_order_release);
     std::lock_guard<std::mutex> lock(listenerMutex);
     if (listener) {
         env->DeleteGlobalRef(listener);
         listener = nullptr;
         onErrorMethod = nullptr;
+        onEventMethod = nullptr;
     }
     if (newListener) {
         listener = env->NewGlobalRef(newListener);
         jclass cls = env->GetObjectClass(listener);
-        onErrorMethod = env->GetMethodID(cls, "onNativeError", "(Ljava/lang/String;)V");
+        onErrorMethod = env->GetMethodID(cls, "onNativeError", "(JLjava/lang/String;)V");
+        onEventMethod = env->GetMethodID(cls, "onNativeEvent", "(JJIJJ)V");
         env->DeleteLocalRef(cls);
         if (!onErrorMethod) {
             env->ExceptionClear();
-            LOGE("listener missing onNativeError(String)");
+            LOGE("listener missing onNativeError(long, String)");
         }
     }
 }
 
-void RelayEngine::notifyError(const std::string& text) {
-    if (errorNotified.exchange(true)) return;  // report only the first failure per run
-    LOGE("%s", text.c_str());
-    std::lock_guard<std::mutex> lock(listenerMutex);
-    if (!jvm || !listener || !onErrorMethod) return;
+std::string RelayEngine::errorText(const RelayErrorRecord& error) {
+    std::string text;
+    switch (error.kind) {
+        case RelayErrorKind::Read: text = "AAudioStream_read(input): "; break;
+        case RelayErrorKind::Platform: text = "AAudio 错误回调: "; break;
+        case RelayErrorKind::Bounds: text = "音频内存边界错误: "; break;
+        case RelayErrorKind::Geometry: text = "音频几何参数错误: "; break;
+    }
+    text += AAudio_convertResultToText(error.code);
+    text += " state=" + std::to_string(error.state) + " requestedFrames=" + std::to_string(error.requestedFrames)
+          + " requiredBytes=" + std::to_string(error.requiredBytes) + " scratchBytes=" + std::to_string(error.scratchBytes);
+    return text;
+}
+void RelayEngine::deliverError(uint32_t session, const RelayErrorRecord& error) {
+    const auto text = errorText(error);
     JNIEnv* env = nullptr;
-    bool attached = false;
-    if (jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_EDETACHED) {
-        if (jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-        attached = true;
+    JavaVM* vm = jvm.load(std::memory_order_acquire);
+    if (!vm) return;
+    bool attached = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_EDETACHED;
+    if (attached && vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    jobject target = nullptr; jmethodID method = nullptr;
+    { std::lock_guard<std::mutex> lock(listenerMutex);
+      if (listener) target = env->NewLocalRef(listener); method = onErrorMethod; }
+    if (target && method) {
+        jstring value = env->NewStringUTF(text.c_str());
+        env->CallVoidMethod(target, method, static_cast<jlong>(session), value);
+        env->DeleteLocalRef(value);
     }
-    jstring jtext = env->NewStringUTF(text.c_str());
-    env->CallVoidMethod(listener, onErrorMethod, jtext);
-    env->DeleteLocalRef(jtext);
-    if (env->ExceptionCheck()) {
-        env->ExceptionDescribe();
-        env->ExceptionClear();
-    }
-    if (attached) jvm->DetachCurrentThread();
+    if (target) env->DeleteLocalRef(target);
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    if (attached) vm->DetachCurrentThread();
+}
+void RelayEngine::deliverEvent(const RelayEvent& event) {
+    JNIEnv* env = nullptr;
+    JavaVM* vm = jvm.load(std::memory_order_acquire);
+    if (!vm) return;
+    bool attached = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_EDETACHED;
+    if (attached && vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    jobject target = nullptr; jmethodID method = nullptr;
+    { std::lock_guard<std::mutex> lock(listenerMutex);
+      if (listener) target = env->NewLocalRef(listener); method = onEventMethod; }
+    if (target && method) env->CallVoidMethod(target, method, static_cast<jlong>(event.sessionId),
+        static_cast<jlong>(event.sequence), static_cast<jint>(event.type),
+        static_cast<jlong>(event.value1), static_cast<jlong>(event.value2));
+    if (target) env->DeleteLocalRef(target);
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    if (attached) vm->DetachCurrentThread();
 }
 
 std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks) {
@@ -385,11 +387,7 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);
     AAudioStreamBuilder_setDeviceId(builder, cfg.inDeviceId);
     if (cfg.inChannelCount > 0) AAudioStreamBuilder_setChannelCount(builder, cfg.inChannelCount);
-    // The relay has no resampler/converter. An automatic input must use the
-    // already-open output's PCM settings rather than independently choosing
-    // another hardware default (e.g. USB 44100 Hz vs speaker 48000 Hz).
-    AAudioStreamBuilder_setSampleRate(builder, cfg.inSampleRate > 0
-            ? cfg.inSampleRate : AAudioStream_getSampleRate(output));
+    if (cfg.inSampleRate > 0) AAudioStreamBuilder_setSampleRate(builder, cfg.inSampleRate);
     AAudioStreamBuilder_setFormat(builder, cfg.inFormat != AAUDIO_FORMAT_UNSPECIFIED
             ? static_cast<aaudio_format_t>(cfg.inFormat) : AAudioStream_getFormat(output));
     AAudioStreamBuilder_setSharingMode(builder,
@@ -456,46 +454,27 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
         return err;
     }
     format = outFormat;
-    outBurst = std::max(1, AAudioStream_getFramesPerBurst(output));
+    outBurst = AAudioStream_getFramesPerBurst(out);
+    if (outBurst <= 0) {
+        const auto error = std::string("输出 FramesPerBurst 无效: ") + valueOrError(outBurst);
+        std::string ignored; closeStreams(ignored); return error;
+    }
 
-    // Capacity is an allocation limit, not the amount queued for playback.
-    // AAudio's default can be many bursts (8 on the tested Xiaomi). With the
-    // automatic output sizing, match OboeTester's default of two bursts for
-    // the requested low-latency mode, including when a device falls back to
-    // PERFORMANCE_MODE_NONE.
     outputCapacity = AAudioStream_getBufferCapacityInFrames(out);
-    if (cfg.outAutoBufferSize) {
-        tuneBuffer = cfg.outPerformanceMode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;
-        if (tuneBuffer) {
-            int32_t requested = std::min(outputCapacity, outBurst * 2);
-            result = AAudioStream_setBufferSizeInFrames(out, requested);
-            if (result < 0) {
-                std::string err = std::string("AAudioStream_setBufferSizeInFrames(output): ") +
-                                  AAudio_convertResultToText(result);
-                std::string ignored;
-                closeStreams(ignored);
-                return err;
-            }
-            LOGI("output BufferSizeInFrames auto: requested %d -> actual %d", requested, result);
+    inputCapacity = AAudioStream_getBufferCapacityInFrames(in);
+    if (outputCapacity <= 0 || inputCapacity <= 0 || bytesPerFrame(format) <= 0) {
+        std::string ignored; closeStreams(ignored);
+        return "无效音频 capacity / PCM format";
+    }
+    if (cfg.outBufferSizeBursts > 0) {
+        const int32_t requested = static_cast<int32_t>(std::min<int64_t>(outputCapacity,
+                int64_t(outBurst) * cfg.outBufferSizeBursts));
+        result = AAudioStream_setBufferSizeInFrames(out, requested);
+        if (result < 0) {
+            std::string err = std::string("AAudioStream_setBufferSizeInFrames(output): ") + AAudio_convertResultToText(result);
+            std::string ignored; closeStreams(ignored); return err;
         }
-    } else {
-        // Manual sizing: never adaptively retune, tuneOutputBuffer() would
-        // override the user's choice. The setter may not honor the request
-        // exactly; record the actual value it returns.
-        tuneBuffer = false;
-        if (cfg.outBufferSizeBursts > 0) {
-            int32_t requested = outBurst * cfg.outBufferSizeBursts;
-            if (outputCapacity > 0) requested = std::min(requested, outputCapacity);
-            result = AAudioStream_setBufferSizeInFrames(out, requested);
-            if (result < 0) {
-                std::string err = std::string("AAudioStream_setBufferSizeInFrames(output): ") +
-                                  AAudio_convertResultToText(result);
-                std::string ignored;
-                closeStreams(ignored);
-                return err;
-            }
-            LOGI("output BufferSizeInFrames manual: requested %d -> actual %d", requested, result);
-        }
+        LOGI("output BufferSizeInFrames requested %d -> actual %d", requested, result);
     }
 
     // Input sizing is best effort: not every backend honors it and it is not
@@ -503,7 +482,7 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     if (cfg.inBufferSizeBursts > 0) {
         int32_t inBurst = std::max(1, AAudioStream_getFramesPerBurst(in));
         int32_t inCapacity = AAudioStream_getBufferCapacityInFrames(in);
-        int32_t requested = inBurst * cfg.inBufferSizeBursts;
+        int32_t requested = static_cast<int32_t>(std::min<int64_t>(inCapacity, int64_t(inBurst) * cfg.inBufferSizeBursts));
         if (inCapacity > 0) requested = std::min(requested, inCapacity);
         int32_t actual = AAudioStream_setBufferSizeInFrames(in, requested);
         if (actual < 0) {
@@ -514,35 +493,20 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
         }
     }
 
-    // Input read threshold F = bursts * actual output burst + extra frames;
-    // 0 keeps the always-read path and skips every callback-side query.
-    inputThresholdFrames = static_cast<int64_t>(cfg.inputReadThresholdBursts) * outBurst +
-                           cfg.inputReadThresholdExtraFrames;
-    gateStallFrames = 0;
-    gateStallLogged = false;
-    // Ignore startup underruns, then check at most four times per second.
-    tuneCountdown = outRate / 2;
-    previousXRunCount = -1;
-    startupDrainCallbacks = kStartupDrainCallbacks;
-    startupCushionCallbacks = kStartupCushionCallbacks;
-    startupDiscardCallbacks = kStartupDiscardCallbacks;
-    startupDrainHardLeft = kStartupDrainHardCap;
-    startupDiscardHardLeft = kStartupDiscardHardCap;
-    startupStableCount = 0;
-    startupPrevAvailable = -1;
-    startupBudgetFrames = kStartupBudgetSeconds * std::max(inRate, outRate);
-    startupFramesDiscarded = 0;
-    // Runtime backlog recovery: 0 keeps the feature fully disabled.
-    backlogThresholdFrames = std::max(0, cfg.inputBacklogThresholdFrames);
-    backlogRecovering = false;
-    backlogEpisodeBudget = 0;
-    backlogPrevAvailable = -1;
-    backlogCooldownFrames = 0;
-    resyncEvents.store(0, std::memory_order_relaxed);
-
-    scratchFrames = std::max(kMinScratchFrames, outBurst * 4);
-    scratch.assign(static_cast<size_t>(scratchFrames) * inChannels * bytesPerFrame(format), 0);
-    inputDrainFrames = std::max(1, AAudioStream_getBufferCapacityInFrames(in));
+    inputBytesPerFrame = static_cast<size_t>(inChannels) * bytesPerFrame(inFormat);
+    outputBytesPerFrame = static_cast<size_t>(outChannels) * bytesPerFrame(outFormat);
+    size_t scratchBytes = 0;
+    if (!RelayCallbackMachine::checkedMultiply(std::max(inputCapacity, outputCapacity),
+            std::max(inChannels, outChannels), scratchBytes) ||
+        !RelayCallbackMachine::checkedMultiply(scratchBytes,
+            std::max(bytesPerFrame(inFormat), bytesPerFrame(outFormat)), scratchBytes)) {
+        std::string ignored; closeStreams(ignored); return "scratch allocation size_t overflow";
+    }
+#ifndef NDEBUG
+    if (failAllocation) { failAllocation = false; throw std::bad_alloc(); }
+#endif
+    scratch.assign(scratchBytes, 0);
+    startupFramesDiscarded = 0; runtimeFramesDiscarded = 0;
 #ifndef NDEBUG
     nonSilentOutputSeen = false;
 #endif
@@ -553,10 +517,25 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
                              std::memory_order_relaxed);
     }
 
-    // ---- start: request input, wait for input STARTED, request output,
-    // wait for output STARTED. callbackReady arms the data callback before
-    // the output request so callbacks firing during the output STARTED wait
-    // already run the startup drain instead of being gated by running. ----
+    return "";
+}
+
+std::string RelayEngine::startPrepared(const std::vector<int32_t>& thresholds) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex);
+    if (!input || !output || running || callbackReady || thresholds.size() != 3 || events.exiting())
+        return "startPrepared: invalid state / thresholds / stop requested";
+    const int bursts = thresholds[0], extra = thresholds[1], backlog = thresholds[2];
+    const bool validExtra = extra == 0 || (extra > 0 && extra <= 1024 && (extra & (extra - 1)) == 0);
+    const bool validBacklog = backlog == 0 || (backlog >= 100 && backlog <= 1000 && backlog % 100 == 0)
+            || (backlog >= 2000 && backlog <= 10000 && backlog % 1000 == 0);
+    if (bursts < 0 || bursts > 10 || !validExtra || !validBacklog)
+        return "startPrepared: invalid thresholds";
+    const int64_t raw = int64_t(bursts) * outBurst + extra;
+    const int size = AAudioStream_getBufferSizeInFrames(input);
+    if (backlog > 0 && backlog <= (size > 0 ? std::min(raw, int64_t(size)) : raw))
+        return "startPrepared: inputBacklogThresholdFrames must exceed F_effective";
+    callbackMachine.prepare(raw, backlog);
+    aaudio_result_t result;
     callbackReady.store(true, std::memory_order_release);
     aaudio_stream_state_t nextState = AAUDIO_STREAM_STATE_UNKNOWN;
     result = AAudioStream_requestStart(input);
@@ -590,22 +569,45 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
         closeStreams(ignored);
         return err;
     }
+    if (events.exiting()) {
+        std::string ignored; closeStreams(ignored);
+        RelayErrorRecord record;
+        return events.fatalRecord(record) ? errorText(record) : "startPrepared: stop requested";
+    }
+    running = true;
     LOGI("relay started: %dch %dHz %s -> %dch, mmap=%d", inChannels, inRate, formatName(format),
          outChannels, isMMapUsedFn() ? (int)isMMapUsedFn()(output) : -1);
     return "";
 }
 
-std::string RelayEngine::start(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks) {
+std::string RelayEngine::prepare(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks) {
     std::lock_guard<std::mutex> lock(lifecycleMutex);
-    if (input || output) {
-        return "启动转发被拒绝：引擎仍持有未释放的音频流，请先停止转发";
+    if (input || output) return "准备被拒绝：请先停止转发";
+    if (cfg.inChannelCount < 0 || cfg.inChannelCount > 32 || cfg.outChannelCount < 0 || cfg.outChannelCount > 32 ||
+        cfg.inSampleRate < 0 || cfg.outSampleRate < 0 || cfg.inBufferCapacity < 0 || cfg.outBufferCapacity < 0 ||
+        cfg.inBufferSizeBursts < 0 || cfg.inBufferSizeBursts > 16 || cfg.outBufferSizeBursts < 0 || cfg.outBufferSizeBursts > 16)
+        return "音频准备失败：无效的通道数、采样率或缓冲参数";
+    {
+        std::lock_guard<std::mutex> listenerLock(listenerMutex);
+        if (!listener || !onErrorMethod || !onEventMethod)
+            return "音频准备失败：原生事件监听器尚未就绪";
     }
-    errorNotified = false;
-    // The MMAP policy is per-direction now and applied inside openStreams
-    // right before each open; no process-global default is forced here.
-    std::string error = openStreams(cfg, mixerMasks);
-    if (error.empty()) running = true;
-    return error;
+    events.stop();
+    currentSession.fetch_add(1);
+    if (auto error = events.prepare(*this, currentSession.load()); !error.empty()) return error;
+    try {
+        auto error = openStreams(cfg, mixerMasks);
+        if (error.empty() && events.exiting()) {
+            std::string ignored; closeStreams(ignored);
+            RelayErrorRecord record;
+            error = events.fatalRecord(record) ? errorText(record) : "prepare: stop requested";
+        }
+        if (!error.empty()) { std::string ignored; closeStreams(ignored); scratch.clear(); events.stop(); }
+        return error;
+    } catch (const std::exception& e) {
+        std::string ignored; closeStreams(ignored); scratch.clear(); events.stop();
+        return std::string("音频准备失败: ") + e.what();
+    }
 }
 
 void RelayEngine::closeStreams(std::string& firstError) {
@@ -632,26 +634,13 @@ void RelayEngine::closeStreams(std::string& firstError) {
 std::string RelayEngine::stop() {
     std::lock_guard<std::mutex> lock(lifecycleMutex);
     running = false;
+    events.requestStop();
     std::string firstError;
     closeStreams(firstError);
-    scratch.clear();
-    scratch.shrink_to_fit();
-    scratchFrames = 0;
+    events.stop();
+    std::vector<uint8_t>().swap(scratch);
     inChannels = outChannels = inRate = outRate = outBurst = 0;
-    inputThresholdFrames = 0;
-    gateStallFrames = 0;
-    gateStallLogged = false;
-    startupDrainCallbacks = 0;
-    startupCushionCallbacks = 0;
-    startupDiscardCallbacks = 0;
-    startupStableCount = 0;
-    startupPrevAvailable = -1;
-    startupBudgetFrames = 0;
-    backlogThresholdFrames = 0;
-    backlogRecovering = false;
-    backlogEpisodeBudget = 0;
-    backlogPrevAvailable = -1;
-    backlogCooldownFrames = 0;
+    inputBytesPerFrame = outputBytesPerFrame = 0;
     return firstError;
 }
 
@@ -669,13 +658,14 @@ aaudio_data_callback_result_t RelayEngine::dataCallback(AAudioStream* stream, vo
 
 void RelayEngine::errorCallback(AAudioStream* stream, void* userData, aaudio_result_t error) {
     auto* engine = static_cast<RelayEngine*>(userData);
-    const char* dir = AAudioStream_getDirection(stream) == AAUDIO_DIRECTION_INPUT ? "输入流" : "输出流";
-    engine->notifyError(std::string("AAudio 错误回调（") + dir + "）: " +
-                        AAudio_convertResultToText(error));
+    engine->callbackMachine.requestExit({RelayErrorKind::Platform, error,
+            static_cast<int32_t>(engine->callbackMachine.stateSnapshot()), 0, 0, 0});
 }
 
 void RelayEngine::fillSilence(void* audioData, int32_t fromFrame, int32_t toFrame) {
-    if (fromFrame >= toFrame) return;
+    size_t safeBytes;
+    if (!audioData || fromFrame < 0 || fromFrame >= toFrame || !outputBytesPerFrame ||
+        !RelayCallbackMachine::checkedMultiply(static_cast<size_t>(toFrame), outputBytesPerFrame, safeBytes)) return;
     int32_t frameBytes = outChannels * bytesPerFrame(format);
     auto* base = static_cast<uint8_t*>(audioData) + static_cast<size_t>(fromFrame) * frameBytes;
     std::memset(base, 0, static_cast<size_t>(toFrame - fromFrame) * frameBytes);
@@ -723,316 +713,8 @@ void RelayEngine::mixFrames(const void* in, void* out, int32_t frames, int32_t o
 #endif
 }
 
-aaudio_result_t RelayEngine::tuneOutputBuffer(int32_t numFrames) {
-    if (!tuneBuffer) return AAUDIO_OK;
-    tuneCountdown -= numFrames;
-    if (tuneCountdown > 0) return AAUDIO_OK;
-    tuneCountdown = std::max(1, outRate / 4);
-    AAudioStream* out = output.load();
-    int32_t xruns = AAudioStream_getXRunCount(out);
-    if (xruns < 0) {
-        // Some backends cannot report xruns. Keep the initial buffer size.
-        tuneBuffer = false;
-        return AAUDIO_OK;
-    }
-    if (previousXRunCount >= 0 && xruns > previousXRunCount) {
-        int32_t size = AAudioStream_getBufferSizeInFrames(out);
-        if (size < outputCapacity) {
-            int32_t result = AAudioStream_setBufferSizeInFrames(
-                    out, std::min(outputCapacity, size + outBurst));
-            if (result < 0) return result;
-        }
-    }
-    previousXRunCount = xruns;
-    return AAUDIO_OK;
-}
-
 aaudio_data_callback_result_t RelayEngine::render(void* audioData, int32_t numFrames) {
-    AAudioStream* in = input;
-    if (!in || !callbackReady.load(std::memory_order_acquire)) {
-        fillSilence(audioData, 0, numFrames);
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-
-    // Always enter the non-blocking read below. Exclusive MMAP capture processes
-    // service timestamps and refreshes its clock model inside read(); frame
-    // getters alone can remain at zero until that happens. Gating the first
-    // read on those getters deadlocks capture while output keeps playing silence.
-    // read(..., 0) also processes pending input errors and never waits for data.
-
-    if (startupDrainCallbacks > 0) {
-        // Per-callback work is bounded by one input capacity and by the
-        // remaining startup budget, so neither a continuously producing
-        // device nor an anomalous MMAP counter can make this loop unbounded.
-        int32_t cap = inputDrainFrames;
-        if (startupBudgetFrames < cap) {
-            cap = static_cast<int32_t>(std::max<int64_t>(0, startupBudgetFrames));
-        }
-        int32_t total = 0;
-        bool shortRead = false;
-        while (total < cap) {
-            int32_t want = std::min({numFrames, scratchFrames, cap - total});
-            int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
-            if (got < 0) {
-                notifyError(std::string("AAudioStream_read(input): ") + AAudio_convertResultToText(got));
-                fillSilence(audioData, 0, numFrames);
-                return AAUDIO_CALLBACK_RESULT_STOP;
-            }
-            total += got;
-            if (got < want) {
-                shortRead = true;  // actual reads found nothing more right now
-                break;
-            }
-        }
-        if (total > 0) {
-            startupFramesDiscarded.fetch_add(static_cast<uint32_t>(total), std::memory_order_relaxed);
-            startupBudgetFrames -= total;
-        }
-        fillSilence(audioData, 0, numFrames);
-
-        // Completion is confirmed by the actual read result first: a short
-        // read means the input was consumed to the last immediately-readable
-        // frame. The availability hint only corroborates that no obvious
-        // backlog remains — it is never treated as the readable count.
-        int64_t available = getAvailableFrames(in);
-        int64_t slack = std::max(numFrames * 2, outBurst * 2);
-        bool backlogHint = available > slack;
-        bool hitCap = cap > 0 && total >= cap && !shortRead;
-        if (shortRead && !backlogHint) ++startupStableCount;
-        else startupStableCount = 0;
-
-        bool drainDone;
-        if (startupStableCount >= kStartupStableCallbacks || startupBudgetFrames <= 0 ||
-            startupDrainHardLeft <= 0) {
-            drainDone = true;  // sync confirmed, or a hard bound forces the exit
-        } else if (hitCap && backlogHint) {
-            // Work cap hit with an obvious backlog left: keep the nominal
-            // count and continue draining on subsequent callbacks. Only the
-            // hard cap and the total budget bound this extension.
-            --startupDrainHardLeft;
-            drainDone = false;
-        } else {
-            --startupDrainCallbacks;
-            --startupDrainHardLeft;
-            drainDone = startupDrainCallbacks <= 0;
-        }
-        if (drainDone) {
-            startupDrainCallbacks = 0;
-            startupStableCount = 0;
-            startupPrevAvailable = -1;
-        }
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-
-    if (startupCushionCallbacks > 0) {
-        // Cushion phase: skip reading entirely and let input accumulate a
-        // little data so the read pointer stays off the write pointer.
-        --startupCushionCallbacks;
-        fillSilence(audioData, 0, numFrames);
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-
-    if (startupDiscardCallbacks > 0) {
-        // Equilibrium phase: one bounded non-blocking attempt at up to this
-        // callback's numFrames, discarded. Never loop-drain the whole input
-        // here and never wait for a full read; the remaining startup budget
-        // caps the total work.
-        int32_t cap = numFrames;
-        if (startupBudgetFrames < cap) {
-            cap = static_cast<int32_t>(std::max<int64_t>(0, startupBudgetFrames));
-        }
-        int32_t readOffset = 0;
-        while (readOffset < cap) {
-            int32_t want = std::min(cap - readOffset, scratchFrames);
-            int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
-            if (got < 0) {
-                notifyError(std::string("AAudioStream_read(input): ") +
-                            AAudio_convertResultToText(got));
-                fillSilence(audioData, 0, numFrames);
-                return AAUDIO_CALLBACK_RESULT_STOP;
-            }
-            if (got == 0) break;  // nothing immediately readable; do not spin
-            readOffset += got;
-        }
-        if (readOffset > 0) {
-            startupFramesDiscarded.fetch_add(static_cast<uint32_t>(readOffset),
-                                             std::memory_order_relaxed);
-            startupBudgetFrames -= readOffset;
-        }
-        fillSilence(audioData, 0, numFrames);
-
-        // Equilibrium confirmation combines the actual read result (a short
-        // read consumed everything immediately readable) with a settled
-        // availability hint across callbacks. The hint is never trusted as
-        // the readable count on its own.
-        int64_t available = getAvailableFrames(in);
-        int64_t drift = (available >= 0 && startupPrevAvailable >= 0)
-                        ? (available > startupPrevAvailable ? available - startupPrevAvailable
-                                                            : startupPrevAvailable - available)
-                        : -1;
-        bool settled = readOffset < cap || (drift >= 0 && drift <= numFrames);
-        if (available >= 0) startupPrevAvailable = available;
-        if (settled) ++startupStableCount;
-        else startupStableCount = 0;
-
-        --startupDiscardHardLeft;
-        bool forced = startupDiscardHardLeft <= 0 || startupBudgetFrames <= 0;
-        if (startupDiscardCallbacks > 1 && !forced) {
-            --startupDiscardCallbacks;
-        } else if (startupStableCount >= kDiscardStableCallbacks || forced) {
-            // Nominal count exhausted: normal forwarding starts only with
-            // confirmed equilibrium, or when a hard bound forces the exit.
-            startupDiscardCallbacks = 0;
-            startupStableCount = 0;
-            startupPrevAvailable = -1;
-        }
-        // else: count exhausted but equilibrium not yet confirmed — keep
-        // confirming on subsequent callbacks, bounded by the hard cap.
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-
-    int32_t tuneResult = tuneOutputBuffer(numFrames);
-    if (tuneResult < 0) {
-        notifyError(std::string("AAudioStream_setBufferSizeInFrames(output): ") +
-                    AAudio_convertResultToText(tuneResult));
-        fillSilence(audioData, 0, numFrames);
-        return AAUDIO_CALLBACK_RESULT_STOP;
-    }
-
-    // Runtime backlog recovery, independent of the startup sync above and of
-    // the read-threshold gate below; threshold 0 disables it completely. The
-    // availability hint is not the immediately-readable count, so recovery
-    // acts only through bounded timeout-0 reads and aborts whenever they
-    // stop making progress — a stale counter can never discard into
-    // ever-longer silence. Hysteresis (recover to half the threshold) plus a
-    // post-episode cooldown prevent retrigger flapping. One lightweight
-    // atomic event is recorded per episode; the UI polls it off the realtime
-    // thread. The output is silent while an episode discards old input.
-    if (backlogThresholdFrames > 0) {
-        if (backlogCooldownFrames > 0) backlogCooldownFrames -= numFrames;
-        int64_t available = getAvailableFrames(in);
-        if (!backlogRecovering && backlogCooldownFrames <= 0 &&
-            available > backlogThresholdFrames) {
-            backlogRecovering = true;
-            backlogEpisodeBudget = kBacklogEpisodeSeconds * std::max(inRate, 1);
-            backlogPrevAvailable = available;
-            resyncEvents.fetch_add(1, std::memory_order_relaxed);
-            LOGI("输入积压恢复触发: available=%lld > threshold=%lld",
-                 static_cast<long long>(available),
-                 static_cast<long long>(backlogThresholdFrames));
-        }
-        if (backlogRecovering) {
-            int32_t cap = inputDrainFrames;
-            if (backlogEpisodeBudget < cap) {
-                cap = static_cast<int32_t>(std::max<int64_t>(0, backlogEpisodeBudget));
-            }
-            int32_t total = 0;
-            while (total < cap) {
-                int32_t want = std::min({numFrames, scratchFrames, cap - total});
-                int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
-                if (got < 0) {
-                    notifyError(std::string("AAudioStream_read(input): ") +
-                                AAudio_convertResultToText(got));
-                    fillSilence(audioData, 0, numFrames);
-                    return AAUDIO_CALLBACK_RESULT_STOP;
-                }
-                total += got;
-                if (got < want) break;
-            }
-            if (total > 0) backlogEpisodeBudget -= total;
-            int64_t after = getAvailableFrames(in);
-            bool recovered = after >= 0 && after <= backlogThresholdFrames / 2;
-            // Reads found nothing, or the hint did not drop although frames
-            // were consumed: no progress, end the episode now.
-            bool noProgress = total == 0 ||
-                              (after >= 0 && backlogPrevAvailable >= 0 &&
-                               after >= backlogPrevAvailable);
-            if (recovered || noProgress || backlogEpisodeBudget <= 0) {
-                backlogRecovering = false;
-                backlogPrevAvailable = -1;
-                backlogCooldownFrames = kBacklogCooldownSeconds * std::max(outRate, 1);
-            } else {
-                backlogPrevAvailable = after;
-            }
-            fillSilence(audioData, 0, numFrames);
-            return AAUDIO_CALLBACK_RESULT_CONTINUE;
-        }
-    }
-
-    // Input read threshold gate (F), normal forwarding phase only: the
-    // startup drain/cushion/discard phases above always read, which also
-    // services the exclusive-MMAP timestamps and clock model before the gate
-    // ever runs. F == 0 keeps the legacy always-read path and skips every
-    // availability query below. Reads that pass the gate still request
-    // numFrames — F is a minimum-availability floor before reading, never the
-    // read size. No blocking, no locks, no allocation on any gate path.
-    if (inputThresholdFrames > 0) {
-        // Re-read the actual input buffer size every callback: the setter may
-        // not have honored the request exactly, and F must never exceed it.
-        int64_t threshold = inputThresholdFrames;
-        int32_t inBufferSize = AAudioStream_getBufferSizeInFrames(in);
-        if (inBufferSize > 0 && threshold > inBufferSize) threshold = inBufferSize;
-        int64_t available = getAvailableFrames(in);
-        if (available >= 0 && available < threshold) {
-            // Below the floor: do not consume input this callback; silence.
-            // Safety valve: the frame counters can stall (exclusive MMAP
-            // services them inside read()/timestamp processing), and a stalled
-            // low value would otherwise mute the output forever. After one
-            // second of continuous gating — far beyond any legitimate fill
-            // time, since threshold <= input buffer size — fall back to the
-            // normal non-blocking read, degrading to pre-gate behavior
-            // instead of permanent silence.
-            gateStallFrames += numFrames;
-            if (gateStallFrames <= std::max(1, outRate)) {
-                fillSilence(audioData, 0, numFrames);
-                return AAUDIO_CALLBACK_RESULT_CONTINUE;
-            }
-            if (!gateStallLogged) {
-                gateStallLogged = true;
-                LOGE("render: input gate stalled (available=%lld < F=%lld) for over 1s; "
-                     "falling back to ungated reads",
-                     static_cast<long long>(available), static_cast<long long>(threshold));
-            }
-        } else {
-            // Threshold met, or the availability query failed: fail open and
-            // read normally; a failed probe must never gate audio.
-            gateStallFrames = 0;
-        }
-    }
-
-    Plan p;
-    const uint32_t validInputs = UINT32_MAX >> (32 - inChannels);
-    for (int32_t o = 0; o < outChannels; ++o) {
-        p.masks[o] = routingMasks[o].load(std::memory_order_relaxed) & validInputs;
-        p.counts[o] = __builtin_popcount(p.masks[o]);
-    }
-
-    // Equal sample rates are validated before starting; frames map 1:1.
-    int32_t framesToRead = numFrames;
-
-    int32_t readOffset = 0;
-    int32_t outOffset = 0;
-    while (readOffset < framesToRead) {
-        int32_t want = std::min(framesToRead - readOffset, scratchFrames);
-        int32_t got = AAudioStream_read(in, scratch.data(), want, 0);
-        if (got < 0) {
-            LOGE("render: AAudioStream_read -> %s", AAudio_convertResultToText(got));
-            notifyError(std::string("AAudioStream_read(input): ") + AAudio_convertResultToText(got));
-            fillSilence(audioData, outOffset, numFrames);
-            return AAUDIO_CALLBACK_RESULT_STOP;
-        }
-        if (got > 0) {
-            mixFrames(scratch.data(), audioData, got, outOffset, p);
-            outOffset += got;  // equal rates: input frames map 1:1 to output
-            readOffset += got;
-        }
-        if (got < want) {
-            // Short read: pad the tail with silence up to the requested size.
-            fillSilence(audioData, outOffset, numFrames);
-            return AAUDIO_CALLBACK_RESULT_CONTINUE;
-        }
-    }
-    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    return callbackMachine.process(audioData, numFrames);
 }
 
 std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t direction) {
@@ -1098,7 +780,10 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
     add("XRunCount", valueOrError(AAudioStream_getXRunCount(s)));
     if (direction == AAUDIO_DIRECTION_INPUT) {
         add("StartupFramesDiscarded", std::to_string(startupFramesDiscarded.load()));
-        add("BacklogResyncEvents", std::to_string(resyncEvents.load(std::memory_order_relaxed)));
+        add("RuntimeFramesDiscarded", std::to_string(runtimeFramesDiscarded.load()));
+        const char* states[] = {"DRAIN", "DISCARD", "RUNNING", "EXIT"};
+        const auto state = callbackMachine.stateSnapshot();
+        add("CallbackState", state < 4 ? states[state] : "Unknown");
     }
 #ifndef NDEBUG
     if (direction == AAUDIO_DIRECTION_OUTPUT) {

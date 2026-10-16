@@ -115,7 +115,7 @@ class ErrorReportingTest {
     @Test
     fun nativeErrorDuringStartIsNotLost() {
         val raw = "AAudio 错误回调（输入流）: AAUDIO_ERROR_DISCONNECTED"
-        startRelay { session.onNativeError(raw) }
+        startRelay { session.onNativeError(session.activeSessionId, raw) }
         awaitMessage(raw)
         await("Native error during startup was ignored") { !session.busy && !session.forwarding }
         assertTrue(NativeRelay.nativeStreamInfo(AAudio.DIRECTION_INPUT).orEmpty().isEmpty())
@@ -180,8 +180,8 @@ class ErrorReportingTest {
             val output = session.outputDevices.values.first { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
             session.toggleInputSelection(input.id)
             session.toggleOutputSelection(output.id)
-            session.setParams(true, input.id, StreamParams(channelCount = 1, sampleRate = 48000, format = AAudio.FORMAT_PCM_FLOAT))
-            session.setParams(false, output.id, StreamParams(channelCount = 2, sampleRate = 48000, format = AAudio.FORMAT_PCM_FLOAT))
+            session.setParams(true, input.id, StreamParams(channelCount = 1, sampleRateMode = SampleRateMode.EXPLICIT, sampleRate = 48000, format = AAudio.FORMAT_PCM_FLOAT))
+            session.setParams(false, output.id, StreamParams(channelCount = 2, sampleRateMode = SampleRateMode.EXPLICIT, sampleRate = 48000, format = AAudio.FORMAT_PCM_FLOAT))
             session.toggleMixerChannel(0, 0)
             session.startEngine(object : RelaySession.Owner {
                 override fun relayStarted() = Unit

@@ -18,13 +18,7 @@ data class RelayParams(
      */
     val inBufferSizeBursts: Int = 0,
     /** Output buffer size as a multiple of FramesPerBurst; 0 = setter not called. */
-    val outBufferSizeBursts: Int = 0,
-    /**
-     * true = existing automatic output sizing (initial 2×burst in low-latency
-     * mode plus adaptive growth on xruns) and [outBufferSizeBursts] is ignored;
-     * false = manual sizing and no adaptive retuning.
-     */
-    val outAutoBufferSize: Boolean = true,
+    val outBufferSizeBursts: Int = 4,
     /**
      * Input read threshold F = [inputReadThresholdBursts] × actual output
      * FramesPerBurst + [inputReadThresholdExtraFrames]: the minimum frames
@@ -33,13 +27,7 @@ data class RelayParams(
      */
     val inputReadThresholdBursts: Int = 0,
     val inputReadThresholdExtraFrames: Int = 0,
-    /**
-     * Runtime backlog recovery threshold in frames: while forwarding, an
-     * input availability above this value triggers one bounded resync-discard
-     * episode (snackbar notice, no error, no stop). 0 disables the runtime
-     * recovery entirely; startup sync is unaffected. Independent of the read
-     * threshold above and NOT clamped to the input BufferSizeInFrames.
-     */
+    /** Above this backlog return to DRAIN. 0 disables the check. */
     val inputBacklogThresholdFrames: Int = 0,
     /**
      * true = preserve the platform MMAP policy for the input (system may use MMAP

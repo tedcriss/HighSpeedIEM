@@ -598,7 +598,7 @@ private fun pollStream(direction: Int): List<Pair<String, String>> {
     val flat = try {
         NativeRelay.nativeStreamInfo(direction)
     } catch (e: Exception) {
-        null
+        return listOf("Error" to e.toString())
     } ?: return emptyList()
     return flat.asList().chunked(2).map { (key, value) -> key to value }
 }

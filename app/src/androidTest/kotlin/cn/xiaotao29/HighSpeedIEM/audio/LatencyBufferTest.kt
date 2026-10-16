@@ -40,7 +40,8 @@ class LatencyBufferTest {
         ) as MainActivity
         instrumentation.waitForIdleSync()
         NativeRelay.nativeAttachListener(object : NativeRelay.Listener {
-            override fun onNativeError(text: String) { nativeError.set(text) }
+            override fun onNativeError(sessionId: Long, text: String) { nativeError.set(text) }
+            override fun onNativeEvent(sessionId: Long, sequence: Long, type: Int, value1: Long, value2: Long) = Unit
         })
     }
 
@@ -53,15 +54,15 @@ class LatencyBufferTest {
 
     @Test
     fun bufferSnapshot() {
-        assertNull(NativeRelay.nativeStart(config(), intArrayOf(1, 1)))
+        assertNull(startTestRelay(config(), intArrayOf(1, 1)))
         val initial = info(0)
         Log.i("LatencyBufferTest", "initial output=$initial")
         val burst = initial.getValue("FramesPerBurst").toInt()
         val capacity = initial.getValue("BufferCapacityInFrames").toInt()
         val size = initial.getValue("BufferSizeInFrames").toInt()
         assertTrue(size in 1..capacity)
-        if (arguments.getString("requireTwoBursts") == "true") {
-            assertEquals(minOf(capacity, burst * 2), size)
+        if (arguments.getString("requireFourBursts") == "true") {
+            assertEquals(minOf(capacity, burst * 4), size)
         }
         repeat(5) {
             SystemClock.sleep(500)
@@ -81,8 +82,8 @@ class LatencyBufferTest {
     }
 
     @Test
-    fun normalPerformanceKeepsPlatformBufferSize() {
-        assertNull(NativeRelay.nativeStart(config(AAudio.PERFORMANCE_NONE, 4096), intArrayOf(1, 1)))
+    fun normalPerformanceUsesExplicitBufferSize() {
+        assertNull(startTestRelay(config(AAudio.PERFORMANCE_NONE, 4096), intArrayOf(1, 1)))
         val initial = info(0)
         SystemClock.sleep(1500)
         val later = info(0)
@@ -101,7 +102,7 @@ class LatencyBufferTest {
             inId, inChannels, 48000, AAudio.FORMAT_PCM_I16, 1,
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0, 0,
             outId, 2, 48000, AAudio.FORMAT_PCM_I16, 0,
-            performance, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC, capacity, 0, 1, 0, 0, 0, 1, 1,
+            performance, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC, capacity, 4, 0, 0, 0, 1, 1,
         )
     }
 

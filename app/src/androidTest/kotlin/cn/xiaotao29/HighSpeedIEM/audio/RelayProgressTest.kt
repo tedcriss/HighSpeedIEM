@@ -40,7 +40,8 @@ class RelayProgressTest {
         ) as MainActivity
         instrumentation.waitForIdleSync()
         NativeRelay.nativeAttachListener(object : NativeRelay.Listener {
-            override fun onNativeError(text: String) { nativeError.set(text) }
+            override fun onNativeError(sessionId: Long, text: String) { nativeError.set(text) }
+            override fun onNativeEvent(sessionId: Long, sequence: Long, type: Int, value1: Long, value2: Long) = Unit
         })
     }
 
@@ -81,7 +82,7 @@ class RelayProgressTest {
     }
 
     @Test
-    fun automaticInputUsesOutputPcmSettings() {
+    fun frontEndResolvedInputUsesOutputPcmSettings() {
         verifyProgress(exclusive = false, format = AAudio.FORMAT_PCM_I16,
             sampleRate = 44100, automaticInput = true)
     }
@@ -92,15 +93,15 @@ class RelayProgressTest {
         val outId = arguments.getString("outputDeviceId")?.toInt() ?: 0
         val inChannels = arguments.getString("inputChannels")?.toInt() ?: 1
         val config = intArrayOf(
-            inId, inChannels, if (automaticInput) 0 else sampleRate,
+            inId, inChannels, sampleRate,
             if (automaticInput) AAudio.FORMAT_UNSPECIFIED else format, if (exclusive) 1 else 0,
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0, 0,
             outId, 2, sampleRate, format, 0,
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC,
-            0, 0, 1, 0, 0, 0, 1, 1,
+            0, 4, 0, 0, 0, 1, 1,
         )
         nativeError.set(null)
-        assertNull(NativeRelay.nativeStart(config, intArrayOf(1, 1)))
+        assertNull(startTestRelay(config, intArrayOf(1, 1)))
         // Deliberately do not query state, timestamps or frame counters during startup.
         // Diagnostic polling must never be required to make an MMAP input advance.
         SystemClock.sleep(1500)

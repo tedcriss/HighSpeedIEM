@@ -44,11 +44,11 @@ class MMapPolicyTest {
                 AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0, 0,
                 0, 2, 48000, AAudio.FORMAT_PCM_I16, 0,
                 AAudio.PERFORMANCE_LOW_LATENCY, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC,
-                0, 0, 1, 0, 0, 0, if (inputAllowed) 1 else 0, if (outputAllowed) 1 else 0,
+                0, 4, 0, 0, 0, if (inputAllowed) 1 else 0, if (outputAllowed) 1 else 0,
             )
-            if (invalidInput) config[1] = 1000 // fail after output opened / policy overridden
+            if (invalidInput) config[3] = 12345 // fail after output opened / policy overridden
             val startedAt = SystemClock.elapsedRealtime()
-            val error = NativeRelay.nativeStart(config, intArrayOf(1, 1))
+            val error = startTestRelay(config, intArrayOf(1, 1))
             assertTrue("Startup took too long", SystemClock.elapsedRealtime() - startedAt < 10000)
             assertEquals("Process policy leaked", platformPolicy, nativePolicy(-1))
             if (invalidInput) {

@@ -10,6 +10,9 @@
 
 namespace {
 
+// Keep identical to Kotlin ConfigField; no optional or legacy tail fields.
+enum ConfigField { IN_DEVICE, IN_CHANNELS, IN_RATE, IN_FORMAT, IN_EXCLUSIVE, IN_PERFORMANCE, IN_PRESET, IN_CAPACITY, IN_SIZE, OUT_DEVICE, OUT_CHANNELS, OUT_RATE, OUT_FORMAT, OUT_EXCLUSIVE, OUT_PERFORMANCE, OUT_USAGE, OUT_CONTENT, OUT_CAPACITY, OUT_SIZE, READ_BURSTS, READ_EXTRA, BACKLOG, IN_MMAP, OUT_MMAP, CONFIG_FIELD_COUNT };
+
 std::vector<int32_t> readIntArray(JNIEnv* env, jintArray array) {
     std::vector<int32_t> out;
     if (!array) return out;
@@ -29,43 +32,45 @@ jstring toJString(JNIEnv* env, const std::string& text) {
 
 extern "C" {
 
-JNIEXPORT jstring JNICALL JNI_FN(nativeStart)(JNIEnv* env, jobject /*thiz*/, jintArray cfgArray,
+JNIEXPORT jstring JNICALL JNI_FN(nativePrepare)(JNIEnv* env, jobject /*thiz*/, jintArray cfgArray,
                                               jintArray maskArray) {
+    try {
     std::vector<int32_t> cfg = readIntArray(env, cfgArray);
-    if (cfg.size() < 25) {
+    if (cfg.size() != CONFIG_FIELD_COUNT) {
         return env->NewStringUTF("启动转发被拒绝：原生配置参数不完整");
     }
     StartConfig cfgStruct;
-    cfgStruct.inDeviceId = cfg[0];
-    cfgStruct.inChannelCount = cfg[1];
-    cfgStruct.inSampleRate = cfg[2];
-    cfgStruct.inFormat = cfg[3];
-    cfgStruct.inExclusive = cfg[4] != 0;
-    cfgStruct.inPerformanceMode = cfg[5];
-    cfgStruct.inInputPreset = cfg[6];
-    cfgStruct.inBufferCapacity = cfg[7];
-    cfgStruct.inBufferSizeBursts = cfg[8];
-    cfgStruct.outDeviceId = cfg[9];
-    cfgStruct.outChannelCount = cfg[10];
-    cfgStruct.outSampleRate = cfg[11];
-    cfgStruct.outFormat = cfg[12];
-    cfgStruct.outExclusive = cfg[13] != 0;
-    cfgStruct.outPerformanceMode = cfg[14];
-    cfgStruct.outUsage = cfg[15];
-    cfgStruct.outContentType = cfg[16];
-    cfgStruct.outBufferCapacity = cfg[17];
-    cfgStruct.outBufferSizeBursts = cfg[18];
-    cfgStruct.outAutoBufferSize = cfg[19] != 0;
-    cfgStruct.inputReadThresholdBursts = cfg[20];
-    cfgStruct.inputReadThresholdExtraFrames = cfg[21];
-    cfgStruct.inputBacklogThresholdFrames = cfg[22];
-    cfgStruct.inMMapEnabled = cfg[23] != 0;
-    cfgStruct.outMMapEnabled = cfg[24] != 0;
-    return toJString(env, RelayEngine::get().start(cfgStruct, readIntArray(env, maskArray)));
+    cfgStruct.inDeviceId = cfg[IN_DEVICE];
+    cfgStruct.inChannelCount = cfg[IN_CHANNELS];
+    cfgStruct.inSampleRate = cfg[IN_RATE];
+    cfgStruct.inFormat = cfg[IN_FORMAT];
+    cfgStruct.inExclusive = cfg[IN_EXCLUSIVE] != 0;
+    cfgStruct.inPerformanceMode = cfg[IN_PERFORMANCE];
+    cfgStruct.inInputPreset = cfg[IN_PRESET];
+    cfgStruct.inBufferCapacity = cfg[IN_CAPACITY];
+    cfgStruct.inBufferSizeBursts = cfg[IN_SIZE];
+    cfgStruct.outDeviceId = cfg[OUT_DEVICE];
+    cfgStruct.outChannelCount = cfg[OUT_CHANNELS];
+    cfgStruct.outSampleRate = cfg[OUT_RATE];
+    cfgStruct.outFormat = cfg[OUT_FORMAT];
+    cfgStruct.outExclusive = cfg[OUT_EXCLUSIVE] != 0;
+    cfgStruct.outPerformanceMode = cfg[OUT_PERFORMANCE];
+    cfgStruct.outUsage = cfg[OUT_USAGE];
+    cfgStruct.outContentType = cfg[OUT_CONTENT];
+    cfgStruct.outBufferCapacity = cfg[OUT_CAPACITY];
+    cfgStruct.outBufferSizeBursts = cfg[OUT_SIZE];
+    cfgStruct.inputReadThresholdBursts = cfg[READ_BURSTS];
+    cfgStruct.inputReadThresholdExtraFrames = cfg[READ_EXTRA];
+    cfgStruct.inputBacklogThresholdFrames = cfg[BACKLOG];
+    cfgStruct.inMMapEnabled = cfg[IN_MMAP] != 0;
+    cfgStruct.outMMapEnabled = cfg[OUT_MMAP] != 0;
+    return toJString(env, RelayEngine::get().prepare(cfgStruct, readIntArray(env, maskArray)));
+    } catch (const std::exception& e) { RelayEngine::get().stop(); return env->NewStringUTF(e.what()); }
 }
 
 JNIEXPORT jstring JNICALL JNI_FN(nativeStop)(JNIEnv* env, jobject /*thiz*/) {
-    return toJString(env, RelayEngine::get().stop());
+    try { return toJString(env, RelayEngine::get().stop()); }
+    catch (const std::exception& e) { return env->NewStringUTF(e.what()); }
 }
 
 JNIEXPORT void JNICALL JNI_FN(nativeSetMixer)(JNIEnv* /*env*/, jobject /*thiz*/, jint outChannel,
@@ -75,6 +80,7 @@ JNIEXPORT void JNICALL JNI_FN(nativeSetMixer)(JNIEnv* /*env*/, jobject /*thiz*/,
 
 JNIEXPORT jobjectArray JNICALL JNI_FN(nativeStreamInfo)(JNIEnv* env, jobject /*thiz*/,
                                                       jint direction) {
+    try {
     auto info = RelayEngine::get().streamInfo(direction);
     jclass stringClass = env->FindClass("java/lang/String");
     jobjectArray result = env->NewObjectArray(static_cast<jsize>(info.size() * 2), stringClass,
@@ -90,6 +96,11 @@ JNIEXPORT jobjectArray JNICALL JNI_FN(nativeStreamInfo)(JNIEnv* env, jobject /*t
     }
     env->DeleteLocalRef(stringClass);
     return result;
+    } catch (const std::exception& e) {
+        jclass cls = env->FindClass("java/lang/IllegalStateException");
+        if (cls) env->ThrowNew(cls, e.what());
+        return nullptr;
+    }
 }
 
 JNIEXPORT void JNICALL JNI_FN(nativeAttachListener)(JNIEnv* env, jobject /*thiz*/,
@@ -97,8 +108,12 @@ JNIEXPORT void JNICALL JNI_FN(nativeAttachListener)(JNIEnv* env, jobject /*thiz*
     RelayEngine::get().attachListener(env, listener);
 }
 
-JNIEXPORT jint JNICALL JNI_FN(nativeResyncEvents)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(RelayEngine::get().resyncEventCount());
+JNIEXPORT jlong JNICALL JNI_FN(nativeSessionId)(JNIEnv*, jobject) {
+    return RelayEngine::get().sessionId();
+}
+JNIEXPORT jstring JNICALL JNI_FN(nativeStartPrepared)(JNIEnv* env, jobject, jintArray thresholds) {
+    try { return toJString(env, RelayEngine::get().startPrepared(readIntArray(env, thresholds))); }
+    catch (const std::exception& e) { RelayEngine::get().stop(); return env->NewStringUTF(e.what()); }
 }
 
 }  // extern "C"
@@ -119,5 +134,24 @@ Java_cn_xiaotao29_HighSpeedIEM_audio_MMapPolicyTest_nativePolicy(
         if (result != AAUDIO_OK) return result;
     }
     return get();
+}
+#endif
+
+#ifndef NDEBUG
+std::string runCallbackMachineTests();
+extern "C" JNIEXPORT jstring JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_CallbackMachineTest_nativeRun(JNIEnv* env, jobject) {
+    return env->NewStringUTF(runCallbackMachineTests().c_str());
+}
+extern "C" JNIEXPORT void JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_PreparedLifecycleTest_nativeInjectError(JNIEnv*, jobject, jint error) {
+    RelayEngine::errorCallback(nullptr, &RelayEngine::get(), error);
+}
+#endif
+
+#ifndef NDEBUG
+extern "C" JNIEXPORT void JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_PreparedLifecycleTest_nativeFailAllocation(JNIEnv*, jobject) {
+    RelayEngine::get().failNextScratchAllocation();
 }
 #endif

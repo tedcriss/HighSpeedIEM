@@ -1,189 +1,192 @@
-# HighSpeedIEM（高速耳返）v4.0
+# HighSpeedIEM（高速耳返）v5.4
 
-单一输入设备 → 单一输出设备的低延迟音频转发（耳返）应用。v4.0 为完全重构版本：
-Kotlin + Jetpack Compose（Material Design 3）前端，C++ 直接调用 AAudio（不经 Oboe）后端。
+单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
+Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
+最低 API 27、目标 API 37，四 ABI 和现有主题、导航、权限、MMAP 策略保持不变。
 
-## 架构
+## 会话与生命周期
 
-- **前端**（`app/src/main/kotlin/cn/xiaotao29/HighSpeedIEM/`）
-  - `MainActivity` / `MainApplication`：单 Activity；权限、电池优化入口、前台服务启动。
-  - `audio/RelaySession`：唯一内存态会话。设备列表用 `mutableStateMapOf<Int, AudioDeviceInfo>`
-    由 `AudioDeviceCallback` 增量维护 + 启动时 `AudioManager.getDevices` 全量拉取覆盖；
-    选中设备（全局各至多一个输入/输出）、每设备开流参数、混音路由、转发状态全部为
-    Compose 快照状态，UI 自动订阅，无版本号转发。
-  - `audio/NativeRelay`：JNI 桥（阻塞式 start/stop，实时 setMixer，200ms 轮询 streamInfo）。
-  - `ui/`：三个 tab（输入设备 / 输出设备 / 转发控制）。设备卡片（图标 + 标题 + 副标题 +
-    能力/测试/参数三键）、全屏参数对话框、混音 Basic dialog、实时参数 tooltip、
-    开流期间全屏阻塞遮罩、Snackbar 报错原文（换行显示）。
-    混音选择框使用 Material 3 BasicAlertDialog + Surface、ListItem/Checkbox，
-    固定标题/底部按钮与贯穿分隔线，中间单列滚动；整行具备复选框语义与键盘焦点。
-    选择先保存在可恢复草稿中，取消/返回/点外部不改变路由；确定时整张掩码一次更新，
-    不逐项调用原生引擎。弹窗状态位于横竖屏布局分支之外，旋转/重建保留未确认选择。
-    错误按带唯一 ID 的队列保存，显示完成或手动关闭后才消费；界面进入后台或重建时
-    保留未读消息，回到前台继续显示，连续相同错误不会互相覆盖。
-  - `service/ForwardingService`：前台服务（microphone + mediaPlayback + 部分唤醒锁），
-    常驻通知点击打开转发控制 tab；最近任务清除即停止转发并释放资源。
-- **后端**（`app/src/main/cpp/`）
-  - `RelayEngine`：输出流 `setDataCallback` 回调内 `AAudioStream_read` 拉取输入流
-    （回调驱动转发），每次回调均使用零超时非阻塞读取，短读尾部补零。
-    不使用输入帧计数作为读取门槛：独占 MMAP 输入需要在 read 内处理服务时间戳，
-    首次 read 前计数可能一直为零，门槛会导致永久静音。
-    每输出通道按位掩码选择 0..N 个输入通道做逐帧平均混音，
-    路由以始终无锁的 32 位原子掩码发布，回调复制到固定大小的栈内快照；
-    正常混音路径不获取互斥锁，也不分配或释放堆内存。最多支持 32 个输入/输出声道。
-    启动时先用零超时读取清空输入积压（20 个读到数据的回调），期间输出静音；
-    每次最多读取一个输入缓冲容量，避免持续输入导致清空循环无界。
-    请求低延迟模式时将实际输出缓冲设为两个 burst，由系统裁定实际值；
-    启动稳定后每 0.25 秒检查输出欠载，若计数增加则增大一个 burst，最多到容量上限。
-    普通/省电模式保留平台的实际缓冲大小，用户设置的缓冲容量仍用于开流。
-  - 开流：输入先开先启动，输出随后；开流后校验两端实际采样率/格式一致（当前不支持
-    重采样/格式转换），不一致立即关流报错。`AAudioStreamBuilder_setErrorCallback`
-    回调式报错 → JNI → 主线程停止转发 + 清除选中 + Snackbar 原文。
-    JNI 的 `onNativeError(String)` 接口和实现用 `@Keep` 保留，避免 release 压缩移除；
-    设备移除先记录是否在使用，再清除选中项。开流期间收到停止请求会在开流结束后
-    立即关流，完成前保持阻塞；移除无关设备不清除正在使用的混音配置。
-  - 空间音频固定 `AAUDIO_SPATIALIZATION_BEHAVIOR_NEVER`（API 32+）；MMAP 策略
-    默认遵循平台 MMAP 策略；关闭时临时请求 NEVER（策略接口通过 dlsym 探测）。
+`audio/RelaySession.kt` 是 Activity 与前台服务共享的唯一内存会话；主线程管理
+设备、权威参数、混音和 Compose 状态。参数对话框直接订阅会话，不保存会覆盖
+联动结果的独立参数副本。准备、启动、停止期间保持 busy，界面阻止冲突操作。
+`ForwardingService` 继续负责 microphone/mediaPlayback 前台服务及部分唤醒锁。
+设备热插拔、运行中路由更新、通知入口、任务清除时停止均保留。
 
-## 构建
+启动由同一个生命周期协程串行执行：
 
-- 最低 API 27，目标 API 37.0；AGP 9.4.1（Kotlin 内置，勿再应用 kotlin.android 插件）+
-  Kotlin Compose 插件 2.3.21；CMake 4.1.2 / NDK 30.0.16248370。
-- 编译输出固定在 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/<module>`（根
-  `build.gradle.kts` 重定向），源码树保持洁净。
-- 发布 APK 含 armeabi-v7a / arm64-v8a / x86 / x86_64 四 ABI，签名 release，
-  命名 `cn.xiaotao29.HighSpeedIEM_<版本>.apk`；调试可用 `-Pabi=x86_64` 单 ABI 提速。
+1. 前端校验并解析采样率，构造不可变 24 字段配置和混音快照。
+2. `nativePrepare(config, masks)` 创建通知通道，先开输出、后开输入，验证实际
+   几何和 PCM，设置缓冲并分配 scratch；不启动任何流。
+3. IO 线程读取本次实际输出 FramesPerBurst 和输入 BufferSizeInFrames。
+4. 主线程归一化阈值并更新权威参数，传递最终 `[读取倍数, 附加帧, 积压阈值]`。
+5. `nativeStartPrepared(thresholds)` 只校验和采用前端最终值；初始化状态机，
+   先启动输入并确认 STARTED，再启动输出并确认 STARTED。
 
-## 音频回归测试
+`ConfigField` 在 Kotlin `RelayConfig.kt` 和 `jni_bridge.cpp` 中定义相同字段顺序：
+输入 9 项、输出 10 项、阈值 3 项、MMAP 2 项。旧 nativeStart、25 字段配置和
+输出自动缓冲开关已删除。JNI 异常转换为前端可见错误。
 
-`RelayProgressTest` 使用真实 AAudio 流验证独占/共享输入、Float/I16、反复启停与
-运行中切换混音。启动后 1.5 秒内不查询任何流参数，再检查输入和输出帧数，
-避免实时参数面板的轮询掩盖启动问题。默认设备用于手机虚拟机，允许独占请求回退到共享。
+开流/启动期间收到设备移除、停止或原生错误，生命周期任务完成当前阻塞操作后
+立即释放，不能重新报告成功。准备成功但未启动也可停止。正常停止保持幂等：
+解除回调工作许可 → 停止并关闭输出、等待回调结束 → 停止并关闭输入 → 退出并
+join 通知线程、关闭 eventfd → 释放 scratch。通知线程调用 Listener 只投递主线程
+消息；主线程再调度 IO 停止，不在通知线程内停止或等待自己。
+
+## 四状态回调
+
+`RelayEngine::get()` 单例持有唯一的 `RelayCallbackMachine`。阶段、连续稳定次数、
+上次积压、XRun 基准及门槛停滞计数仅由输出数据回调修改；外部线程通过原子首错
+通道和持续 stopRequested 请求退出。状态切换不使用协程，也不等待前端。
+
+| 状态 | 一次回调行为 | 退出条件 |
+| --- | --- | --- |
+| DRAIN | 一次零超时读取实际输入 capacity，丢弃并静音 | 连续 4 次短读且有效积压 ≤ max(2×回调帧, 2×输出 burst)，或第 200 次 |
+| DISCARD | 一次零超时读取 numFrames，丢弃并静音 | 连续 5 次短读或有效积压变化 ≤ numFrames，或第 150 次 |
+| RUNNING | XRun → 积压阈值 → 读取门槛 → 一次 numFrames 读取和混音 | 积压超阈值回 DRAIN；致命错误进入 EXIT |
+| EXIT | 不读、不混音，输出范围安全时 memset 静音并返回 STOP | 会话内不可返回运行态，后台完成停止 |
+
+初始化 DRAIN 不通知。进入 DISCARD 通知“正在同步”；进入 RUNNING 建立输入/
+输出 XRun 基准并通知“开始正常转发”；运行中回 DRAIN 通知“清空积压缓冲”。
+**切换后的下一次回调才处理新阶段音频**，不在同次回调贯穿多个阶段。
+允许无限多轮 RUNNING → DRAIN → DISCARD → RUNNING，没有恢复轮数、累计时间、
+冷却、恢复一半、共享丢弃预算或无进展自动退出策略。
+
+RUNNING 每次先更新两端有效 XRun 基准。负查询使该方向基准失效；恢复有效只建立
+基准；计数下降按重建处理。输入增加时只读一次输入 capacity 丢弃；输出单独增加
+不读输入；两端增加只执行一次容量读取且保留两端增量。本次均 memset 静音并保持
+RUNNING。XRun 不改变输出大小；计数恒 0 不证明没有输入溢出。
+
+积压估算为 FramesWritten − FramesRead，不是保证可读帧数。未知时跳过积压判断。
+开启 B 且估算严格大于 B 时本次不读，静音转 DRAIN。门槛只作用于 RUNNING：
+`F_raw = 倍数 × 实际输出 burst + 附加帧`，输入实际大小有效时再取较小值。
+不足时不读、静音；连续约 1 秒后放行一次非阻塞读取并发事件，未知计数也放行。
+通过门槛仍只请求 numFrames。短读只混音 got 帧、尾部补零，不补读。
+
+混音保留 I16、Float、I24 packed、I32，每输出声道按输入掩码逐样本平均；未路由
+声道为 0。32 位原子路由、固定数组 Plan、调试 NonSilentOutputSeen 保留。
+`StartupFramesDiscarded` 只统计初始 DRAIN/DISCARD；后续恢复与输入 XRun 清理计入
+`RuntimeFramesDiscarded`。实时参数安全读取原子 `CallbackState`。
+
+## 内存与通知
+
+scratch 在准备时一次分配：
+`max(实际输入capacity, 实际输出capacity) × max(两端声道数) × max(两端样本字节数)`。
+验证正 capacity、1..32 声道、受支持 PCM，并逐项 checked size_t 乘法。
+每回调验证输入/输出所需字节，每次容量读取再检查容量所需字节；越界立即错误退出，
+不分片、不扩容、不截断。非法帧数、空输出或不可安全计算的输出长度不执行内存写入。
+
+音频回调不分配/释放堆、不构造字符串、不格式化日志、不加锁、不调 JNI、不关流。
+`RelayEventDispatcher` 使用 eventfd 和准备时创建的等待线程；普通事件为固定 SPSC
+队列（只有数据回调生产），拥塞时用预分配原子快照槽保留最新状态和两端 XRun 合计。
+所有共享原子使用四 ABI 可无锁的 32 位值/指针；64 位事件值只在队列发布边界内传递，
+溢出槽用无锁 32 位原子拆分表示。
+
+数据回调、AAudio 错误回调及控制侧致命错误使用独立首次写入邮箱，首错不依赖队列
+容量且持续请求退出。通知线程生成含原始 AAudio 错误码文字、状态、请求帧及字节数
+的错误并调用 `onNativeError(sessionId, text)`；普通事件调用
+`onNativeEvent(sessionId, sequence, type, value1, value2)`。两方法与 Listener 均 @Keep。
+不再有 500ms 恢复计数轮询；实时参数面板每秒刷新仍只是可见页遥测。
+
+Kotlin 验证会话编号，忽略迟到旧会话消息。普通提示只有最新一项，错误优先；收到
+错误立即停止，不等待 Snackbar。`ErrorNotice` 按唯一 ID 保留，后台、旋转和重建不
+消费未显示完的错误。重复错误不会被普通状态覆盖。
+
+## 采样率
+
+`SampleRateMode` 区分 AUTO、EXPLICIT、SYNC_OUTPUT；所有输入默认 SYNC_OUTPUT，
+未受同步约束的新输出默认 AUTO/0。同步只在 Kotlin 启动快照解析，不向原生传哨兵。
+输入 AUTO 传 0，让 AAudio 独立选择；输入自动格式仍跟随输出实际格式。
+开流后两端实际采样率或格式不同即关流报错，不重采样、不重试或静默同步。
+
+原始能力先过滤正数、去重、排序；下表只依据原始数组，不递归使用填充结果：
+
+| 输入原始能力 | 输出原始能力 | 输入选项 | 输出选项 |
+| --- | --- | --- | --- |
+| 有 | 有 | 同步、0、输入 Hz | 输出 Hz；选中输入非同步时可含 0 |
+| 空 | 有 | 仅同步 | 输出 Hz，不含 0 |
+| 有 | 空 | 同步、0、输入 Hz | 复制当前选中输入原始 Hz，不含 0 |
+| 空 | 空 | 仅同步 | 仅 48000 Hz |
+| 未选输入 | 空 | 按各输入自身能力 | 空列表，显示未解析并拒绝启动 |
+
+仅当前选中输入影响输出列表。同步时移除所有输出的 0，无效选择改最低有效 Hz；
+有效明确 Hz 保留。解除同步恢复允许的 0 选项，但不强制改回 0。修改未选输入不影响
+输出。设备新增、移除、重新枚举和切换选中都会重新应用规则。
+
+## 阈值与缓冲
+
+`RelayParamRules` 是纯计算规则。倍数保留 0..10、附加帧保留 0 和 1..1024 二次幂、
+积压阈值保留 0、100..1000 百帧及 2000..10000 千帧选项。B=0 关闭积压；读取两项
+均 0 关闭门槛。B>0 时必须严格大于 F_effective。
+
+- 改门槛或几何：保留门槛，B 调到最小有效正数；无项则 B=0。
+- 改正数 B：保留 B，先保留倍数、选择最接近的有效附加帧，必要时降低倍数到 0。
+- burst 未知且倍数>0：改门槛就关闭 B；改正数 B 就把倍数降到 0 后选择附加帧。
+- 开流后用本次真实 burst 和输入大小最终归一化，原生只校验、不隐藏修复。
+
+调整原因和最终选中值同步反映在前端；不伪造 192/256 burst，也不使用不匹配的旧缓存。
+输出大小默认 **4 burst**，所有性能模式均准备时设置一次，裁剪到实际容量，以 setter
+实际返回值为准；用户选 0 时不调用 setter。输入默认 0，非零仍按平台尽力设置，失败
+记录后继续。不再有输出自动初始 2 burst 或 XRun 自适应增大。
+
+MMAP 开启仍表示保留平台原策略（包括 UNSPECIFIED），关闭临时 NEVER；分别开流后
+恢复进程原值。没有强制 AUTO/ALWAYS 或修改旧平台服务策略。设备类型中文/原始枚举
+映射见 `设备类型映射.md`。
+
+## 构建与验证
+
+AGP 9.4.1、Kotlin Compose 插件 2.3.21、NDK 30.0.16248370、CMake 4.1.2，未升级。
+Windows 构建输出保持 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/`，临时产物不进源码。
 
 ```text
-gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
-adb -s <serial> install -r <app-debug.apk>
-adb -s <serial> install -r -t <app-debug-androidTest.apk>
-adb -s <serial> shell am instrument -w -r -e class cn.xiaotao29.HighSpeedIEM.audio.RelayProgressTest cn.xiaotao29.HighSpeedIEM.test/androidx.test.runner.AndroidJUnitRunner
+gradlew.bat --project-cache-dir C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/project-cache :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest :app:testDebugUnitTest :app:lintRelease
+adb -s emulator-5554 shell am instrument -w -r cn.xiaotao29.HighSpeedIEM.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-实体机可增加参数 `-e inputDeviceId 23 -e outputDeviceId 2 -e inputChannels 2
--e requireExclusiveMmap true -e requireSignal true`，要求实际获得独占 MMAP 输入，
-且输出回调确实写入过非零 PCM。`NonSilentOutputSeen` 仅在 debug 编译中提供，
-release 不扫描音频样本。实体机需解锁，部分厂商系统还需允许测试应用显示前台界面。
+`RelayParamRulesTest` 遍历所有有限阈值组合、未知/实际 burst 与输入大小，检查采样率
+空能力矩阵和 JNI 模式解析。`CallbackMachineTest` 注入生产状态机的 IO，覆盖阶段
+稳定/复位/次数上限、单次读取、XRun、1000 轮恢复、门槛停滞、四 PCM 混音、内存边界、
+拥塞首错及通知线程反复销毁。注入入口及故障开关仅编入 debug。
 
-2026-10-15 小米 2304FPN6DC 实测：修复前独占输入状态为 STARTED，但输入
-FramesRead/FramesWritten 均停留在 0；移除读取门槛后，1.5 秒读取约 6.6–7.2 万帧，
-独占输入 XRunCount=0，输出已混入非零 PCM。该检查验证数字音频链路，不能代替实际听音。
+`PreparedLifecycleTest` 验证准备后未启动停止、失败清理、分配失败、无数据回调首错、
+旧会话隔离及错误自动停止。`SampleRateSessionTest` 验证真实会话选中输入联动和参数
+即时更新。原 `RelayProgressTest` / `RelayParamsTest` / `LatencyBufferTest` /
+`MMapPolicyTest` 迁移到准备/启动两步，保留 NEVER/UNSPECIFIED 恢复、共享/独占请求、
+I16/Float、连续推进及混音更新；`ErrorReportingTest` 和 `MixerDialogTest` 保留旋转、
+重建、后台、遥控/键盘与长列表覆盖。
 
-## 报错回归测试
+### 2026-10-16 至 2026-10-17 验收结果
 
-`ErrorReportingTest` 的八项测试覆盖原文持续显示、重复错误排队、横竖屏/Activity
-重建/后台恢复、使用中的输入和输出移除、无关设备移除不改变混音、开流期间设备
-移除和原生错误。测试使用真实音频流，通过系统设备回调模拟移除事件；虚拟机测试
-不等同于实体机实际拔出 USB。另需检查 release 的 R8 映射保留 `onNativeError` 原名，
-并确认启动日志不再出现 `listener missing onNativeError(String)`。
+- 四 ABI debug / release、测试 APK、JVM 测试与完整 lintRelease 构建通过。
+- 5 项 JVM 测试通过，包含 84,480 组有限选项/几何/修改来源的归一化检查。
+- 手机模拟器 API37 / x86_64 全套 **32 项仪器测试通过（0 失败、0 忽略）**，
+  本轮使用 `-e inputChannels 2`，覆盖双声道 I16 / Float、共享/独占请求及反复启停。
+  `CallbackMachineTest` 内含 **2098 项生产状态机行为断言**。
+- lintRelease：**0 errors / 9 warnings**（既有权限、资源/图标、依赖、备份和唤醒锁等提示）。
+- release 的两种 JNI Listener 原名/签名在 R8 mapping 中保留；四个 librelay.so 均不含
+  debug 故障注入 JNI。release v2 签名验证通过，沿用工程现有签名配置。
+- release 实际走前端选择 → 混音设置 → 前台服务启动 → 收到“开始正常转发” → 停止。
+  本模拟器扬声器原始采样率为空，复制选中输入能力后默认最低 8000 Hz；输入同步
+  输出，实际两端 2ch / 8000Hz / Float，输出大小请求 640、系统返回 640，读取持续推进。
+  仪器测试另覆盖 48000 Hz 和 44100 Hz；没有把这些选择暗中改回设备默认值。
+- release 浅色竖屏、深色横屏转发，以及输入“同步输出采样率”和输出默认 4 burst
+  参数界面已检查；旋转时音频保持运行。最后恢复浅色竖屏、未选设备的默认输入页，
+  安装版本 5.4 / versionCode 59，非 debuggable，topResumedActivity 为 MainActivity。
+  crash buffer 为空，手机模拟器保持运行。
 
-## v4.46 延迟优化与验证
+本地证据保存在 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/`：
+`delivery-build.txt`、`delivery-tests.txt`、`app/test-results/testDebugUnitTest/`、
+`app/reports/lint-results-release.*`、`qa54/release-portrait-running.png`、
+`qa54/release-landscape-running-dark.png`、`qa54/release-input-sync-dark.png`、
+`qa54/release-landscape-buffer-dark.png` 和 `qa54/release-final-home.png`。
 
-对比对象为 OboeTester 的 Echo Input to Output，用户反馈来自听感，没有端到端测量值。
-主要差异是本应用原来只请求缓冲容量，未设置实际使用大小，本机输出默认值等于容量。
-根据 [Android 官方低延迟建议](https://developer.android.com/games/sdk/oboe/low-latency-audio)
-采用两个 burst，并参考 [Oboe FullDuplexStream](https://github.com/google/oboe/blob/main/include/oboe/FullDuplexStream.h)
-清空启动积压；没有引入 Oboe 依赖，没有改动用户的设备、共享模式、采样率或音频用途。
+交付 APK：`D:/xuyuntao/Desktop/cn.xiaotao29.HighSpeedIEM_5.4.apk`，
+包含 armeabi-v7a / arm64-v8a / x86 / x86_64；与构建目录原件 SHA-256 一致：
+`7B96C7A2F05B0AEC40292B37AB3DC4B952EFFE505BB9D276F504A3CA01F16767`。
 
-2026-10-15，48 kHz、双声道 I16、小米 2304FPN6DC，输入 ID 23 独占 MMAP、输出 ID 2 共享：
+测试仅在手机模拟器进行；独占请求可回退，
+不声称得到实体设备独占 MMAP，也不证明输入 XRun 恒零、无爆音、真实听感或端到端延迟。
+实体手机/电视 API28、USB 热插拔、不同设备默认采样率及硬件回环尚待设备侧验证。
 
-| 输出参数 | 优化前 | 优化后 |
-| --- | --- | --- |
-| FramesPerBurst | 192 | 192 |
-| BufferCapacityInFrames | 1536 | 1536 |
-| BufferSizeInFrames | 1536（32 ms） | 384（8 ms） |
-
-该差值是输出实际缓冲对应的时间，**不能等同于端到端延迟减少 24 ms**。
-手机反复启停时还观测到 AAudio MMAP 输入时间戳迟到约 60–80 ms；替换回原版引擎的
-对照测试同样出现，移除启动清空或延后缩小输出缓冲也未消除。其确切成因尚未确定，
-当前优化不声称修复该系统/设备侧时间戳现象，最终效果仍需相同链路听音或硬件回环测量。
-
-`LatencyBufferTest` 记录实际缓冲与启动丢弃帧，验证数据持续流动、密集路由更新及无效
-路由边界；另验证普通性能模式不自动改变缓冲、显式容量设置仍生效。实体机可增加
-`-e requireTwoBursts true` 检查平台确实接受两个 burst；其余设备只验证平台返回的有效值。
-`BufferSizeInFrames` 和 `StartupFramesDiscarded` 也会出现在应用实时参数中，
-用于区分容量、实际大小和启动清空行为。
-
-验证结果：四 ABI debug/release 编译及 release 签名校验通过；手机虚拟机 13 项仪器测试
-通过（含横竖屏），小米指定 ID 23/2 的 5 项测试通过，独占输入和输出的采样记录中
-XRunCount=0、已输出非零 PCM。共享输入测试仍有输入 XRun，测试通过只表示数据流
-持续推进，不能作为无爆音或端到端低延迟的证明。release Lint 为 0 errors / 8 warnings
-（现有权限查询、资源/图标、依赖版本、备份和唤醒锁提示，本次未调整）。
-
-## v4.56 混音对话框
-
-按照用户提供的系统列表对话框参考图重新排版，沿用应用主题色和 Material 3 原生圆角、
-色彩、文字及复选框组件，自动跟随深色模式。标题与取消/确定操作固定，长列表独立滚动；
-滚动区受窗口可用高度约束，在横屏也保留操作按钮。
-`MixerDialogTest` 验证取消/返回丢弃、确认多选/清空、Activity 重建和横竖屏保留草稿、
-遥控器按键切换、32 声道滚动到底部并选中最后一项。
-组件用法参考 [Android Dialog](https://developer.android.com/develop/ui/compose/components/dialog)
-和 [Checkbox](https://developer.android.com/develop/ui/compose/components/checkbox)。
-
-验证：手机虚拟机 10 项界面/报错测试通过；release 浅色/深色的横竖屏截图检查通过，
-切换时弹窗与勾选仍保留。四 ABI release 编译与签名校验通过，Lint 0 errors / 8 warnings。
-
-## v4.6 单行文字跑马灯
-
-恢复混音弹窗标题、通道选项和操作文字的 `MarqueeText`，并统一导航标签、设备按钮、
-状态标签、参数菜单及实时参数表的单行显示。共用 Compose `basicMarquee`，只在文字
-超出可用宽度时自动循环滚动，能完整显示时保持静止；正文提示及 Snackbar 错误仍按段落换行。
-本次版本名称按用户指定设为 4.6，versionCode 递增为 51。
-验证：debug 混音交互回归 2 项通过；release 在系统字体 2.0 倍下，横竖屏相隔两秒
-的截图均确认溢出标题发生位移，选项和按钮仍可操作；转发中的实时参数面板开关正常。
-测试后恢复字体 1.0 倍及竖屏。四 ABI release 编译和签名校验通过，Lint 0 errors / 8 warnings。
-
-## 设备类型映射
-
-`AudioDeviceTypes` 维护 TYPE_* 数字 ID → 中文名与原始枚举名；详见 `设备类型映射.md`。
-
-## v5.2 电视开流长时间等待修复
-
-2026-10-16 在小米 MiTV-ASTP0（Android 9 / API 28）读取原版日志，使用输入
-ID 29（USB-Audio - MI KARAOKE）及输出 ID 2（内置扬声器）复现：输出与输入开流
-各等待约 25 秒；每 5 秒重复 `Service media.aaudio didn't start. Returning NULL`，
-最终返回 `AAUDIO_ERROR_NO_SERVICE` 后才回退传统 AudioTrack / AudioRecord。
-`service list` 没有 `media.aaudio`，`aaudio.*` 系统属性未设置。
-
-原因是“允许 MMAP”原来强制设置进程策略 AUTO，绕过了旧平台缺省 NEVER 的策略。
-现在开启表示保留原始平台策略（包含 UNSPECIFIED=0，由平台解析属性及默认值），
-关闭仍临时设置 NEVER；两端不同开关时在开流前恢复各自策略，完成或失败后恢复
-进程原值。无需查询隐藏 Binder 服务，也不对无法取消的原生开流创建超时逃逸线程。
-
-原版日志还确认自动输出选择 48000 Hz、USB 输入选择 44100 Hz，随后一致性校验失败。
-输入采样率/格式设为自动时，现在请求已打开输出流的实际采样率/格式，由 Android
-音频后端处理设备兼容；用户显式参数仍优先，并保留开流后的严格校验及原文错误提示。
-
-参考 Android 9 AOSP：
-- https://android.googlesource.com/platform/frameworks/av/+/android-9.0.0_r1/media/libaaudio/src/core/AudioStreamBuilder.cpp
-- https://android.googlesource.com/platform/frameworks/av/+/android-9.0.0_r1/media/libaaudio/src/binding/AAudioBinderClient.cpp
-
-新增 MMapPolicyTest 在手机虚拟机上模拟平台 NEVER，验证允许开关不强制启用 MMAP、
-两端混合开关及失败释放后策略恢复，并覆盖 UNSPECIFIED 策略恢复。
-RelayProgressTest 增加 44100 Hz / I16 输出与全自动输入的协商测试；现有三组原生测试
-配置补齐当前 JNI 所需的积压阈值和两端 MMAP 字段。
-
-验证：四 ABI debug/release 和测试 APK 编译成功，release v2 签名校验通过。
-手机虚拟机首轮 16 项仪器测试、横屏参数回归 5 项全部通过；release 横竖屏截图
-已检查，最后安装 5.2 release 并恢复竖屏默认输入设备页，虚拟机保持运行。
-完整 lintRelease 检查发现基线已有 4 项 NewApi 错误（values / values-night 中的
-API 29 系统栏对比度属性）及 9 项警告；这些资源在本次提交中未改动。
-电视仅用于原版复现和日志诊断，修复版按要求仅在手机虚拟机测试，未验证电视实际听音。
-
-## v5.3 系统栏主题 API 版本修复
-
-将 API 29 才提供的 enforceStatusBarContrast / enforceNavigationBarContrast 移到
-values-v29/styles.xml，基础 Theme.HighSpeedIEM 继承 Base.HighSpeedIEM。
-浅色、深色的基础主题保留原窗口背景、透明系统栏和图标明暗；API 27/28 使用基础
-主题，API 29+ 追加关闭对比度遮罩的属性。没有屏蔽 Lint，也未提高最低 API 版本。
-
-验证：四 ABI debug/release 编译通过，完整 lintRelease 为 0 errors / 9 warnings，
-此前四项 NewApi 错误全部消除。手机虚拟机 debug 浅色/深色各横竖屏截图检查通过；
-签名 release（v5.3 / versionCode 58）校验并安装成功，最后恢复浅色竖屏默认首页。
+开发依据：[Android AAudio](https://developer.android.com/ndk/guides/audio/aaudio/aaudio)
+中的非阻塞读取、回调约束、状态等待与关流同步；现有界面继续沿用 Material 3 原生
+组件、窗口安全区域、深色主题及无障碍/键盘语义。

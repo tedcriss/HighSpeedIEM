@@ -45,7 +45,8 @@ class RelayParamsTest {
         ) as MainActivity
         instrumentation.waitForIdleSync()
         NativeRelay.nativeAttachListener(object : NativeRelay.Listener {
-            override fun onNativeError(text: String) { nativeError.set(text) }
+            override fun onNativeError(sessionId: Long, text: String) { nativeError.set(text) }
+            override fun onNativeEvent(sessionId: Long, sequence: Long, type: Int, value1: Long, value2: Long) = Unit
         })
     }
 
@@ -58,7 +59,7 @@ class RelayParamsTest {
 
     @Test
     fun zeroThresholdKeepsLegacyBehavior() {
-        assertNull(NativeRelay.nativeStart(config(), intArrayOf(1, 1)))
+        assertNull(startTestRelay(config(), intArrayOf(1, 1)))
         SystemClock.sleep(1500)
         assertRelayProgresses("F=0")
         // The realtime row exists even when the callback gate is off.
@@ -71,7 +72,7 @@ class RelayParamsTest {
     fun gateWithSmallThresholdKeepsRunning() {
         // F = 2 output bursts + 64 frames; the gate must pass (or the stall
         // valve must open) so the input is never permanently silenced.
-        assertNull(NativeRelay.nativeStart(
+        assertNull(startTestRelay(
             config(thresholdBursts = 2, thresholdExtraFrames = 64), intArrayOf(1, 1)))
         SystemClock.sleep(1500)
         assertRelayProgresses("F=2*burst+64")
@@ -83,7 +84,7 @@ class RelayParamsTest {
     fun gateThresholdAboveInputBufferStillRuns() {
         // F is capped at the actual input BufferSizeInFrames, so an oversized
         // request must degrade to the cap, not deadlock the relay.
-        assertNull(NativeRelay.nativeStart(
+        assertNull(startTestRelay(
             config(thresholdBursts = 10, thresholdExtraFrames = 1024), intArrayOf(1, 1)))
         SystemClock.sleep(1500)
         val input = info(AAudio.DIRECTION_INPUT)
@@ -93,9 +94,9 @@ class RelayParamsTest {
     }
 
     @Test
-    fun manualOutputBufferDisablesAutoTuning() {
-        assertNull(NativeRelay.nativeStart(
-            config(outBufferSizeBursts = 4, outAutoBufferSize = false), intArrayOf(1, 1)))
+    fun explicitOutputBufferDoesNotChangeOnXrun() {
+        assertNull(startTestRelay(
+            config(outBufferSizeBursts = 4), intArrayOf(1, 1)))
         val initial = info(AAudio.DIRECTION_OUTPUT)
         Log.i("RelayParamsTest", "manual output=$initial")
         val burst = initial.getValue("FramesPerBurst").toInt()
@@ -116,7 +117,7 @@ class RelayParamsTest {
 
     @Test
     fun inputBufferSizeRequestIsBestEffort() {
-        assertNull(NativeRelay.nativeStart(config(inBufferSizeBursts = 2), intArrayOf(1, 1)))
+        assertNull(startTestRelay(config(inBufferSizeBursts = 2), intArrayOf(1, 1)))
         val input = info(AAudio.DIRECTION_INPUT)
         Log.i("RelayParamsTest", "input sized=$input")
         val size = input.getValue("BufferSizeInFrames").toInt()
@@ -145,8 +146,7 @@ class RelayParamsTest {
 
     private fun config(
         inBufferSizeBursts: Int = 0,
-        outBufferSizeBursts: Int = 0,
-        outAutoBufferSize: Boolean = true,
+        outBufferSizeBursts: Int = 4,
         thresholdBursts: Int = 0,
         thresholdExtraFrames: Int = 0,
     ): IntArray {
@@ -158,7 +158,7 @@ class RelayParamsTest {
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.PRESET_GENERIC, 0, inBufferSizeBursts,
             outId, 2, 48000, AAudio.FORMAT_PCM_I16, 0,
             AAudio.PERFORMANCE_LOW_LATENCY, AAudio.USAGE_MEDIA, AAudio.CONTENT_MUSIC,
-            0, outBufferSizeBursts, if (outAutoBufferSize) 1 else 0,
+            0, outBufferSizeBursts,
             thresholdBursts, thresholdExtraFrames, 0, 1, 1,
         )
     }

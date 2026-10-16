@@ -52,7 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
@@ -113,34 +113,18 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
             }
         }
 
-        // Errors surface verbatim in a snackbar; its text wraps (no marquee).
+        // One latest status slot; collectLatest cancels obsolete status and
+        // immediately lets retained errors take priority over informational text.
         LaunchedEffect(session, activity) {
             activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                snapshotFlow { session.pendingError }.filterNotNull().collect { error ->
-                    snackbarHostState.showSnackbar(
-                        message = error.text,
-                        actionLabel = "关闭",
-                        duration = SnackbarDuration.Long,
-                    )
-                    // A cancelled display (background/recreation) retains the
-                    // notice. Only acknowledge a completed or dismissed one.
-                    session.consumeError(error.id)
-                }
-            }
-        }
-
-        // Runtime backlog-resync episodes surface as a short informational
-        // snackbar: no error route, no stop, one notice per detected batch
-        // (the session polls the engine's atomic episode counter, so the
-        // audio callback never repeats per-callback notices).
-        LaunchedEffect(session, activity) {
-            activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                snapshotFlow { session.pendingResync }.filterNotNull().collect { id ->
-                    snackbarHostState.showSnackbar(
-                        message = "检测到输入帧积压过高，已触发重新同步",
-                        duration = SnackbarDuration.Short,
-                    )
-                    session.consumeResync(id)
+                snapshotFlow { session.pendingError?.let { it to null } ?: (null to session.pendingStatus) }.collectLatest { (error, status) ->
+                    if (error != null) {
+                        snackbarHostState.showSnackbar(error.text, actionLabel = "关闭", duration = SnackbarDuration.Long)
+                        session.consumeError(error.id)
+                    } else if (status != null) {
+                        snackbarHostState.showSnackbar(status.text, duration = SnackbarDuration.Short)
+                        session.consumeStatus(status.sequence)
+                    }
                 }
             }
         }

@@ -23,10 +23,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -48,16 +44,14 @@ fun StreamParamsDialog(
     device: AudioDeviceInfo,
     onDismiss: () -> Unit,
 ) {
-    var params by remember(device.id) { mutableStateOf(session.paramsFor(input, device.id)) }
-    fun update(next: StreamParams) {
-        params = next
-        session.setParams(input, device.id, next)
-    }
+    val params = session.paramsFor(input, device.id)
+    fun update(next: StreamParams) { session.setParams(input, device.id, next) }
 
     val channelOptions = listOf(0 to "自动（0）") +
         device.channelCounts.distinct().sorted().map { it to "$it" }
-    val rateOptions = listOf(0 to "自动（0）") +
-        device.sampleRates.distinct().sorted().map { it to "$it Hz" }
+    val rateOptions = session.sampleRateOptions(input, device.id).map {
+        it to when (it) { -1 -> "同步输出采样率"; 0 -> "自动（0）"; else -> "$it Hz" }
+    }
     val formatOptions = listOf(AAudio.FORMAT_UNSPECIFIED to "AAUDIO_FORMAT_UNSPECIFIED（自动）") +
         device.encodings.toList().mapNotNull { encoding ->
             AAudio.formatFromEncoding(encoding)?.let { it to AAudio.formatName(it) }
@@ -99,9 +93,18 @@ fun StreamParamsDialog(
                     )
                     ParamDropdown(
                         label = "SampleRate（采样率）",
-                        selectedLabel = if (params.sampleRate == 0) "自动（0）" else "${params.sampleRate} Hz",
+                        selectedLabel = when {
+                            params.sampleRateMode == cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT -> "同步输出采样率"
+                            rateOptions.isEmpty() -> "请选择输入设备 / 暂无可用采样率"
+                            params.sampleRate == 0 -> "自动（0）"
+                            else -> "${params.sampleRate} Hz"
+                        },
                         options = rateOptions,
-                        onSelect = { update(params.copy(sampleRate = it)) },
+                        onSelect = { update(params.copy(sampleRate = maxOf(0, it), sampleRateMode = when (it) {
+                            -1 -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT
+                            0 -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.AUTO
+                            else -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.EXPLICIT
+                        })) },
                     )
                     ParamDropdown(
                         label = "Format（采样格式）",

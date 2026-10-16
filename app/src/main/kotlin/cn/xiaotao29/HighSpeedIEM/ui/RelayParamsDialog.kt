@@ -21,10 +21,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -42,11 +38,8 @@ import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
-    var params by remember { mutableStateOf(session.relayParams) }
-    fun update(next: RelayParams) {
-        params = next
-        session.updateRelayParams(next)
-    }
+    val params = session.relayParams
+    fun update(next: RelayParams) { session.updateRelayParams(next) }
 
     val capacityOptions = AAudio.BUFFER_CAPACITIES.map { it to if (it == 0) "自动（0）" else "$it" }
     val sizeOptions = (0..16).map {
@@ -135,34 +128,13 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                         options = capacityOptions,
                         onSelect = { update(params.copy(outBufferCapacity = it)) },
                     )
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        ParamDropdown(
-                            label = "BufferSizeInFrames（输出缓冲大小）",
-                            selectedLabel = if (params.outBufferSizeBursts == 0) {
-                                "系统默认（0）"
-                            } else {
-                                "${params.outBufferSizeBursts} × FramesPerBurst"
-                            },
-                            options = sizeOptions,
-                            enabled = !params.outAutoBufferSize,
-                            onSelect = { update(params.copy(outBufferSizeBursts = it)) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        ParamCheckboxRow(
-                            label = "程序自动设置",
-                            checked = params.outAutoBufferSize,
-                            onCheckedChange = { update(params.copy(outAutoBufferSize = it)) },
-                        )
-                    }
-                    SectionNote(
-                        "勾选“程序自动设置”：沿用低延迟模式下 2 × FramesPerBurst 的初始" +
-                            "缓冲并在欠载时自适应增大，输出缓冲大小下拉框禁用。取消勾选：采用" +
-                            "手动配置（0＝不调用 setter，保留系统默认），并禁用自动调节。",
+                    ParamDropdown(
+                        label = "BufferSizeInFrames（输出缓冲大小）",
+                        selectedLabel = if (params.outBufferSizeBursts == 0) "系统默认（0）" else "${params.outBufferSizeBursts} × FramesPerBurst",
+                        options = sizeOptions,
+                        onSelect = { update(params.copy(outBufferSizeBursts = it)) },
                     )
+                    SectionNote("默认 4 × 实际 FramesPerBurst，裁剪到实际容量；0 保留系统默认。运行期间不自动调整。")
                     ParamCheckboxRow(
                         label = "允许 MMAP（输出）",
                         checked = params.outMMapEnabled,
@@ -223,12 +195,10 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                         onSelect = { update(params.copy(inputBacklogThresholdFrames = it)) },
                     )
                     SectionNote(
-                        "转发中输入可用帧数超过该阈值时，触发一次有上限的重新同步：以非阻塞" +
-                            "读取丢弃旧数据，恢复到阈值一半以下再继续转发，期间允许短暂静音。" +
-                            "带迟滞与冷却，同一次恢复只提示一次 Snackbar，不报错、不停止转发。" +
-                            "关闭（0）＝完全禁用运行期间恢复，启动排空不受影响。该阈值独立于" +
-                            "输入读取门槛，不受输入缓冲大小裁剪。",
+                        "转发中积压估算超过阈值时进入 DRAIN 清空、DISCARD 同步，再开始正常转发。" +
+                            "0 关闭积压触发；正数必须严格高于有效读取门槛。允许反复恢复，期间输出静音。",
                     )
+                    session.parameterAdjustment?.let { SectionNote(it) }
                     HorizontalDivider()
                     Text(
                         "参数在下次启动转发时生效。",

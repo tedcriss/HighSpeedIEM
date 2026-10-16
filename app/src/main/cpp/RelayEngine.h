@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <jni.h>
+#include "RelayCallbackMachine.h"
 
 /**
  * Single input -> single output AAudio relay engine.
@@ -21,7 +22,7 @@
  * Per output channel, zero or more input channels are averaged into the
  * output sample (mixer mask = bit i set means input channel i feeds it).
  *
- * Threading: start()/stop() are blocking and serialize on lifecycleMutex.
+ * Threading: prepare()/startPrepared()/stop() are blocking and serialize on lifecycleMutex.
  * Callbacks never take that mutex. Routing uses lock-free 32-bit masks;
  * the callback snapshots them without allocating or releasing heap objects.
  */
@@ -47,22 +48,15 @@ struct StartConfig {
     int32_t outUsage = AAUDIO_USAGE_MEDIA;
     int32_t outContentType = AAUDIO_CONTENT_TYPE_MUSIC;
     int32_t outBufferCapacity = 0;
-    int32_t outBufferSizeBursts = 0;
-    // true = existing initial 2-burst sizing plus tuneOutputBuffer() growth;
-    // false = manual outBufferSizeBursts sizing and no adaptive retuning.
-    bool outAutoBufferSize = true;
-
+    int32_t outBufferSizeBursts = 4;
     // Input read threshold F (minimum available input frames before the
     // output callback may read): bursts * actual output FramesPerBurst +
     // extra frames. 0 disables the gate entirely.
     int32_t inputReadThresholdBursts = 0;
     int32_t inputReadThresholdExtraFrames = 0;
 
-    // Runtime backlog recovery: when the input availability hint exceeds
-    // this many frames during normal forwarding, one bounded resync-discard
-    // episode is triggered. 0 disables runtime recovery entirely (startup
-    // sync is unaffected). Independent of the read threshold gate and NOT
-    // clamped to the input BufferSizeInFrames.
+    // A positive backlog threshold triggers RUNNING -> DRAIN. Zero disables
+    // the check. Each phase is bounded; the number of recovery cycles is not.
     int32_t inputBacklogThresholdFrames = 0;
 
     // Per-direction MMAP policy request: true = platform policy (system
@@ -78,15 +72,15 @@ public:
     static RelayEngine& get();
 
     // Blocking. Returns empty string on success, human-readable error otherwise.
-    std::string start(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks);
+    std::string prepare(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks);
+    std::string startPrepared(const std::vector<int32_t>& thresholds);
+    uint32_t sessionId() const { return currentSession.load(); }
     // Blocking and idempotent; safe when streams already died from an error.
     std::string stop();
+#ifndef NDEBUG
+    void failNextScratchAllocation() { failAllocation = true; }
+#endif
     bool isRunning() const { return running.load(); }
-
-    // Total runtime backlog-resync episodes since the last successful start.
-    // Written by the audio callback (relaxed atomic), polled off the
-    // realtime thread; cheap and thread-safe.
-    uint32_t resyncEventCount() const { return resyncEvents.load(std::memory_order_relaxed); }
 
     // Realtime-safe mixer update; outChannel is 0-based.
     void setMixerMask(int32_t outChannel, int32_t mask);
@@ -95,17 +89,21 @@ public:
     // Returns flat key/value pairs; empty when no stream is open.
     std::vector<std::pair<std::string, std::string>> streamInfo(int32_t direction);
 
-    // Listener receives void onNativeError(String) on arbitrary threads.
+    // Only the dispatcher calls JNI; listeners post work to the main thread.
     void attachListener(JNIEnv* env, jobject listener);
 
-    void notifyError(const std::string& text);
+    void deliverError(uint32_t session, const RelayErrorRecord& error);
+    static std::string errorText(const RelayErrorRecord& error);
+    void deliverEvent(const RelayEvent& event);
 
     static aaudio_data_callback_result_t dataCallback(
             AAudioStream* stream, void* userData, void* audioData, int32_t numFrames);
     static void errorCallback(AAudioStream* stream, void* userData, aaudio_result_t error);
 
 private:
-    RelayEngine() = default;
+    RelayEngine() : callbackMachine(*this) {}
+    friend class RelayCallbackMachine;
+    friend std::string runCallbackMachineTests();
 
     struct Plan {
         std::array<uint32_t, 32> masks{};
@@ -118,7 +116,7 @@ private:
     void fillSilence(void* audioData, int32_t fromFrame, int32_t toFrame);
     std::string openStreams(const StartConfig& cfg, const std::vector<int32_t>& mixerMasks);
     void closeStreams(std::string& firstError);
-    aaudio_result_t tuneOutputBuffer(int32_t numFrames);
+
 
     std::mutex lifecycleMutex;
     // Atomic so the audio callback can snapshot them without the mutex.
@@ -130,9 +128,12 @@ private:
     // firing while the output STARTED wait is still in progress already run
     // the startup input drain instead of being gated by running == false.
     std::atomic<bool> callbackReady{false};
-    std::atomic<bool> errorNotified{false};
+    std::atomic<uint32_t> currentSession{0};
+    RelayEventDispatcher events;
+    RelayCallbackMachine callbackMachine;
 
     static_assert(std::atomic<uint32_t>::is_always_lock_free);
+    static_assert(std::atomic<AAudioStream*>::is_always_lock_free);
     std::array<std::atomic<uint32_t>, 32> routingMasks{};
 
     // Cached stream geometry, valid while running.
@@ -140,58 +141,22 @@ private:
     int32_t inChannels = 0, outChannels = 0;
     int32_t inRate = 0, outRate = 0;
     int32_t outBurst = 0;
-    int32_t inputDrainFrames = 0;
-    // Callback-owned state, initialized before requestStart(output).
-    // Startup sync phases, used in order (OboeTester FullDuplexStream):
-    // drain the capture backlog, cushion the input, discard to equilibrium,
-    // then forward. The nominal counts are caps, not the completion signal:
-    // a phase ends when actual non-blocking read results plus the input
-    // availability hint confirm sync (stableCount), and phases may extend
-    // while an obvious backlog remains, bounded by hard callback caps and a
-    // total frame budget so anomalous MMAP counters can never loop forever.
-    int32_t startupDrainCallbacks = 0;
-    int32_t startupCushionCallbacks = 0;
-    int32_t startupDiscardCallbacks = 0;
-    int32_t startupDrainHardLeft = 0;
-    int32_t startupDiscardHardLeft = 0;
-    int32_t startupStableCount = 0;
-    int64_t startupPrevAvailable = -1;
-    int64_t startupBudgetFrames = 0;
-    // Runtime backlog recovery (callback-owned): threshold 0 = disabled.
-    // One episode = bounded timeout-0 discards until the availability hint
-    // drops to the hysteresis target; hysteresis + cooldown + episode budget
-    // + no-progress abort keep it from flapping or silencing the output.
-    int64_t backlogThresholdFrames = 0;
-    bool backlogRecovering = false;
-    int64_t backlogEpisodeBudget = 0;
-    int64_t backlogPrevAvailable = -1;
-    int64_t backlogCooldownFrames = 0;
-    // Bumped once per resync episode inside the callback; polled by the
-    // session off the realtime thread and surfaced as a snackbar.
-    std::atomic<uint32_t> resyncEvents{0};
-    bool tuneBuffer = false;
-    int32_t tuneCountdown = 0;
-    int32_t previousXRunCount = 0;
-    int32_t outputCapacity = 0;
-    // Input read threshold gate: F requested at open time (0 = gate off) and
-    // the stall safety valve that keeps exclusive-MMAP counter stalls from
-    // silencing the output forever. Callback-owned like the fields above.
-    int64_t inputThresholdFrames = 0;
-    int64_t gateStallFrames = 0;
-    bool gateStallLogged = false;
-    std::atomic<uint32_t> startupFramesDiscarded{0};
-
+    int32_t inputCapacity = 0, outputCapacity = 0;
+    size_t inputBytesPerFrame = 0, outputBytesPerFrame = 0;
+    std::atomic<uint32_t> startupFramesDiscarded{0}, runtimeFramesDiscarded{0};
     std::vector<uint8_t> scratch;
-    int32_t scratchFrames = 0;
+#ifndef NDEBUG
+    bool failAllocation = false;
+#endif
 #ifndef NDEBUG
     // Debug-only evidence that the callback has mixed real PCM, not just zeros.
     std::atomic<bool> nonSilentOutputSeen{false};
 #endif
 
-    JavaVM* jvm = nullptr;
+    std::atomic<JavaVM*> jvm{nullptr};
     std::mutex listenerMutex;
     jobject listener = nullptr;   // global ref
-    jmethodID onErrorMethod = nullptr;
+    jmethodID onErrorMethod = nullptr, onEventMethod = nullptr;
 };
 
 #endif // RELAYENGINE_H

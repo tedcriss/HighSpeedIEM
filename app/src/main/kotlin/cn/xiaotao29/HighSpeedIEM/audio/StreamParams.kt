@@ -9,6 +9,7 @@ package cn.xiaotao29.HighSpeedIEM.audio
 data class StreamParams(
     val channelCount: Int = 0,
     val sampleRate: Int = 0,
+    val sampleRateMode: SampleRateMode = SampleRateMode.AUTO,
     val format: Int = AAudio.FORMAT_UNSPECIFIED,
     val exclusive: Boolean = false,
     val performanceMode: Int = AAudio.PERFORMANCE_LOW_LATENCY,
@@ -19,6 +20,8 @@ data class StreamParams(
     val contentType: Int = AAudio.CONTENT_MUSIC,
 ) {
     companion object {
-        val DEFAULT = StreamParams()
+        fun defaultFor(input: Boolean) = StreamParams(
+            sampleRateMode = if (input) SampleRateMode.SYNC_OUTPUT else SampleRateMode.AUTO,
+        )
     }
 }
