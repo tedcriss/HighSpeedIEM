@@ -1,13 +1,21 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
+import android.os.Build
+import android.view.WindowManager
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.waterfall
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
@@ -21,6 +29,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +39,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -217,3 +233,65 @@ fun StatusBadge(status: String) {
         )
     }
 }
+
+/**
+ * Full-screen immersive dialog shared by every full-screen dialog in the app.
+ *
+ * The dialog owns its window: it extends under the system bars and the display
+ * cutout (edge-to-edge background, no letterbox black bars), hides the system
+ * bars with transient swipe-back, and lays out into cutout areas on the short
+ * edges — which is the top edge in portrait and the left/right edge in either
+ * landscape rotation. Bar visibility is configured on the dialog window only,
+ * so the activity window keeps its own show/hide rules after dismiss. Content
+ * must apply [safeContentInsets] once at its root to stay in the safe area.
+ */
+@Composable
+fun ImmersiveDialog(onDismissRequest: () -> Unit, content: @Composable () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        LaunchedEffect(window) {
+            window ?: return@LaunchedEffect
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                // SHORT_EDGES covers the cutout on the top edge in portrait and
+                // on the left/right edge in both landscape rotations; the
+                // attribute itself only exists from API 28.
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        }
+        content()
+    }
+}
+
+/**
+ * Rotation-aware display-cutout plus curved-edge insets. Consumed once at a
+ * screen root so backgrounds still paint edge to edge while navigation and
+ * page content move inside the safe area; consuming here also keeps inner
+ * scaffolds from adding the same margins a second time.
+ */
+@Composable
+fun cutoutWaterfallInsets(): WindowInsets =
+    WindowInsets.displayCutout.union(WindowInsets.waterfall)
+
+/**
+ * Full safe content area for edge-to-edge surfaces: system bars, display
+ * cutout, waterfall and the input method, each reported for the current
+ * rotation. Union keeps correctness whether or not the platform already folds
+ * waterfall into safeDrawing.
+ */
+@Composable
+fun safeContentInsets(): WindowInsets =
+    WindowInsets.safeDrawing.union(WindowInsets.waterfall).union(WindowInsets.ime)

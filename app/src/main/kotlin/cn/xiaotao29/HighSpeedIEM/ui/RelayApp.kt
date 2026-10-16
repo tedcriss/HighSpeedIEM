@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
@@ -96,16 +97,19 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
         }
 
         // Landscape runs immersive: the system status bar is hidden there and
-        // restored in portrait (activity recreation re-runs this effect).
+        // restored in portrait. Re-asserted on every resume so dialog windows
+        // and background/foreground transitions cannot leave stale bar state.
         LaunchedEffect(portrait) {
-            val window = activity.window
-            val controller = WindowCompat.getInsetsController(window, window.decorView)
-            if (portrait) {
-                controller.show(WindowInsetsCompat.Type.statusBars())
-            } else {
-                controller.systemBarsBehavior =
-                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                controller.hide(WindowInsetsCompat.Type.statusBars())
+            activity.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                val window = activity.window
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                if (portrait) {
+                    controller.show(WindowInsetsCompat.Type.statusBars())
+                } else {
+                    controller.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.statusBars())
+                }
             }
         }
 
@@ -192,8 +196,21 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
             }
         }
 
+        // Cutout and curved-edge avoidance is consumed once, above both
+        // navigation branches: the background paints edge to edge first, then
+        // the padding moves the suite/rail and the page content into the safe
+        // area for whichever edge the cutout rotates to (top in portrait,
+        // left or right in the two landscape rotations). Consuming here also
+        // stops the inner scaffolds from adding the same margins a second
+        // time; system bars stay handled by the scaffolds themselves.
+        val cutoutSafeRoot = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .windowInsetsPadding(cutoutWaterfallInsets())
+
         if (portrait) {
             NavigationSuiteScaffold(
+                modifier = cutoutSafeRoot,
                 navigationItems = {
                     NavigationSuiteItem(
                         selected = tab == 0,
@@ -219,7 +236,7 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
                 pageScaffold(Modifier)
             }
         } else {
-            Row(Modifier.fillMaxSize()) {
+            Row(cutoutSafeRoot) {
                 LandscapeNavigation(selected = tab) { tab = it }
                 pageScaffold(Modifier.weight(1f))
             }
@@ -239,6 +256,9 @@ private fun LandscapeNavigation(selected: Int, onSelect: (Int) -> Unit) {
     NavigationRail(
         modifier = Modifier.fillMaxHeight(),
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        // The landscape Row in RelayApp consumes the cutout/waterfall insets
+        // for the whole screen and the page Scaffold consumes the system bars,
+        // so the rail must not add either a second time.
         windowInsets = WindowInsets(0, 0, 0, 0),
     ) {
         Box(Modifier.width(96.dp).fillMaxHeight()) {

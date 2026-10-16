@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -47,6 +48,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Edge-to-edge is required for reliable status-bar hiding in landscape.
         enableEdgeToEdge()
+        // Draw into cutout areas on the short edges: the top edge in portrait
+        // and the left/right edge in both landscape rotations. Content avoids
+        // the cutout through insets, not through letterboxing. The attribute
+        // only exists from API 28.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         setVolumeControlStream(AudioManager.STREAM_MUSIC)
         handleIntent(intent)
         setContent {

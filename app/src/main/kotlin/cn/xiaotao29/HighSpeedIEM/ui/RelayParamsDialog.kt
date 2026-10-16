@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
@@ -28,8 +29,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import cn.xiaotao29.HighSpeedIEM.audio.AAudio
 import cn.xiaotao29.HighSpeedIEM.audio.RelayParams
 import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
@@ -63,12 +62,9 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
     val backlogOptions = (listOf(0) + (1..10).map { it * 100 } + (2..10).map { it * 1000 })
         .map { it to if (it == 0) "关闭（0）" else "$it" }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
+    ImmersiveDialog(onDismissRequest = onDismiss) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            Column(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(safeContentInsets())) {
                 Row(
                     Modifier.fillMaxWidth().padding(start = 24.dp, end = 8.dp, top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
