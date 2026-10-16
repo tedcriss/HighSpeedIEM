@@ -4,6 +4,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RelayParamRulesTest {
+    @Test fun phaseCountOptionsDefaultsAndStartPayload() {
+        val expected = (1..9).toList() + (10..100 step 5) + (200..2000 step 100)
+        assertEquals(expected, RelayParams.PHASE_COUNT_OPTIONS)
+        val defaults = RelayParams()
+        assertNull(defaults.phaseStartError())
+        assertArrayEquals(intArrayOf(0,0,0,4,200,5,200), defaults.startThresholds())
+        for (stable in expected) for (maximum in expected) {
+            val drain = defaults.copy(drainStableThreshold=stable,drainMaxExecutions=maximum)
+            val discard = defaults.copy(discardStableThreshold=stable,discardMaxExecutions=maximum)
+            assertEquals(maximum < stable, drain.phaseStartError() != null)
+            assertEquals(maximum < stable, discard.phaseStartError() != null)
+        }
+        assertNotNull(defaults.copy(drainStableThreshold=0).phaseStartError())
+        assertNotNull(defaults.copy(discardMaxExecutions=2001).phaseStartError())
+        assertNotNull(defaults.copy(discardMaxExecutions=150).phaseStartError())
+        val custom = defaults.copy(drainStableThreshold=2,drainMaxExecutions=10,
+            discardStableThreshold=3,discardMaxExecutions=20)
+        assertArrayEquals(intArrayOf(0,0,0,2,10,3,20), custom.startThresholds())
+        assertEquals(custom, RelayParamRules.normalize(custom, RelayParamRules.ChangedField.GEOMETRY).params)
+    }
     @Test fun everyFiniteThresholdCombinationIsConsistent() {
         for (burst in listOf<Int?>(null, 1, 192, 4096)) for (size in listOf<Int?>(null, 256)) {
             for (b in 0..10) for (extra in RelayParamRules.extras) for (backlog in RelayParamRules.backlogs) {

@@ -4,6 +4,10 @@
 #include <atomic>
 #include <cstddef>
 class RelayEngine;
+struct RelayPhaseLimits {
+    int32_t drainStable = 4, drainMax = 200;
+    int32_t discardStable = 5, discardMax = 200;
+};
 struct RelayAudioOps {
     int32_t (*read)(AAudioStream*, void*, int32_t, int64_t) = AAudioStream_read;
     int64_t (*written)(AAudioStream*) = AAudioStream_getFramesWritten;
@@ -15,7 +19,7 @@ class RelayCallbackMachine {
 public:
     enum class State { DRAIN, DISCARD, RUNNING, EXIT };
     explicit RelayCallbackMachine(RelayEngine& owner) : engine(owner) {}
-    void prepare(int64_t threshold, int32_t backlog);
+    void prepare(int64_t threshold, int32_t backlog, RelayPhaseLimits limits = {});
     aaudio_data_callback_result_t process(void* data, int32_t frames);
     void requestExit(const RelayErrorRecord& error);
     uint32_t stateSnapshot() const { return visibleState.load(std::memory_order_relaxed); }
@@ -42,5 +46,6 @@ private:
     RelayAudioOps ops;
     int64_t inputThresholdFrames = 0;
     int32_t backlogThresholdFrames = 0;
+    RelayPhaseLimits phaseLimits;
     bool startup = true;
 };

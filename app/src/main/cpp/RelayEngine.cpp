@@ -522,9 +522,23 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
 
 std::string RelayEngine::startPrepared(const std::vector<int32_t>& thresholds) {
     std::lock_guard<std::mutex> lock(lifecycleMutex);
-    if (!input || !output || running || callbackReady || thresholds.size() != 3 || events.exiting())
+    if (!input || !output || running || callbackReady || thresholds.size() != 7 || events.exiting())
         return "startPrepared: invalid state / thresholds / stop requested";
     const int bursts = thresholds[0], extra = thresholds[1], backlog = thresholds[2];
+    const RelayPhaseLimits limits{thresholds[3], thresholds[4], thresholds[5], thresholds[6]};
+    const auto validCount = [](int n) {
+        return (n >= 1 && n < 10) || (n >= 10 && n <= 100 && n % 5 == 0)
+                || (n >= 200 && n <= 2000 && n % 100 == 0);
+    };
+    if (!validCount(limits.drainStable) || !validCount(limits.drainMax) ||
+        !validCount(limits.discardStable) || !validCount(limits.discardMax))
+        return "startPrepared: DRAIN/DISCARD exit counts are outside allowed options";
+    if (limits.drainMax < limits.drainStable)
+        return "startPrepared: DRAIN 强制退出次数（" + std::to_string(limits.drainMax) +
+                "）不能小于稳定阈值（" + std::to_string(limits.drainStable) + "）";
+    if (limits.discardMax < limits.discardStable)
+        return "startPrepared: DISCARD 强制退出次数（" + std::to_string(limits.discardMax) +
+                "）不能小于稳定阈值（" + std::to_string(limits.discardStable) + "）";
     const bool validExtra = extra == 0 || (extra > 0 && extra <= 1024 && (extra & (extra - 1)) == 0);
     const bool validBacklog = backlog == 0 || (backlog >= 100 && backlog <= 1000 && backlog % 100 == 0)
             || (backlog >= 2000 && backlog <= 10000 && backlog % 1000 == 0);
@@ -534,7 +548,7 @@ std::string RelayEngine::startPrepared(const std::vector<int32_t>& thresholds) {
     const int size = AAudioStream_getBufferSizeInFrames(input);
     if (backlog > 0 && backlog <= (size > 0 ? std::min(raw, int64_t(size)) : raw))
         return "startPrepared: inputBacklogThresholdFrames must exceed F_effective";
-    callbackMachine.prepare(raw, backlog);
+    callbackMachine.prepare(raw, backlog, limits);
     aaudio_result_t result;
     callbackReady.store(true, std::memory_order_release);
     aaudio_stream_state_t nextState = AAUDIO_STREAM_STATE_UNKNOWN;

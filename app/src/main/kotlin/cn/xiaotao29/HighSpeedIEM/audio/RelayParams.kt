@@ -29,6 +29,11 @@ data class RelayParams(
     val inputReadThresholdExtraFrames: Int = 0,
     /** Above this backlog return to DRAIN. 0 disables the check. */
     val inputBacklogThresholdFrames: Int = 0,
+    /** Consecutive stable callbacks / maximum callbacks for each recovery phase. */
+    val drainStableThreshold: Int = 4,
+    val drainMaxExecutions: Int = 200,
+    val discardStableThreshold: Int = 5,
+    val discardMaxExecutions: Int = 200,
     /**
      * true = preserve the platform MMAP policy for the input (system may use MMAP
      * and falls back by capability); false = request AAUDIO_POLICY_NEVER.
@@ -40,7 +45,28 @@ data class RelayParams(
     /** Output counterpart of [inMMapEnabled]. */
     val outMMapEnabled: Boolean = true,
 ) {
+    /** Checked at start, without silently changing the user's selections. */
+    fun phaseStartError(): String? {
+        for ((phase, stable, maximum) in listOf(
+            Triple("DRAIN", drainStableThreshold, drainMaxExecutions),
+            Triple("DISCARD", discardStableThreshold, discardMaxExecutions),
+        )) {
+            if (stable !in PHASE_COUNT_OPTIONS || maximum !in PHASE_COUNT_OPTIONS)
+                return "转发已阻止：$phase 退出参数不在允许的选项范围内"
+            if (maximum < stable)
+                return "转发已阻止：$phase 强制退出次数（$maximum）不能小于稳定阈值（$stable）"
+        }
+        return null
+    }
+
+    /** Final start-only parameters; order matches RelayEngine::startPrepared. */
+    internal fun startThresholds() = intArrayOf(
+        inputReadThresholdBursts, inputReadThresholdExtraFrames, inputBacklogThresholdFrames,
+        drainStableThreshold, drainMaxExecutions, discardStableThreshold, discardMaxExecutions,
+    )
+
     companion object {
+        val PHASE_COUNT_OPTIONS = (1..9).toList() + (10..100 step 5) + (200..2000 step 100)
         val DEFAULT = RelayParams()
     }
 }

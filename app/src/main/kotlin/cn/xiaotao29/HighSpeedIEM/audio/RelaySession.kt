@@ -296,6 +296,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
 
     /** Pre-flight consistency checks; null means start may proceed. */
     fun prepareStartError(): String? {
+        relayParams.phaseStartError()?.let { return it }
         val inId = selectedInputId ?: return "转发未设置：请先在输入设备页选中一个设备"
         val outId = selectedOutputId ?: return "转发未设置：请先在输出设备页选中一个设备"
         if (!inputDevices.containsKey(inId)) return "转发未设置：输入设备 ID $inId 已不存在"
@@ -354,8 +355,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
                     normalizeThresholds(geometry.first, geometry.second)
                     val final = relayParams
                     if (!stopRequested) failure = withContext(Dispatchers.IO) {
-                        NativeRelay.nativeStartPrepared(intArrayOf(final.inputReadThresholdBursts,
-                            final.inputReadThresholdExtraFrames, final.inputBacklogThresholdFrames))
+                        NativeRelay.nativeStartPrepared(final.startThresholds())
                     }
                 }
             } catch (t: Throwable) { failure = t.toString() }

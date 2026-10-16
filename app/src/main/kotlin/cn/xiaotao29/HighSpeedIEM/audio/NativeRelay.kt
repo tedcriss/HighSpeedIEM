@@ -11,7 +11,7 @@ object NativeRelay {
     init { System.loadLibrary("relay") }
     /** 24 integers: input[9], output[10], thresholds[3], MMAP[2]. */
     external fun nativePrepare(config: IntArray, mixerMasks: IntArray): String?
-    /** Final front-end normalized [bursts, extraFrames, backlogFrames]. */
+    /** Final [bursts, extraFrames, backlogFrames, drainStable, drainMax, discardStable, discardMax]. */
     external fun nativeStartPrepared(thresholds: IntArray): String?
     external fun nativeSessionId(): Long
     external fun nativeStop(): String?

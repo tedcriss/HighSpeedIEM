@@ -43,7 +43,8 @@ class PreparedLifecycleTest {
         assertNotNull(NativeRelay.nativePrepare(config().apply{this[1]=1000},intArrayOf(1)))
         assertTrue(info(0).isEmpty());assertTrue(info(1).isEmpty())
         assertNull(NativeRelay.nativePrepare(config(),intArrayOf(1)))
-        assertNotNull(NativeRelay.nativeStartPrepared(intArrayOf(10,1024,100)))
+        assertNotNull(NativeRelay.nativeStartPrepared(RelayParams(inputReadThresholdBursts=10,
+            inputReadThresholdExtraFrames=1024,inputBacklogThresholdFrames=100).startThresholds()))
         assertNull(NativeRelay.nativeStop());assertTrue(info(0).isEmpty())
         assertNotNull(NativeRelay.nativePrepare(config().apply{this[12]=12345},intArrayOf(1)))
         assertTrue(info(0).isEmpty())
@@ -71,7 +72,7 @@ class PreparedLifecycleTest {
         nativeInjectError(-899);nativeInjectError(-898)
         assertTrue(received.await(3,TimeUnit.SECONDS));assertEquals(id,session.get())
         assertTrue(text.get().contains("AAUDIO_ERROR_DISCONNECTED"))
-        assertNotNull(NativeRelay.nativeStartPrepared(intArrayOf(0,0,0)))
+        assertNotNull(NativeRelay.nativeStartPrepared(RelayParams().startThresholds()))
         assertNull(NativeRelay.nativeStop());assertEquals(1,count.get())
     }
     @Test fun sessionIgnoresLateEventsAndStopsWithoutSnackbar()=foreground {

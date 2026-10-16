@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v5.6
+# HighSpeedIEM（高速耳返）v5.7
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -18,7 +18,8 @@ Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或�
 2. `nativePrepare(config, masks)` 创建通知通道，先开输出、后开输入，验证实际
    几何和 PCM，设置缓冲并分配 scratch；不启动任何流。
 3. IO 线程读取本次实际输出 FramesPerBurst 和输入 BufferSizeInFrames。
-4. 主线程归一化阈值并更新权威参数，传递最终 `[读取倍数, 附加帧, 积压阈值]`。
+4. 主线程归一化阈值并更新权威参数，传递最终 `[读取倍数, 附加帧, 积压阈值,
+   DRAIN稳定阈值, DRAIN强制次数, DISCARD稳定阈值, DISCARD强制次数]`。
 5. `nativeStartPrepared(thresholds)` 只校验和采用前端最终值；初始化状态机，
    先启动输入并确认 STARTED，再启动输出并确认 STARTED。
 
@@ -40,8 +41,8 @@ join 通知线程、关闭 eventfd → 释放 scratch。通知线程调用 Liste
 
 | 状态 | 一次回调行为 | 退出条件 |
 | --- | --- | --- |
-| DRAIN | 一次零超时读取实际输入 capacity，丢弃并静音 | 连续 4 次短读且有效积压 ≤ max(2×回调帧, 2×输出 burst)，或第 200 次 |
-| DISCARD | 一次零超时读取 numFrames，丢弃并静音 | 连续 5 次短读或有效积压变化 ≤ numFrames，或第 150 次 |
+| DRAIN | 一次零超时读取实际输入 capacity，丢弃并静音 | 连续稳定次数达到所选阈值（默认 4），或达到所选强制次数（默认 200）；稳定＝短读且有效积压 ≤ max(2×回调帧, 2×输出 burst) |
+| DISCARD | 一次零超时读取 numFrames，丢弃并静音 | 连续稳定次数达到所选阈值（默认 5），或达到所选强制次数（默认 200）；稳定＝短读或有效积压变化 ≤ numFrames |
 | RUNNING | XRun → 积压阈值 → 读取门槛 → 一次 numFrames 读取和混音 | 积压超阈值回 DRAIN；致命错误进入 EXIT |
 | EXIT | 不读、不混音，输出范围安全时 memset 静音并返回 STOP | 会话内不可返回运行态，后台完成停止 |
 
@@ -153,6 +154,30 @@ adb -s emulator-5554 shell am instrument -w -r cn.xiaotao29.HighSpeedIEM.test/an
 `MMapPolicyTest` 迁移到准备/启动两步，保留 NEVER/UNSPECIFIED 恢复、共享/独占请求、
 I16/Float、连续推进及混音更新；`ErrorReportingTest` 和 `MixerDialogTest` 保留旋转、
 重建、后台、遥控/键盘与长列表覆盖。
+
+### v5.7 DRAIN / DISCARD 退出参数
+
+转发参数设置新增四个共享 Material 3 下拉菜单，默认 DRAIN 4 / 200、DISCARD
+5 / 200。四个菜单统一为 1..9、10..100（步长 5）、200..2000（步长 100），
+不增加 150。每个阶段不稳定均复位连续计数，强制次数按
+该阶段累计回调次数计算。参数保存在现有内存会话中，切换设备、旋转和重建
+Activity 后保留，下次启动时采用，并用于启动清理及每一轮积压恢复。
+
+允许先选出不一致的组合，启动前明确拒绝“强制退出次数小于稳定阈值”，不自动
+调整或覆盖用户选择。前端预检及原生启动均校验范围与大小关系；不一致时不启动
+流。状态机仅在启动前接收不可变参数，回调内继续保持无分配、无锁。
+
+`PhaseParamsTest` 验证手机横竖屏下四个下拉菜单的真实选择、重建后参数保留、
+启动错误原文显示、原生启动前拒绝非法组合和非默认参数的实际流推进。
+`CallbackMachineTest` 补充 1 / 2 / 10 / 100 / 2000 次边界、两阶段不稳定复位、
+恢复沿用所选参数及下一次会话默认值复位；`RelayParamRulesTest` 遍历两个阶段
+的所有稳定阈值 / 强制次数组合，验证关系校验与启动参数顺序。
+
+本次验证（2026-10-17）：四 ABI Debug / Release、测试 APK、6 项 JVM 测试及
+完整 lintRelease 构建通过（0 错误，9 项既有警告）；API 37 / x86_64 手机模拟器
+全套 38 项仪器测试通过，含 10,556 条原生状态机行为断言，crash buffer 为空。
+Release 为 v5.7 / versionCode 62，包含四 ABI，v2 签名验证通过；产物为
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_5.7.apk`。
 
 ### v5.6 设备卡片菜单键操作
 

@@ -54,6 +54,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
     }
     val backlogOptions = (listOf(0) + (1..10).map { it * 100 } + (2..10).map { it * 1000 })
         .map { it to if (it == 0) "关闭（0）" else "$it" }
+    val phaseOptions = RelayParams.PHASE_COUNT_OPTIONS.map { it to "$it" }
 
     ImmersiveDialog(onDismissRequest = onDismiss) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -198,6 +199,41 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                         "转发中积压估算超过阈值时进入 DRAIN 清空、DISCARD 同步，再开始正常转发。" +
                             "0 关闭积压触发；正数必须严格高于有效读取门槛。允许反复恢复，期间输出静音。",
                     )
+                    HorizontalDivider()
+                    SectionHeader("DRAIN 清空阶段")
+                    ParamDropdown(
+                        label = "DRAIN 稳定阈值（次）",
+                        selectedLabel = "${params.drainStableThreshold}",
+                        options = phaseOptions,
+                        onSelect = { update(params.copy(drainStableThreshold = it)) },
+                        enabled = !session.operationsBlocked,
+                    )
+                    ParamDropdown(
+                        label = "DRAIN 强制退出次数",
+                        selectedLabel = "${params.drainMaxExecutions}",
+                        options = phaseOptions,
+                        onSelect = { update(params.copy(drainMaxExecutions = it)) },
+                        enabled = !session.operationsBlocked,
+                    )
+                    SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 4 / 200。")
+                    HorizontalDivider()
+                    SectionHeader("DISCARD 同步阶段")
+                    ParamDropdown(
+                        label = "DISCARD 稳定阈值（次）",
+                        selectedLabel = "${params.discardStableThreshold}",
+                        options = phaseOptions,
+                        onSelect = { update(params.copy(discardStableThreshold = it)) },
+                        enabled = !session.operationsBlocked,
+                    )
+                    ParamDropdown(
+                        label = "DISCARD 强制退出次数",
+                        selectedLabel = "${params.discardMaxExecutions}",
+                        options = phaseOptions,
+                        onSelect = { update(params.copy(discardMaxExecutions = it)) },
+                        enabled = !session.operationsBlocked,
+                    )
+                    SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 5 / 200。")
+                    SectionNote("每个阶段的强制退出次数必须大于或等于稳定阈值，否则启动转发时将报错。")
                     session.parameterAdjustment?.let { SectionNote(it) }
                     HorizontalDivider()
                     Text(

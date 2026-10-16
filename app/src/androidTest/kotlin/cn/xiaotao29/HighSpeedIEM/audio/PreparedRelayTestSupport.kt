@@ -8,5 +8,5 @@ internal fun startTestRelay(config: IntArray, masks: IntArray): String? {
     val p = RelayParams(inputReadThresholdBursts = config[ConfigField.READ_BURSTS.ordinal], inputReadThresholdExtraFrames = config[ConfigField.READ_EXTRA.ordinal], inputBacklogThresholdFrames = config[ConfigField.BACKLOG.ordinal])
     val final = RelayParamRules.normalize(p, RelayParamRules.ChangedField.GEOMETRY,
         info(0)["FramesPerBurst"]?.toIntOrNull(), info(1)["BufferSizeInFrames"]?.toIntOrNull()).params
-    return NativeRelay.nativeStartPrepared(intArrayOf(final.inputReadThresholdBursts, final.inputReadThresholdExtraFrames, final.inputBacklogThresholdFrames))
+    return NativeRelay.nativeStartPrepared(final.startThresholds())
 }

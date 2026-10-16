@@ -7,10 +7,11 @@ bool RelayCallbackMachine::checkedMultiply(size_t a, size_t b, size_t& result) {
     if (b && a > std::numeric_limits<size_t>::max() / b) return false;
     result = a * b; return true;
 }
-void RelayCallbackMachine::prepare(int64_t threshold, int32_t backlog) {
+void RelayCallbackMachine::prepare(int64_t threshold, int32_t backlog, RelayPhaseLimits limits) {
     state = State::DRAIN; visibleState = 0; startup = true;
     drain = {}; discard = {}; running = {}; exit = {};
     inputThresholdFrames = threshold; backlogThresholdFrames = backlog;
+    phaseLimits = limits;
 }
 void RelayCallbackMachine::requestExit(const RelayErrorRecord& error) { engine.events.requestExit(error); }
 void RelayCallbackMachine::enterDrain() { drain = {}; engine.events.publish(RelayEventType::Drain); }
@@ -86,7 +87,7 @@ aaudio_data_callback_result_t RelayCallbackMachine::processDrain(void* data, int
     discarded(got);
     const int64_t a = available(), slack = std::max(int64_t(frames) * 2, int64_t(engine.outBurst) * 2);
     drain.stable = got < engine.inputCapacity && a >= 0 && a <= slack ? drain.stable + 1 : 0;
-    if (++drain.executions >= 200 || drain.stable >= 4) transitionTo(State::DISCARD);
+    if (++drain.executions >= phaseLimits.drainMax || drain.stable >= phaseLimits.drainStable) transitionTo(State::DISCARD);
     engine.fillSilence(data, 0, frames); return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 aaudio_data_callback_result_t RelayCallbackMachine::processDiscard(void* data, int32_t frames) {
@@ -97,7 +98,7 @@ aaudio_data_callback_result_t RelayCallbackMachine::processDiscard(void* data, i
     const bool stable = got < frames || (a >= 0 && prev >= 0 && (a >= prev ? a - prev : prev - a) <= frames);
     if (a >= 0) discard.previousAvailable = a;
     discard.stable = stable ? discard.stable + 1 : 0;
-    if (++discard.executions >= 150 || discard.stable >= 5) transitionTo(State::RUNNING);
+    if (++discard.executions >= phaseLimits.discardMax || discard.stable >= phaseLimits.discardStable) transitionTo(State::RUNNING);
     engine.fillSilence(data, 0, frames); return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 aaudio_data_callback_result_t RelayCallbackMachine::processRunning(void* data, int32_t frames) {

@@ -64,10 +64,35 @@ std::string runCallbackMachineTests() {
         check(m.state == RelayCallbackMachine::State::DRAIN && f.calls==199, "unknown availability never stable");
         process(); check(m.state == RelayCallbackMachine::State::DISCARD && f.calls==200, "DRAIN cap exactly 200");
         f.got=8;
-        for(int i=0;i<149;++i) process();
+        for(int i=0;i<199;++i) process();
         check(m.state == RelayCallbackMachine::State::DISCARD, "unknown DISCARD no false difference");
-        process(); check(m.state == RelayCallbackMachine::State::RUNNING, "DISCARD cap exactly 150");
-        f.got=0;
+        process(); check(m.state == RelayCallbackMachine::State::RUNNING, "DISCARD cap exactly 200");
+        // Non-default limits must apply to startup and every recovery cycle.
+        for (int limit : {1, 2, 10, 100, 2000}) {
+            reset(); m.prepare(0, 0, {limit, limit, limit, limit});
+            for (int i=1;i<limit;++i) { process(); check(m.state == RelayCallbackMachine::State::DRAIN, "custom stable DRAIN early"); }
+            process(); check(m.state == RelayCallbackMachine::State::DISCARD && silent(), "custom stable DRAIN exit");
+            for (int i=1;i<limit;++i) { process(); check(m.state == RelayCallbackMachine::State::DISCARD, "custom stable DISCARD early"); }
+            process(); check(m.state == RelayCallbackMachine::State::RUNNING && silent(), "custom stable DISCARD exit");
+            reset(); m.prepare(0, 0, {1, limit, 1, limit}); f.available=-1; f.got=64;
+            for (int i=1;i<limit;++i) { process(); check(m.state == RelayCallbackMachine::State::DRAIN, "custom cap DRAIN early"); }
+            process(); check(m.state == RelayCallbackMachine::State::DISCARD, "custom cap DRAIN exact");
+            for (int i=1;i<limit;++i) { process(); check(m.state == RelayCallbackMachine::State::DISCARD, "custom cap DISCARD early"); }
+            process(); check(m.state == RelayCallbackMachine::State::RUNNING, "custom cap DISCARD exact");
+        }
+        reset(); m.prepare(0,0,{2,10,3,10});
+        process(); f.available=100; process(); f.available=0; process();
+        check(m.state == RelayCallbackMachine::State::DRAIN, "custom DRAIN unstable resets");
+        process(); check(m.state == RelayCallbackMachine::State::DISCARD, "custom DRAIN stable resumes");
+        process(); process(); f.got=8; f.available=100; process(); f.got=0;
+        process(); process(); check(m.state == RelayCallbackMachine::State::DISCARD, "custom DISCARD unstable resets");
+        process(); check(m.state == RelayCallbackMachine::State::RUNNING, "custom DISCARD stable resumes");
+        m.backlogThresholdFrames=10; f.available=11; process(); f.available=0;
+        for(int i=0;i<5;++i) process();
+        check(m.state == RelayCallbackMachine::State::RUNNING, "recovery retains custom phase limits");
+        reset();
+        for(int i=0;i<9;++i) process();
+        check(m.state == RelayCallbackMachine::State::RUNNING, "next session restores defaults");
         for (int cycle=0;cycle<1000;++cycle) {
             m.backlogThresholdFrames=10; f.available=11;
             const int before=f.calls; process();
