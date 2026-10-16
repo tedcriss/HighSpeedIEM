@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v5.7
+# HighSpeedIEM（高速耳返）v5.8
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -41,8 +41,8 @@ join 通知线程、关闭 eventfd → 释放 scratch。通知线程调用 Liste
 
 | 状态 | 一次回调行为 | 退出条件 |
 | --- | --- | --- |
-| DRAIN | 一次零超时读取实际输入 capacity，丢弃并静音 | 连续稳定次数达到所选阈值（默认 4），或达到所选强制次数（默认 200）；稳定＝短读且有效积压 ≤ max(2×回调帧, 2×输出 burst) |
-| DISCARD | 一次零超时读取 numFrames，丢弃并静音 | 连续稳定次数达到所选阈值（默认 5），或达到所选强制次数（默认 200）；稳定＝短读或有效积压变化 ≤ numFrames |
+| DRAIN | 一次零超时读取实际输入 capacity，丢弃并静音 | 连续稳定次数达到所选阈值（默认 7），或达到所选强制次数（默认 200）；稳定＝短读且有效积压 ≤ max(2×回调帧, 2×输出 burst) |
+| DISCARD | 一次零超时读取 numFrames，丢弃并静音 | 连续稳定次数达到所选阈值（默认 7），或达到所选强制次数（默认 200）；稳定＝短读或有效积压变化 ≤ numFrames |
 | RUNNING | XRun → 积压阈值 → 读取门槛 → 一次 numFrames 读取和混音 | 积压超阈值回 DRAIN；致命错误进入 EXIT |
 | EXIT | 不读、不混音，输出范围安全时 memset 静音并返回 STOP | 会话内不可返回运行态，后台完成停止 |
 
@@ -125,7 +125,7 @@ Kotlin 验证会话编号，忽略迟到旧会话消息。普通提示只有最�
 - 开流后用本次真实 burst 和输入大小最终归一化，原生只校验、不隐藏修复。
 
 调整原因和最终选中值同步反映在前端；不伪造 192/256 burst，也不使用不匹配的旧缓存。
-输出大小默认 **4 burst**，所有性能模式均准备时设置一次，裁剪到实际容量，以 setter
+输出大小默认 **2 burst**，所有性能模式均准备时设置一次，裁剪到实际容量，以 setter
 实际返回值为准；用户选 0 时不调用 setter。输入默认 0，非零仍按平台尽力设置，失败
 记录后继续。不再有输出自动初始 2 burst 或 XRun 自适应增大。
 
@@ -154,6 +154,31 @@ adb -s emulator-5554 shell am instrument -w -r cn.xiaotao29.HighSpeedIEM.test/an
 `MMapPolicyTest` 迁移到准备/启动两步，保留 NEVER/UNSPECIFIED 恢复、共享/独占请求、
 I16/Float、连续推进及混音更新；`ErrorReportingTest` 和 `MixerDialogTest` 保留旋转、
 重建、后台、遥控/键盘与长列表覆盖。
+
+### v5.8 参数默认值与两列布局
+
+DRAIN / DISCARD 的稳定阈值均默认 **7**，强制退出次数仍默认 200；Kotlin
+会话默认值与原生 `RelayPhaseLimits` 保持一致。输出缓冲大小默认改为 **2 burst**，
+仍按实际容量裁剪，以 AAudio setter 返回的实际值为准。
+
+转发参数中每个阶段的稳定阈值、强制退出次数各占同一行的一列；输入、输出设备
+参数中的通道数、采样率也在同一行等宽排列。使用原生 Compose `Row` / `weight`
+和既有共享 `ParamDropdown`，列间距沿用 8dp，保留菜单键、焦点、无障碍与滚动行为。
+
+开发依据：[Android Compose 原生布局](https://developer.android.com/develop/ui/compose/layouts/basics)。
+
+本次验证（2026-10-17）：四 ABI Debug / Release、测试 APK、6 项 JVM 测试及
+`lintRelease` 构建通过（0 errors / 9 项既有 warnings）；API37 / x86_64 手机模拟器
+全套 38 项仪器测试通过，含 10,561 条原生状态机行为断言，Debug crash buffer 为空。
+Release 为 v5.8 / versionCode 63，含 armeabi-v7a、arm64-v8a、x86、x86_64，v2 签名
+验证通过。构建与仪器日志为 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/v5.8-build.log`
+和 `v5.8-tests.log`，最终 APK 为
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_5.8.apk`。
+
+Release 实看浅色竖屏与深色横屏，确认输入/输出设备参数同行、阶段参数同行及
+7 / 7 / 2 默认值；参数选择正常。截图和界面 XML 位于
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/qa58/`。最终保留运行中的手机模拟器，
+安装非 debuggable 签名 Release，恢复浅色竖屏、未选设备的默认输入页。
 
 ### v5.7 DRAIN / DISCARD 退出参数
 

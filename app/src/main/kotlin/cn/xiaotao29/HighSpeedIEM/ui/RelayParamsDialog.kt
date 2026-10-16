@@ -135,7 +135,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                         options = sizeOptions,
                         onSelect = { update(params.copy(outBufferSizeBursts = it)) },
                     )
-                    SectionNote("默认 4 × 实际 FramesPerBurst，裁剪到实际容量；0 保留系统默认。运行期间不自动调整。")
+                    SectionNote("默认 2 × 实际 FramesPerBurst，裁剪到实际容量；0 保留系统默认。运行期间不自动调整。")
                     ParamCheckboxRow(
                         label = "允许 MMAP（输出）",
                         checked = params.outMMapEnabled,
@@ -201,38 +201,52 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                     )
                     HorizontalDivider()
                     SectionHeader("DRAIN 清空阶段")
-                    ParamDropdown(
-                        label = "DRAIN 稳定阈值（次）",
-                        selectedLabel = "${params.drainStableThreshold}",
-                        options = phaseOptions,
-                        onSelect = { update(params.copy(drainStableThreshold = it)) },
-                        enabled = !session.operationsBlocked,
-                    )
-                    ParamDropdown(
-                        label = "DRAIN 强制退出次数",
-                        selectedLabel = "${params.drainMaxExecutions}",
-                        options = phaseOptions,
-                        onSelect = { update(params.copy(drainMaxExecutions = it)) },
-                        enabled = !session.operationsBlocked,
-                    )
-                    SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 4 / 200。")
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ParamDropdown(
+                            label = "DRAIN 稳定阈值（次）",
+                            selectedLabel = "${params.drainStableThreshold}",
+                            options = phaseOptions,
+                            onSelect = { update(params.copy(drainStableThreshold = it)) },
+                            enabled = !session.operationsBlocked,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ParamDropdown(
+                            label = "DRAIN 强制退出次数",
+                            selectedLabel = "${params.drainMaxExecutions}",
+                            options = phaseOptions,
+                            onSelect = { update(params.copy(drainMaxExecutions = it)) },
+                            enabled = !session.operationsBlocked,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 7 / 200。")
                     HorizontalDivider()
                     SectionHeader("DISCARD 同步阶段")
-                    ParamDropdown(
-                        label = "DISCARD 稳定阈值（次）",
-                        selectedLabel = "${params.discardStableThreshold}",
-                        options = phaseOptions,
-                        onSelect = { update(params.copy(discardStableThreshold = it)) },
-                        enabled = !session.operationsBlocked,
-                    )
-                    ParamDropdown(
-                        label = "DISCARD 强制退出次数",
-                        selectedLabel = "${params.discardMaxExecutions}",
-                        options = phaseOptions,
-                        onSelect = { update(params.copy(discardMaxExecutions = it)) },
-                        enabled = !session.operationsBlocked,
-                    )
-                    SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 5 / 200。")
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ParamDropdown(
+                            label = "DISCARD 稳定阈值（次）",
+                            selectedLabel = "${params.discardStableThreshold}",
+                            options = phaseOptions,
+                            onSelect = { update(params.copy(discardStableThreshold = it)) },
+                            enabled = !session.operationsBlocked,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ParamDropdown(
+                            label = "DISCARD 强制退出次数",
+                            selectedLabel = "${params.discardMaxExecutions}",
+                            options = phaseOptions,
+                            onSelect = { update(params.copy(discardMaxExecutions = it)) },
+                            enabled = !session.operationsBlocked,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 7 / 200。")
                     SectionNote("每个阶段的强制退出次数必须大于或等于稳定阈值，否则启动转发时将报错。")
                     session.parameterAdjustment?.let { SectionNote(it) }
                     HorizontalDivider()

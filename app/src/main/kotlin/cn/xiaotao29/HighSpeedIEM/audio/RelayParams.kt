@@ -18,7 +18,7 @@ data class RelayParams(
      */
     val inBufferSizeBursts: Int = 0,
     /** Output buffer size as a multiple of FramesPerBurst; 0 = setter not called. */
-    val outBufferSizeBursts: Int = 4,
+    val outBufferSizeBursts: Int = 2,
     /**
      * Input read threshold F = [inputReadThresholdBursts] × actual output
      * FramesPerBurst + [inputReadThresholdExtraFrames]: the minimum frames
@@ -30,9 +30,9 @@ data class RelayParams(
     /** Above this backlog return to DRAIN. 0 disables the check. */
     val inputBacklogThresholdFrames: Int = 0,
     /** Consecutive stable callbacks / maximum callbacks for each recovery phase. */
-    val drainStableThreshold: Int = 4,
+    val drainStableThreshold: Int = 7,
     val drainMaxExecutions: Int = 200,
-    val discardStableThreshold: Int = 5,
+    val discardStableThreshold: Int = 7,
     val discardMaxExecutions: Int = 200,
     /**
      * true = preserve the platform MMAP policy for the input (system may use MMAP

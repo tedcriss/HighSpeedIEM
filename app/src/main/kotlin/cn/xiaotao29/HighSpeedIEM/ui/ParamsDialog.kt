@@ -95,30 +95,36 @@ fun StreamParamsDialog(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    ParamDropdown(
-                        modifier = Modifier.focusRequester(initialFocus),
-                        onMenu = onMenu,
-                        label = "ChannelCount（通道数）",
-                        selectedLabel = if (params.channelCount == 0) "自动（0）" else "${params.channelCount}",
-                        options = channelOptions,
-                        onSelect = { update(params.copy(channelCount = it)) },
-                    )
-                    ParamDropdown(
-                        onMenu = onMenu,
-                        label = "SampleRate（采样率）",
-                        selectedLabel = when {
-                            params.sampleRateMode == cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT -> "同步输出采样率"
-                            rateOptions.isEmpty() -> "请选择输入设备 / 暂无可用采样率"
-                            params.sampleRate == 0 -> "自动（0）"
-                            else -> "${params.sampleRate} Hz"
-                        },
-                        options = rateOptions,
-                        onSelect = { update(params.copy(sampleRate = maxOf(0, it), sampleRateMode = when (it) {
-                            -1 -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT
-                            0 -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.AUTO
-                            else -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.EXPLICIT
-                        })) },
-                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ParamDropdown(
+                            modifier = Modifier.weight(1f).focusRequester(initialFocus),
+                            onMenu = onMenu,
+                            label = "ChannelCount（通道数）",
+                            selectedLabel = if (params.channelCount == 0) "自动（0）" else "${params.channelCount}",
+                            options = channelOptions,
+                            onSelect = { update(params.copy(channelCount = it)) },
+                        )
+                        ParamDropdown(
+                            onMenu = onMenu,
+                            modifier = Modifier.weight(1f),
+                            label = "SampleRate（采样率）",
+                            selectedLabel = when {
+                                params.sampleRateMode == cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT -> "同步输出采样率"
+                                rateOptions.isEmpty() -> "请选择输入设备 / 暂无可用采样率"
+                                params.sampleRate == 0 -> "自动（0）"
+                                else -> "${params.sampleRate} Hz"
+                            },
+                            options = rateOptions,
+                            onSelect = { update(params.copy(sampleRate = maxOf(0, it), sampleRateMode = when (it) {
+                                -1 -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT
+                                0 -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.AUTO
+                                else -> cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.EXPLICIT
+                            })) },
+                        )
+                    }
                     ParamDropdown(
                         onMenu = onMenu,
                         label = "Format（采样格式）",

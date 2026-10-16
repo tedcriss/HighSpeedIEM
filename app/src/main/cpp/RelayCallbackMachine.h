@@ -5,8 +5,8 @@
 #include <cstddef>
 class RelayEngine;
 struct RelayPhaseLimits {
-    int32_t drainStable = 4, drainMax = 200;
-    int32_t discardStable = 5, discardMax = 200;
+    int32_t drainStable = 7, drainMax = 200;
+    int32_t discardStable = 7, discardMax = 200;
 };
 struct RelayAudioOps {
     int32_t (*read)(AAudioStream*, void*, int32_t, int64_t) = AAudioStream_read;

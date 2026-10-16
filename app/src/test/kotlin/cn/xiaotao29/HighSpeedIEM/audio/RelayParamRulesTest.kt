@@ -9,7 +9,7 @@ class RelayParamRulesTest {
         assertEquals(expected, RelayParams.PHASE_COUNT_OPTIONS)
         val defaults = RelayParams()
         assertNull(defaults.phaseStartError())
-        assertArrayEquals(intArrayOf(0,0,0,4,200,5,200), defaults.startThresholds())
+        assertArrayEquals(intArrayOf(0,0,0,7,200,7,200), defaults.startThresholds())
         for (stable in expected) for (maximum in expected) {
             val drain = defaults.copy(drainStableThreshold=stable,drainMaxExecutions=maximum)
             val discard = defaults.copy(discardStableThreshold=stable,discardMaxExecutions=maximum)
@@ -77,7 +77,7 @@ class RelayParamRulesTest {
         val sync=relayConfig(1,StreamParams.defaultFor(true),2,output,RelayParams())
         assertEquals(ConfigField.entries.size,sync.size)
         assertEquals(44100,sync[ConfigField.IN_RATE.ordinal])
-        assertEquals(4,sync[ConfigField.OUT_SIZE.ordinal])
+        assertEquals(2,sync[ConfigField.OUT_SIZE.ordinal])
         val auto=relayConfig(1,StreamParams(sampleRate=12345,sampleRateMode=SampleRateMode.AUTO),2,output,RelayParams())
         assertEquals(0,auto[ConfigField.IN_RATE.ordinal])
         val explicit=relayConfig(1,StreamParams(sampleRate=48000,sampleRateMode=SampleRateMode.EXPLICIT),2,output,RelayParams())
@@ -86,6 +86,6 @@ class RelayParamRulesTest {
     @Test fun directionDefaults() {
         assertEquals(SampleRateMode.SYNC_OUTPUT,StreamParams.defaultFor(true).sampleRateMode)
         assertEquals(SampleRateMode.AUTO,StreamParams.defaultFor(false).sampleRateMode)
-        assertEquals(4,RelayParams().outBufferSizeBursts)
+        assertEquals(2,RelayParams().outBufferSizeBursts)
     }
 }

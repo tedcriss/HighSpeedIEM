@@ -51,14 +51,14 @@ std::string runCallbackMachineTests() {
         };
         reset();
         check(e.events.head == 0, "initial DRAIN must not notify");
-        for (int i=0;i<3;++i) { process(); check(m.state == RelayCallbackMachine::State::DRAIN && f.want == 64, "early DRAIN/read size"); }
-        process(); check(m.state == RelayCallbackMachine::State::DISCARD && f.calls == 4 && silent(), "DRAIN four stable, no fallthrough");
-        for(int i=0;i<4;++i) { process(); check(m.state == RelayCallbackMachine::State::DISCARD && f.want == 8, "DISCARD early/size"); }
-        process(); check(m.state == RelayCallbackMachine::State::RUNNING && f.calls == 9 && silent(), "DISCARD five stable/no fallthrough");
+        for (int i=0;i<6;++i) { process(); check(m.state == RelayCallbackMachine::State::DRAIN && f.want == 64, "early DRAIN/read size"); }
+        process(); check(m.state == RelayCallbackMachine::State::DISCARD && f.calls == 7 && silent(), "DRAIN seven stable, no fallthrough");
+        for(int i=0;i<6;++i) { process(); check(m.state == RelayCallbackMachine::State::DISCARD && f.want == 8, "DISCARD early/size"); }
+        process(); check(m.state == RelayCallbackMachine::State::RUNNING && f.calls == 14 && silent(), "DISCARD seven stable/no fallthrough");
         reset(); process(); process(); f.available=100; process(); f.available=0;
-        for(int i=0;i<3;++i) process();
+        for(int i=0;i<6;++i) process();
         check(m.state == RelayCallbackMachine::State::DRAIN, "unstable DRAIN resets streak");
-        process(); check(m.state == RelayCallbackMachine::State::DISCARD, "reset streak then four");
+        process(); check(m.state == RelayCallbackMachine::State::DISCARD, "reset streak then seven");
         reset(); f.available=-1;
         for(int i=0;i<199;++i) process();
         check(m.state == RelayCallbackMachine::State::DRAIN && f.calls==199, "unknown availability never stable");
@@ -91,14 +91,14 @@ std::string runCallbackMachineTests() {
         for(int i=0;i<5;++i) process();
         check(m.state == RelayCallbackMachine::State::RUNNING, "recovery retains custom phase limits");
         reset();
-        for(int i=0;i<9;++i) process();
+        for(int i=0;i<14;++i) process();
         check(m.state == RelayCallbackMachine::State::RUNNING, "next session restores defaults");
         for (int cycle=0;cycle<1000;++cycle) {
             m.backlogThresholdFrames=10; f.available=11;
             const int before=f.calls; process();
             check(m.state == RelayCallbackMachine::State::DRAIN && f.calls==before && silent(), "backlog must transition without read");
             f.available=0;
-            for(int j=0;j<9;++j) process();
+            for(int j=0;j<14;++j) process();
             check(m.state == RelayCallbackMachine::State::RUNNING, "recovery loops must remain unlimited");
         }
         m.backlogThresholdFrames=0;
