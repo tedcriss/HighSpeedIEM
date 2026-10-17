@@ -2,8 +2,8 @@ package cn.xiaotao29.HighSpeedIEM.audio
 
 /**
  * Per-device AAudio open-stream request parameters edited in the params
- * dialog. Zero geometry / format values let AAudio decide. Exclusive sharing
- * is requested by default; AAudio may fall back to shared mode. Buffer capacity/size moved to the
+ * dialog. Zero geometry / format values let AAudio decide. Direction defaults
+ * request exclusive input and shared output; AAudio decides the actual mode. Buffer capacity/size moved to the
  * session-level [RelayParams]; they are device-independent.
  */
 data class StreamParams(
@@ -22,6 +22,7 @@ data class StreamParams(
     companion object {
         fun defaultFor(input: Boolean) = StreamParams(
             sampleRateMode = if (input) SampleRateMode.SYNC_OUTPUT else SampleRateMode.AUTO,
+            exclusive = input,
         )
     }
 }

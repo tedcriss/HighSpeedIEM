@@ -1,8 +1,21 @@
-# HighSpeedIEM（高速耳返）v6.5
+# HighSpeedIEM（高速耳返）v6.6
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
 最低 API 27、目标 API 37，四 ABI 和现有主题、导航、权限、MMAP 策略保持不变。
+
+v6.6：输出设备参数的 `Exclusive` 默认不勾选，以共享模式请求开流；输入设备仍
+默认勾选。方向默认值统一由 `StreamParams.defaultFor(input)` 提供，用户手动设置
+仍保留；不修改 C++ 转发逻辑、不申请音频焦点。
+
+v6.6 验收（2026-10-17）：Debug / Release 四 ABI 编译、6 项 JVM 测试及手机模拟器
+2 项横竖屏参数对话框回归通过；Release 实际检查横竖屏下输入默认勾选、输出默认
+不勾选，以及手动切换、关闭再打开后的状态保留。v2 签名验证通过，签名 APK 已
+复制至桌面 `cn.xiaotao29.HighSpeedIEM_6.6.apk`，SHA-256 为
+`91389DC81BD8A54A3A2D3C98C02FBC322E5CA86F054427B8C9BC279370B2A7C0`。
+模拟器最终安装非 debuggable 的 Release 6.6 / versionCode 71，恢复竖屏默认输入
+首页，crash buffer 为空。证据：外置构建目录的 `build66.txt`、`qa66-debug.txt`、
+`qa66-release.txt` 和 `qa66/`。
 
 ## 会话与生命周期
 
