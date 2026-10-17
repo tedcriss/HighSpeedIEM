@@ -37,6 +37,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -261,6 +268,7 @@ fun ParameterDialog(
     title: String,
     onDismissRequest: () -> Unit,
     onMenu: (() -> Unit)? = null,
+    focusScroll: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Dialog(
@@ -273,6 +281,27 @@ fun ParameterDialog(
             decorFitsSystemWindows = true,
         ),
     ) {
+        val scrollState = rememberScrollState()
+        val scrollFocus = remember { FocusRequester() }
+        val scope = rememberCoroutineScope()
+        val rowStep = with(LocalDensity.current) {
+            MaterialTheme.typography.bodyMedium.lineHeight.toPx() + 8.dp.toPx()
+        }
+        LaunchedEffect(focusScroll) { if (focusScroll) scrollFocus.requestFocus() }
+        val readOnlyKeys = if (focusScroll) Modifier.focusRequester(scrollFocus)
+            .onPreviewKeyEvent { event ->
+                val direction = when (event.nativeKeyEvent.keyCode) {
+                    AndroidKeyEvent.KEYCODE_DPAD_DOWN -> 1
+                    AndroidKeyEvent.KEYCODE_DPAD_UP -> -1
+                    else -> 0
+                }
+                if (direction == 0) false else {
+                    if (event.type == KeyEventType.KeyDown) {
+                        scope.launch { scrollState.scrollBy(rowStep * direction) }
+                    }
+                    true
+                }
+            } else Modifier
         Surface(
             // Size the actual surface, with no full-screen wrapper intercepting
             // outside taps. Leave a visible margin on every screen edge.
@@ -292,8 +321,10 @@ fun ParameterDialog(
                 )
                 HorizontalDivider()
                 Column(
-                    modifier = Modifier.fillMaxWidth().weight(1f)
-                        .verticalScroll(rememberScrollState()).padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().weight(1f).then(readOnlyKeys)
+                        .verticalScroll(scrollState)
+                        .then(if (focusScroll) Modifier.focusable() else Modifier)
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     content = content,
                 )

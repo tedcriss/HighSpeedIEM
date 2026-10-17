@@ -1,14 +1,6 @@
 package cn.xiaotao29.HighSpeedIEM.ui
 
 import android.content.res.Configuration
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,7 +18,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
@@ -72,7 +63,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import cn.xiaotao29.HighSpeedIEM.MainActivity
@@ -86,18 +76,13 @@ import kotlinx.coroutines.withContext
 
 private val ToolbarShadowElevation = 6.dp
 
-/** Shared enter/exit specs for the realtime panel slide animation. */
-private val SlideSpec = tween<IntOffset>(durationMillis = 260)
-private val FadeSpec = tween<Float>(durationMillis = 260)
-
 /**
  * Forward-control tab. Bottom layer: one card per output channel (count
  * follows the selected output device / its requested channel count). Top
  * layer: a floating toolbar holding the four controls as equal-level
  * transparent icon buttons — horizontal at the bottom in portrait, a
- * vertical floating toolbar lane in landscape. The realtime parameters open
- * as an in-page floating panel (not a popup window): popup tooltips resized
- * and repositioned themselves while their content scrolled.
+ * vertical floating toolbar lane in landscape. Realtime telemetry shares
+ * the same large native dialog as the device and relay parameter settings.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -105,13 +90,16 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
     val outChannels = session.effectiveOutputChannels
     val landscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    var showRealtime by remember { mutableStateOf(false) }
+    var showRealtime by rememberSaveable { mutableStateOf(false) }
     var showRelayParams by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(session.forwarding) {
         if (!session.forwarding) showRealtime = false
     }
     if (showRelayParams) {
         RelayParamsDialog(session) { showRelayParams = false }
+    }
+    if (showRealtime && session.forwarding) {
+        RealtimeParamsDialog { showRealtime = false }
     }
     Row(Modifier.fillMaxSize()) {
         if (landscape) {
@@ -178,32 +166,6 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
                         ChannelMixCard(session, channel, onEditMixer)
                     }
                 }
-            }
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showRealtime,
-                enter = if (landscape) {
-                    slideInHorizontally(SlideSpec) { -it } + fadeIn(FadeSpec)
-                } else {
-                    slideInVertically(SlideSpec) { it } + fadeIn(FadeSpec)
-                },
-                exit = if (landscape) {
-                    slideOutHorizontally(SlideSpec) { -it } + fadeOut(FadeSpec)
-                } else {
-                    slideOutVertically(SlideSpec) { it } + fadeOut(FadeSpec)
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .zIndex(1f)
-                    .padding(
-                        start = 16.dp,
-                        end = 16.dp,
-                        bottom = if (landscape) 16.dp else 104.dp,
-                    ),
-            ) {
-                RealtimeParamsPanel(
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
-                    onClose = { showRealtime = false },
-                )
             }
             if (!landscape) {
                 HorizontalFloatingToolbar(
@@ -315,14 +277,9 @@ private fun StartStopIconButton(activity: MainActivity, session: RelaySession) {
     }
 }
 
-/**
- * In-page floating panel with the live stream parameters. Its bounds come
- * from the page layout, so scrolling the table can never resize or reposition
- * it the way a popup tooltip did. Polls the engine once per second while
- * composed; only changed value texts recompose.
- */
+/** Polls once per second only while the native telemetry dialog is composed. */
 @Composable
-private fun RealtimeParamsPanel(modifier: Modifier = Modifier, onClose: () -> Unit) {
+private fun RealtimeParamsDialog(onDismiss: () -> Unit) {
     val inputValues = remember { mutableStateMapOf<String, String>() }
     val outputValues = remember { mutableStateMapOf<String, String>() }
     var inputKeys by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -338,64 +295,32 @@ private fun RealtimeParamsPanel(modifier: Modifier = Modifier, onClose: () -> Un
             delay(1000)
         }
     }
-    Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        tonalElevation = 6.dp,
-        shadowElevation = 6.dp,
-    ) {
-        Column {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 8.dp, top = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                MarqueeText(
-                    "实时流参数",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f),
-                )
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Filled.Close, contentDescription = "关闭实时流参数")
-                }
-            }
-            Column(
-                Modifier
-                    .verticalScroll(rememberScrollState())
-                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                MarqueeText(
-                    "输入流",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                if (inputKeys.isEmpty()) {
-                    MarqueeText(
-                        "无已打开的输入流",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    RealtimeTable(inputKeys, inputValues)
-                }
-                MarqueeText(
-                    "输出流",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                if (outputKeys.isEmpty()) {
-                    MarqueeText(
-                        "无已打开的输出流",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    RealtimeTable(outputKeys, outputValues)
-                }
-            }
+    ParameterDialog(title = "实时流参数", onDismissRequest = onDismiss, focusScroll = true) {
+        MarqueeText(
+            "输入流",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        if (inputKeys.isEmpty()) {
+            MarqueeText(
+                "无已打开的输入流",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            RealtimeTable(inputKeys, inputValues)
+        }
+        MarqueeText(
+            "输出流",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        if (outputKeys.isEmpty()) {
+            MarqueeText(
+                "无已打开的输出流",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            RealtimeTable(outputKeys, outputValues)
         }
     }
 }

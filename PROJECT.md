@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v6.3
+# HighSpeedIEM（高速耳返）v6.4
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -138,6 +138,42 @@ MMAP 开启仍表示保留平台原策略（包括 UNSPECIFIED），关闭临时
 映射见 `设备类型映射.md`。
 
 ## 构建与验证
+
+### v6.4 实时参数统一为大面积非全屏窗口
+
+转发控制页的实时流参数移除原有页内浮层、X 和按方向定制的滑入/滑出动效，
+复用设备参数、转发参数的 `ParameterDialog`。窗口同样占可用宽高的 92%，
+使用相同的 Material 3 圆角、主题容器色、阴影和固定标题；仅参数表格滚动。
+原生 Dialog 处理外部点击、返回和 Escape 关闭，关闭弹窗不停止音频转发。
+
+保留每秒一次的后台 IO 参数查询及仅变化值重组。查询协程仍只在窗口可见时
+存在，关闭后随组合取消；转发停止时立即移除窗口，避免显示失效的流参数。
+只读内容打开时聚焦滚动区，原生触摸、滚轮、翻页键与无障碍滚动保持可用；
+方向键沿用设备能力窗口的逐行滚动处理。共享组件的表单窗口默认不启用此
+只读焦点模式，设备参数和转发设置的下拉框焦点行为保持原样。
+
+依据：[Android Dialog](https://developer.android.com/develop/ui/compose/components/dialog)。
+
+四 ABI Debug、签名 Release、测试 APK、6 项 JVM 单元测试及 `lintRelease`
+通过（0 errors / 8 项既有 warnings）。验证仅使用 API 37 / x86_64 手机模拟器。
+新增 `RealtimeDialogTest` 通过生产 Activity → 前台服务 → 会话启动实际 AAudio
+转发，在浅色和深色的横竖屏中检查 UI 帧计数持续更新、窗口占用范围和无 X、
+方向键/翻页键、真实触摸与无障碍滚动、滚动前后容器边界固定、外部/返回/Escape
+关闭及重新打开。每次关闭窗口后继续核对原生输入帧计数推进，停止转发时确认
+窗口自动关闭。共享表单窗口的 `ParameterDialogTest` 横竖屏回归通过。
+
+记录目录：`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/qa64/`。最终构建记录为
+`final-build.log`；实时参数最终浅色记录为 `light-final-tests.log`，深色记录为
+`dark-tests.log`；共享表单回归在 `light-tests.log`。初版实时参数测试的翻页定位
+曾混入输出流同名 ChannelCount 字段，已限定输入通道值后复测。
+原始 UI 计数观测见 `telemetry-ui.log`，横竖屏浅深色截图为 `realtime-*.png`。
+Debug / Release crash buffer 均为空。最终安装非 debuggable 的 6.4 Release，
+默认竖屏输入页保持前台，模拟器继续运行；最终截图为 `release-final-home.png`。
+
+
+版本 6.4 / versionCode 69，沿用工程已有签名配置，v2 签名验证通过，APK 包含
+armeabi-v7a / arm64-v8a / x86 / x86_64：
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_6.4.apk`。
 
 ### v6.3 大面积非全屏参数窗口
 
