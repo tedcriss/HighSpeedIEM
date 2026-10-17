@@ -42,6 +42,7 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -234,6 +235,16 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
         }
         LaunchedEffect(device, session.operationsBlocked) {
             if (deviceMenu.panel != null && (device == null || session.operationsBlocked)) deviceMenu.dismiss()
+        }
+        val infoPanel = deviceMenu.panel?.takeIf { it != DevicePanel.Params }
+        if (device != null && infoPanel != null) {
+            key(device.id, deviceMenu.input, infoPanel) {
+                DeviceInfoDialog(
+                    device, infoPanel,
+                    onDismiss = deviceMenu::dismiss,
+                    onMenu = { deviceMenu.next(deviceMenu.input, device.id) },
+                )
+            }
         }
         if (deviceMenu.panel == DevicePanel.Params && device != null) {
             StreamParamsDialog(

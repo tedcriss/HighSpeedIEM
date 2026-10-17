@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v6.1
+# HighSpeedIEM（高速耳返）v6.2
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -138,6 +138,46 @@ MMAP 开启仍表示保留平台原策略（包括 UNSPECIFIED），关闭临时
 映射见 `设备类型映射.md`。
 
 ## 构建与验证
+
+### v6.2 设备能力滚动时浮层尺寸与位置稳定
+
+设备能力原先使用锚定卡片按钮的 `TooltipBox` / `RichTooltip`。Material 3
+1.5.0-beta01 会按弹层相对锚点的方位重新建立 tooltip 内容；受限高度下的滚动、
+定位与焦点请求会相互影响。旧版在 API 37 手机模拟器横屏的一次真实触摸滚动中，
+滚动区从 `Rect(90, 660 - 846, 1038)` 跳至 `Rect(90, 95 - 846, 473)`，
+新增 `DeviceInfoPanelTest` 的几何稳定性断言直接失败。
+
+现在设备能力和同组测试设备入口统一由应用根部的 `DeviceMenuState` 打开
+`BasicAlertDialog`，用原生 Dialog 管理窗口、模态焦点、无障碍、外部点击和返回/
+Escape 关闭。Material 3 Surface 沿用实时参数浮层的主题色、形状及原生阴影；
+没有 X、确认按钮或手绘遮罩。标题固定，仅表格使用原生 `verticalScroll`，
+可视高度只依据窗口大小约束；不再跟随卡片锚点重新定位。原有方向键滚动、
+菜单键循环、关闭后焦点还原保留；切换设备/面板时重置独立滚动及焦点状态。
+设备断开或会话操作被锁定时仍自动关闭，按钮也同步使用原生 disabled 状态。
+
+依据：[Android Tooltip](https://developer.android.com/develop/ui/compose/components/tooltip)、
+[Android Dialog](https://developer.android.com/develop/ui/compose/components/dialog)。
+本轮未升级依赖，未修改音频处理。
+
+验证范围为 API 37 / x86_64 手机模拟器。四 ABI Debug、签名 Release、测试 APK、
+6 项 JVM 单元测试及 `lintRelease` 通过（0 errors / 8 项既有 warnings）。
+`DeviceInfoPanelTest` 在输入/输出设备的横竖屏执行真实手势，逐次检查窗口、标题和
+滚动区边界不变，检查滚回顶部、点击外部关闭且不误选底层设备、无关闭按钮。
+浅色模式连同 `DeviceMenuNavigationTest` 共 7 项通过；深色模式 4 项通过。
+既有测试继续覆盖方向键滚动、菜单循环、返回焦点、Escape，以及旋转后从
+参数下拉框返回设备能力面板。测试没有扩展到实体手机或电视。
+
+构建、旧版失败证据与最终浅色/深色测试记录在
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/qa62/`：`baseline-test.log`、
+`final-build.log`、`light-final-tests.log`、`dark-tests.log`。
+Release 实际安装后再次检查浅色/深色、横竖屏及 1.4 倍字体横屏的滚动边界；
+截图与 UI 树保存为同目录 `release-*.png/xml`，检查记录为 `release-qa.log`。
+Debug / Release crash buffer 均为空。最终恢复原字体、主题和自动旋转设置，
+安装非 debuggable 6.2 Release，前台停留默认竖屏输入页，模拟器保持运行。
+
+APK 沿用工程已有签名配置，v2 签名验证通过，版本 6.2 / versionCode 67；
+包含 armeabi-v7a / arm64-v8a / x86 / x86_64：
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_6.2.apk`。
 
 ### v6.1 锁屏后台转发与服务生命周期
 

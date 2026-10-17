@@ -32,25 +32,20 @@ import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RichTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TooltipBox
-import androidx.compose.material3.TooltipAnchorPosition
-import androidx.compose.material3.TooltipDefaults
-import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +60,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -219,13 +215,11 @@ private fun DeviceCard(session: RelaySession, input: Boolean, device: AudioDevic
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (action in listOf(DevicePanel.Capabilities, DevicePanel.Test)) {
-                    DeviceTooltipButton(
+                    DevicePanelButton(
                         device = device,
                         action = action,
-                        open = panel == action,
                         onOpen = { menu.open(input, device.id, action) },
-                        onDismiss = menu::dismiss,
-                        onMenu = ::nextPanel,
+                        enabled = !locked,
                     )
                 }
                 TextButton(
@@ -258,88 +252,101 @@ private fun capabilityEntries(device: AudioDeviceInfo): List<Pair<String, String
     return entries
 }
 
-/** Native tooltip with one focusable scroll region; touch buttons stay out of D-pad traversal. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Touch actions stay out of D-pad traversal; the card owns the menu shortcut. */
 @Composable
-private fun DeviceTooltipButton(
+private fun DevicePanelButton(
     device: AudioDeviceInfo,
     action: DevicePanel,
-    open: Boolean,
     onOpen: () -> Unit,
+    enabled: Boolean,
+) {
+    val capabilities = action == DevicePanel.Capabilities
+    TextButton(
+        onClick = onOpen,
+        enabled = enabled,
+        modifier = Modifier.focusProperties { canFocus = false }.semantics {
+            contentDescription = if (capabilities) "查看 ID ${device.id} 的设备能力"
+                else "测试 ID ${device.id}（暂未实现）"
+        },
+    ) {
+        MarqueeText(if (capabilities) "设备能力" else "测试设备", style = MaterialTheme.typography.labelLarge)
+        Icon(if (capabilities) Icons.Outlined.Info else Icons.Outlined.GraphicEq,
+            contentDescription = null, modifier = Modifier.size(20.dp))
+    }
+}
+
+/**
+ * A native dialog owns focus, accessibility and outside/back dismissal. Its
+ * viewport depends only on window constraints, never on the scrolling table's
+ * coordinates (TooltipBox used those coordinates to resize/reposition itself).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun DeviceInfoDialog(
+    device: AudioDeviceInfo,
+    action: DevicePanel,
     onDismiss: () -> Unit,
     onMenu: () -> Unit,
 ) {
-    // Each visibility change replaces the popup state immediately. This avoids
-    // an outgoing popup animation retaining focus during a menu-key handoff.
-    val state = key(open) { rememberTooltipState(initialIsVisible = open, isPersistent = true) }
-    // TooltipBox may re-key its content when native placement changes sides.
-    // Keep scrolling outside that content so a placement pass cannot reset it.
-    val scrollState = key(open) { rememberScrollState() }
+    val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
     val capabilities = action == DevicePanel.Capabilities
     val entries = remember(device) { capabilityEntries(device) }
     val windowHeight = LocalWindowInfo.current.containerSize.height
     val maxContentHeight = with(LocalDensity.current) {
-        (windowHeight * 0.35f).toDp().coerceAtMost(320.dp)
+        (windowHeight * 0.35f).toDp().coerceIn(48.dp, 320.dp)
     }
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        state = state,
-        focusable = true,
-        enableUserInput = false,
-        onDismissRequest = onDismiss,
-        tooltip = {
-            val popupFocus = remember { FocusRequester() }
-            val rowHeight = with(LocalDensity.current) {
-                MaterialTheme.typography.bodyMedium.lineHeight.toPx() + 8.dp.toPx()
-            }
-            LaunchedEffect(Unit) { popupFocus.requestFocus() }
-            RichTooltip(
-                modifier = Modifier.onMenuKey(onMenu),
-                title = { MarqueeText("${if (capabilities) "设备能力" else "测试设备"} · ID ${device.id}") },
-                text = {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp, max = maxContentHeight)
-                            .focusRequester(popupFocus)
-                            // ScrollState handles bounds, touch, wheel and accessibility.
-                            // Read-only scroll regions need arrow-key mapping in Compose;
-                            // its default key handler only supports page up/down.
-                            .onPreviewKeyEvent { event ->
-                                val direction = when (event.nativeKeyEvent.keyCode) {
-                                    AndroidKeyEvent.KEYCODE_DPAD_DOWN -> 1
-                                    AndroidKeyEvent.KEYCODE_DPAD_UP -> -1
-                                    else -> 0
-                                }
-                                if (direction == 0) false else {
-                                    if (event.type == KeyEventType.KeyDown) {
-                                        scope.launch { scrollState.scrollBy(rowHeight * direction) }
-                                    }
-                                    true
-                                }
-                            }
-                            .verticalScroll(scrollState)
-                            .focusable(),
-                    ) {
-                        if (capabilities) {
-                            InfoTable(entries, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-                        }
-                    }
-                },
-            )
-        },
-    ) {
-        TextButton(
-            onClick = onOpen,
-            modifier = Modifier.focusProperties { canFocus = false }.semantics {
-                contentDescription = if (capabilities) "查看 ID ${device.id} 的设备能力"
-                    else "测试 ID ${device.id}（暂未实现）"
-            },
+    BasicAlertDialog(onDismissRequest = onDismiss, modifier = Modifier.onMenuKey(onMenu)) {
+        val initialFocus = remember { FocusRequester() }
+        val rowHeight = with(LocalDensity.current) {
+            MaterialTheme.typography.bodyMedium.lineHeight.toPx() + 8.dp.toPx()
+        }
+        LaunchedEffect(Unit) { initialFocus.requestFocus() }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = 6.dp,
+            shadowElevation = 6.dp,
         ) {
-            MarqueeText(if (capabilities) "设备能力" else "测试设备", style = MaterialTheme.typography.labelLarge)
-            Icon(if (capabilities) Icons.Outlined.Info else Icons.Outlined.GraphicEq,
-                contentDescription = null, modifier = Modifier.size(20.dp))
+            Column {
+                MarqueeText(
+                    "${if (capabilities) "设备能力" else "测试设备"} · ID ${device.id}",
+                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 12.dp)
+                        .semantics { heading() },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .heightIn(min = 48.dp, max = maxContentHeight)
+                        .focusRequester(initialFocus)
+                        // Native scrolling handles touch, wheel, page keys and
+                        // accessibility; arrow keys add read-only D-pad support.
+                        .onPreviewKeyEvent { event ->
+                            val direction = when (event.nativeKeyEvent.keyCode) {
+                                AndroidKeyEvent.KEYCODE_DPAD_DOWN -> 1
+                                AndroidKeyEvent.KEYCODE_DPAD_UP -> -1
+                                else -> 0
+                            }
+                            if (direction == 0) false else {
+                                if (event.type == KeyEventType.KeyDown) {
+                                    scope.launch { scrollState.scrollBy(rowHeight * direction) }
+                                }
+                                true
+                            }
+                        }
+                        .verticalScroll(scrollState)
+                        .focusable(),
+                ) {
+                    if (capabilities) {
+                        InfoTable(entries, Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 20.dp))
+                    }
+                }
+            }
         }
     }
 }

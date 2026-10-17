@@ -159,7 +159,7 @@ internal fun Modifier.onMenuKey(onMenu: (() -> Unit)?): Modifier =
 
 /**
  * Two-column key/value table used by the capability and realtime-parameter
- * tooltips. A shared label width keeps every row aligned.
+ * panels. A shared label width keeps every row aligned.
  */
 @Composable
 fun InfoTable(entries: List<Pair<String, String>>, modifier: Modifier = Modifier) {
