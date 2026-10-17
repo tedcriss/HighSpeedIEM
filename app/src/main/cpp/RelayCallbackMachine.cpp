@@ -12,9 +12,15 @@ void RelayCallbackMachine::prepare(int64_t threshold, int32_t backlog, RelayPhas
     drain = {}; discard = {}; running = {}; exit = {};
     inputThresholdFrames = threshold; backlogThresholdFrames = backlog;
     phaseLimits = limits;
+    visibleBacklogLimit = backlog > 0 ? backlog : 0;
+    recoveryCount = 0;
 }
 void RelayCallbackMachine::requestExit(const RelayErrorRecord& error) { engine.events.requestExit(error); }
-void RelayCallbackMachine::enterDrain() { drain = {}; engine.events.publish(RelayEventType::Drain); }
+void RelayCallbackMachine::enterDrain() {
+    drain = {};
+    recoveryCount.fetch_add(1, std::memory_order_relaxed);
+    engine.events.publish(RelayEventType::Drain);
+}
 void RelayCallbackMachine::enterDiscard() { discard = {}; engine.events.publish(RelayEventType::Discard); }
 void RelayCallbackMachine::enterRunning() {
     running = {};
@@ -107,6 +113,7 @@ aaudio_data_callback_result_t RelayCallbackMachine::processRunning(void* data, i
     const int64_t dout = ox >= 0 && running.outputXrun >= 0 && ox > running.outputXrun ? int64_t(ox) - running.outputXrun : 0;
     running.inputXrun = ix; running.outputXrun = ox;
     if (di || dout) {
+        running.backlogHighFrames = 0;
         if (di) {
             size_t required = 0;
             if (engine.inputCapacity <= 0 || !checkedMultiply(engine.inputCapacity, engine.inputBytesPerFrame, required) || required > engine.scratch.size())
@@ -119,13 +126,27 @@ aaudio_data_callback_result_t RelayCallbackMachine::processRunning(void* data, i
         engine.events.publish(RelayEventType::XRun, di, dout);
         engine.fillSilence(data, 0, frames); return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
-    if (backlogThresholdFrames > 0 && available() > backlogThresholdFrames) {
+    const int size = inputThresholdFrames > 0 ? ops.bufferSize(engine.input) : 0;
+    const int64_t threshold = size > 0 ? std::min(inputThresholdFrames, int64_t(size)) : inputThresholdFrames;
+    // Same nominal sample rate does not synchronize capture/playback clocks.
+    // A short read (or an output-only XRun) can also leave a permanent extra
+    // queue: normal callbacks consume at most exactly as much as they output.
+    // Automatic mode keeps two scheduling quanta above a complete read/gate,
+    // and requires a full second of continuously high *callback* observations.
+    // UI polling phase and isolated scheduling jitter cannot trigger recovery.
+    const bool automaticBacklog = backlogThresholdFrames == -1;
+    const int64_t quantum = std::max({int64_t(frames), int64_t(engine.inBurst), int64_t(engine.outBurst)});
+    const int64_t limit = automaticBacklog
+            ? std::max(threshold, int64_t(frames)) + 2 * quantum : backlogThresholdFrames;
+    visibleBacklogLimit.store(static_cast<uint32_t>(std::max(int64_t(0),
+            std::min(limit, int64_t(INT32_MAX)))), std::memory_order_relaxed);
+    const bool high = limit > 0 && available() > limit;
+    running.backlogHighFrames = high ? running.backlogHighFrames + frames : 0;
+    if (high && (!automaticBacklog || running.backlogHighFrames >= std::max(1, engine.outRate))) {
         transitionTo(State::DRAIN);
         engine.fillSilence(data, 0, frames); return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
     if (inputThresholdFrames > 0) {
-        const int size = ops.bufferSize(engine.input);
-        const int64_t threshold = size > 0 ? std::min(inputThresholdFrames, int64_t(size)) : inputThresholdFrames;
         const int64_t a = available();
         if (a >= 0 && a < threshold) {
             running.gateStallFrames += frames;

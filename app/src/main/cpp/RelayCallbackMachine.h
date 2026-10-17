@@ -23,6 +23,8 @@ public:
     aaudio_data_callback_result_t process(void* data, int32_t frames);
     void requestExit(const RelayErrorRecord& error);
     uint32_t stateSnapshot() const { return visibleState.load(std::memory_order_relaxed); }
+    uint32_t backlogLimitSnapshot() const { return visibleBacklogLimit.load(std::memory_order_relaxed); }
+    uint32_t recoveryCountSnapshot() const { return recoveryCount.load(std::memory_order_relaxed); }
     static bool checkedMultiply(size_t a, size_t b, size_t& result);
 private:
     friend std::string runCallbackMachineTests();
@@ -38,10 +40,15 @@ private:
     void discarded(int32_t got);
     struct DrainStateData { int executions = 0, stable = 0; } drain;
     struct DiscardStateData { int executions = 0, stable = 0; int64_t previousAvailable = -1; } discard;
-    struct RunningStateData { int32_t inputXrun = -1, outputXrun = -1; int64_t gateStallFrames = 0; bool stallNotified = false; } running;
+    struct RunningStateData {
+        int32_t inputXrun = -1, outputXrun = -1;
+        int64_t gateStallFrames = 0, backlogHighFrames = 0;
+        bool stallNotified = false;
+    } running;
     struct ExitStateData { bool stopped = false; } exit;
     State state = State::DRAIN;
     std::atomic<uint32_t> visibleState{0};
+    std::atomic<uint32_t> visibleBacklogLimit{0}, recoveryCount{0};
     RelayEngine& engine;
     RelayAudioOps ops;
     int64_t inputThresholdFrames = 0;

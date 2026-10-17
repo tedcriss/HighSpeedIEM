@@ -455,6 +455,7 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     }
     format = outFormat;
     outBurst = AAudioStream_getFramesPerBurst(out);
+    inBurst = AAudioStream_getFramesPerBurst(in);
     if (outBurst <= 0) {
         const auto error = std::string("输出 FramesPerBurst 无效: ") + valueOrError(outBurst);
         std::string ignored; closeStreams(ignored); return error;
@@ -540,7 +541,7 @@ std::string RelayEngine::startPrepared(const std::vector<int32_t>& thresholds) {
         return "startPrepared: DISCARD 强制退出次数（" + std::to_string(limits.discardMax) +
                 "）不能小于稳定阈值（" + std::to_string(limits.discardStable) + "）";
     const bool validExtra = extra == 0 || (extra > 0 && extra <= 1024 && (extra & (extra - 1)) == 0);
-    const bool validBacklog = backlog == 0 || (backlog >= 100 && backlog <= 1000 && backlog % 100 == 0)
+    const bool validBacklog = backlog == -1 || backlog == 0 || (backlog >= 100 && backlog <= 1000 && backlog % 100 == 0)
             || (backlog >= 2000 && backlog <= 10000 && backlog % 1000 == 0);
     if (bursts < 0 || bursts > 10 || !validExtra || !validBacklog)
         return "startPrepared: invalid thresholds";
@@ -653,7 +654,7 @@ std::string RelayEngine::stop() {
     closeStreams(firstError);
     events.stop();
     std::vector<uint8_t>().swap(scratch);
-    inChannels = outChannels = inRate = outRate = outBurst = 0;
+    inChannels = outChannels = inRate = outRate = inBurst = outBurst = 0;
     inputBytesPerFrame = outputBytesPerFrame = 0;
     return firstError;
 }
@@ -795,6 +796,8 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
     if (direction == AAUDIO_DIRECTION_INPUT) {
         add("StartupFramesDiscarded", std::to_string(startupFramesDiscarded.load()));
         add("RuntimeFramesDiscarded", std::to_string(runtimeFramesDiscarded.load()));
+        add("InputBacklogLimitFrames", std::to_string(callbackMachine.backlogLimitSnapshot()));
+        add("BacklogRecoveryCount", std::to_string(callbackMachine.recoveryCountSnapshot()));
         const char* states[] = {"DRAIN", "DISCARD", "RUNNING", "EXIT"};
         const auto state = callbackMachine.stateSnapshot();
         add("CallbackState", state < 4 ? states[state] : "Unknown");

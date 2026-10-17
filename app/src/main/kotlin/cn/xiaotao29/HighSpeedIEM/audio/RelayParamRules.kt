@@ -7,10 +7,10 @@ object RelayParamRules {
     enum class ChangedField { BURSTS, EXTRA, BACKLOG, GEOMETRY }
     data class Result(val params: RelayParams, val reason: String? = null)
     val extras = listOf(0) + (0..10).map { 1 shl it }
-    val backlogs = listOf(0) + (1..10).map { it * 100 } + (2..10).map { it * 1000 }
+    val backlogs = listOf(-1, 0) + (1..10).map { it * 100 } + (2..10).map { it * 1000 }
 
     fun normalize(p: RelayParams, changed: ChangedField, burst: Int? = null, inputSize: Int? = null): Result {
-        if (p.inputBacklogThresholdFrames == 0) return Result(p)
+        if (p.inputBacklogThresholdFrames <= 0) return Result(p)
         fun floor(b: Int, e: Int): Long? {
             if (b > 0 && (burst == null || burst <= 0)) return null
             val raw = b.toLong() * (burst ?: 0) + e

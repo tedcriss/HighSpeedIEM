@@ -9,7 +9,7 @@ class RelayParamRulesTest {
         assertEquals(expected, RelayParams.PHASE_COUNT_OPTIONS)
         val defaults = RelayParams()
         assertNull(defaults.phaseStartError())
-        assertArrayEquals(intArrayOf(0,0,0,7,200,7,200), defaults.startThresholds())
+        assertArrayEquals(intArrayOf(0,0,-1,7,200,7,200), defaults.startThresholds())
         for (stable in expected) for (maximum in expected) {
             val drain = defaults.copy(drainStableThreshold=stable,drainMaxExecutions=maximum)
             val discard = defaults.copy(discardStableThreshold=stable,discardMaxExecutions=maximum)
@@ -21,7 +21,7 @@ class RelayParamRulesTest {
         assertNotNull(defaults.copy(discardMaxExecutions=150).phaseStartError())
         val custom = defaults.copy(drainStableThreshold=2,drainMaxExecutions=10,
             discardStableThreshold=3,discardMaxExecutions=20)
-        assertArrayEquals(intArrayOf(0,0,0,2,10,3,20), custom.startThresholds())
+        assertArrayEquals(intArrayOf(0,0,-1,2,10,3,20), custom.startThresholds())
         assertEquals(custom, RelayParamRules.normalize(custom, RelayParamRules.ChangedField.GEOMETRY).params)
     }
     @Test fun everyFiniteThresholdCombinationIsConsistent() {

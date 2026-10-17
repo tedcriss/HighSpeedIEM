@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v5.8
+# HighSpeedIEM（高速耳返）v5.9
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -43,7 +43,7 @@ join 通知线程、关闭 eventfd → 释放 scratch。通知线程调用 Liste
 | --- | --- | --- |
 | DRAIN | 一次零超时读取实际输入 capacity，丢弃并静音 | 连续稳定次数达到所选阈值（默认 7），或达到所选强制次数（默认 200）；稳定＝短读且有效积压 ≤ max(2×回调帧, 2×输出 burst) |
 | DISCARD | 一次零超时读取 numFrames，丢弃并静音 | 连续稳定次数达到所选阈值（默认 7），或达到所选强制次数（默认 200）；稳定＝短读或有效积压变化 ≤ numFrames |
-| RUNNING | XRun → 积压阈值 → 读取门槛 → 一次 numFrames 读取和混音 | 积压超阈值回 DRAIN；致命错误进入 EXIT |
+| RUNNING | XRun → 积压阈值 → 读取门槛 → 一次 numFrames 读取和混音 | 自动阈值持续超限约 1 秒，或正数手动阈值立即超限时回 DRAIN；致命错误进入 EXIT |
 | EXIT | 不读、不混音，输出范围安全时 memset 静音并返回 STOP | 会话内不可返回运行态，后台完成停止 |
 
 初始化 DRAIN 不通知。进入 DISCARD 通知“正在同步”；进入 RUNNING 建立输入/
@@ -58,7 +58,10 @@ RUNNING 每次先更新两端有效 XRun 基准。负查询使该方向基准失
 RUNNING。XRun 不改变输出大小；计数恒 0 不证明没有输入溢出。
 
 积压估算为 FramesWritten − FramesRead，不是保证可读帧数。未知时跳过积压判断。
-开启 B 且估算严格大于 B 时本次不读，静音转 DRAIN。门槛只作用于 RUNNING：
+B>0 且估算严格大于 B 时本次不读，静音转 DRAIN；B=0 关闭，B=-1 为默认自动模式：
+`B_auto = max(F_effective, numFrames) + 2 × max(numFrames, inBurst, outBurst)`。
+只有回调观测连续超限累计至少一个输出采样率的帧数（约 1 秒）才恢复；等于/低于
+阈值、未知计数或 XRun 都复位超限计时，避免单次调度抖动触发。门槛只作用于 RUNNING：
 `F_raw = 倍数 × 实际输出 burst + 附加帧`，输入实际大小有效时再取较小值。
 不足时不读、静音；连续约 1 秒后放行一次非阻塞读取并发事件，未知计数也放行。
 通过门槛仍只请求 numFrames。短读只混音 got 帧、尾部补零，不补读。
@@ -116,7 +119,8 @@ Kotlin 验证会话编号，忽略迟到旧会话消息。普通提示只有最�
 ## 阈值与缓冲
 
 `RelayParamRules` 是纯计算规则。倍数保留 0..10、附加帧保留 0 和 1..1024 二次幂、
-积压阈值保留 0、100..1000 百帧及 2000..10000 千帧选项。B=0 关闭积压；读取两项
+积压阈值提供默认自动（-1）、0、100..1000 百帧及 2000..10000 千帧选项。
+B=-1 自动根据每次真实回调和流几何计算，不参与正数阈值联动；B=0 关闭积压；读取两项
 均 0 关闭门槛。B>0 时必须严格大于 F_effective。
 
 - 改门槛或几何：保留门槛，B 调到最小有效正数；无项则 B=0。
@@ -154,6 +158,42 @@ adb -s emulator-5554 shell am instrument -w -r cn.xiaotao29.HighSpeedIEM.test/an
 `MMapPolicyTest` 迁移到准备/启动两步，保留 NEVER/UNSPECIFIED 恢复、共享/独占请求、
 I16/Float、连续推进及混音更新；`ErrorReportingTest` 和 `MixerDialogTest` 保留旋转、
 重建、后台、遥控/键盘与长列表覆盖。
+
+### v5.9 无 XRun 的长期输入积压
+
+用户报告小米输入 ID 23 → 输出 ID 2、全部默认时，约两分钟从 300–500 帧增长到
+800 多帧。此前默认 B=0，RUNNING 每次最多读输出请求帧数，因此输入略快于输出时
+无法消除净增长；一次短读、门槛跳读或输出侧 XRun 跳读也可能留下无法自行追回的
+额外队列。XRun 统计的是溢出/欠载，不是低延迟保证。48 kHz 下两分钟多 400 帧只需
+约 69.4 ppm 的两端速率差；此数值与时钟漂移相符，不能据此确证小米的硬件原因。
+官方明确不保证相同标称采样率下输入与输出时钟同步：
+[Android Audio latency](https://developer.android.com/ndk/guides/audio/audio-latency)。
+
+默认启用上述自动持续积压恢复，复用现有 DRAIN → DISCARD → RUNNING；仍保留
+明确的关闭及手动模式，不改 PCM、不引入重采样库或额外读循环。自动阈值留出两次
+调度量，持续超限约一秒再触发，回调外的每秒遥测不参与控制。输入遥测新增
+`InputBacklogLimitFrames`（0=关闭/尚未建立）及 `BacklogRecoveryCount`（不含启动清理）。
+原 `RuntimeFramesDiscarded` 继续显示实际丢弃量。恢复期间会短暂静音，属于限制长期
+队列延迟的恢复策略，不是连续异步重采样，也不保证端到端延迟恒定。显式关闭仍允许
+积压增长；极小自定义容量或过高读取门槛仍可能先发生溢出。
+
+原生注入测试以每 75 次 192 帧输出多捕获 1 帧模拟 48 kHz / 69.44 ppm 的双时钟，
+连续六分钟，所有 XRun 均为 0，比较关闭与自动模式；同时覆盖瞬时抖动、严格大于、
+未知可用量、读取门槛、输入 burst、短读残留及会话复位。真实 AAudio 测试采用默认
+自动模式，在手机模拟器竖屏、横屏各连续运行 30 秒，并测试自动/关闭选择与旋转保留。
+小米手机此次未安装或运行测试，不能将模拟器验证视为小米长期复测。
+
+本次验证（2026-10-17）：四 ABI Debug / Release、测试 APK、6 项 JVM 测试和
+`lintRelease` 通过（0 errors / 8 warnings）。API 37 / x86_64 手机模拟器完整 40 项
+仪器用例首轮 39 项通过；新增自动参数 UI 用例修正滚动定位及既有导航切换会关闭
+对话框的测试假设后，定向复测通过。原生生产状态机共通过 370,570 条行为断言。
+Debug / Release crash buffer 均为空，Release 横竖屏实看自动选项与说明正常。
+最终安装 5.9 / versionCode 64 的非 debuggable 签名 Release，保留模拟器和竖屏
+默认输入页。APK 含四 ABI，v2 签名验证通过，文件为
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_5.9.apk`。
+构建记录为 `v5.9-final-build.log`，完整仪器记录为 `v5.9-tests.log`，最终单项复测为
+`v5.9-ui-final-retest.log`，均在 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/`；截图、
+签名检查与 crash buffer 在其 `qa59/` 子目录。
 
 ### v5.8 参数默认值与两列布局
 

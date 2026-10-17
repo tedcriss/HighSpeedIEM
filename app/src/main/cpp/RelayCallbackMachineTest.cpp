@@ -118,6 +118,74 @@ std::string runCallbackMachineTests() {
         process(); check(f.calls==before+1, "gate resumes after one read");
         f.available=-1; process(); check(f.calls==before+2, "unknown availability opens gate");
         f.size=4; f.available=4; process(); check(f.calls==before+3, "gate clamps actual input size");
+        // Automatic recovery must reject isolated jitter, tolerate unavailable
+        // counters, respect the read gate, and stay independent of UI polling.
+        reset(); m.prepare(0,-1); m.transitionTo(RelayCallbackMachine::State::RUNNING);
+        f.available=25;
+        for(int i=0;i<7;++i) process();
+        check(m.state==RelayCallbackMachine::State::RUNNING && m.backlogLimitSnapshot()==24,
+              "auto backlog holds one second, derived from geometry");
+        f.available=24; process(); f.available=25;
+        for(int i=0;i<7;++i) process();
+        check(m.state==RelayCallbackMachine::State::RUNNING,"at-limit sample resets persistence");
+        f.available=-1; process(); f.available=25;
+        for(int i=0;i<7;++i) process();
+        check(m.state==RelayCallbackMachine::State::RUNNING,"unknown availability resets persistence and keeps reading");
+        before=f.calls; process();
+        check(m.state==RelayCallbackMachine::State::DRAIN && f.calls==before && silent()
+                && m.recoveryCountSnapshot()==1,"auto sustained backlog recovers without XRun");
+        reset(); m.prepare(48,-1); m.transitionTo(RelayCallbackMachine::State::RUNNING);
+        e.inBurst=16; f.available=80;
+        for(int i=0;i<16;++i) process();
+        check(m.backlogLimitSnapshot()==80 && m.recoveryCountSnapshot()==0,
+              "auto honors read gate and larger input burst with strict greater-than limit");
+        reset(); e.inBurst=0; m.transitionTo(RelayCallbackMachine::State::RUNNING);
+        f.available=1000;
+        for(int i=0;i<16;++i) process();
+        check(m.state==RelayCallbackMachine::State::RUNNING && m.backlogLimitSnapshot()==0,
+              "explicit zero still disables all backlog recovery");
+        // Deterministic 48 kHz duplex clock model: +1 captured frame every
+        // 75 output callbacks of 192 frames = 69.44 ppm, about 400 frames/2min.
+        // No XRun and no streamInfo queries; exercise production phase IO too.
+        for (int mode : {0,-1}) {
+            reset(); m.prepare(0,mode); m.transitionTo(RelayCallbackMachine::State::RUNNING);
+            e.inputCapacity=e.outputCapacity=1536; e.inBurst=e.outBurst=192; e.outRate=48000;
+            e.scratch.resize(6144); std::array<int16_t,384> driftOutput{};
+            f.available=96;
+            f.supply=[](void* d,int n)->int32_t {
+                const int got=static_cast<int>(std::min(int64_t(n),fake->available));
+                std::fill_n(static_cast<int16_t*>(d),got*2,100);
+                fake->available-=got; return got;
+            };
+            int64_t peak=0;
+            for(int tick=1;tick<=90000;++tick) { // six minutes
+                f.available+=192+(tick%75==0 ? 1 : 0);
+                peak=std::max(peak,f.available);
+                check(m.process(driftOutput.data(),192)==AAUDIO_CALLBACK_RESULT_CONTINUE,
+                      "clock drift callbacks must continue");
+                check(f.inputXrun==0 && f.outputXrun==0,"clock drift has no XRuns");
+            }
+            if(mode==0) check(peak>=1488 && m.recoveryCountSnapshot()==0,
+                             "reproduce unbounded accumulation with old defaults and no XRuns");
+            // The transition callback deliberately performs no read; the next
+            // DRAIN sees one additional 192-frame capture interval.
+            else {
+                const std::string detail="auto six-minute drift: peak=" + std::to_string(peak)
+                        + ", recoveries=" + std::to_string(m.recoveryCountSnapshot());
+                check(peak<=800 && m.recoveryCountSnapshot()>=2 && m.recoveryCountSnapshot()<=5,
+                      detail.c_str());
+            }
+        }
+        // A single short read can permanently increase latency even with equal
+        // clocks: every subsequent full read only keeps that larger queue level.
+        // Model it as the residual queue left after the short read.
+        f.supply=nullptr; e.inputCapacity=e.outputCapacity=64; e.inBurst=0;
+        e.outBurst=8; e.outRate=64; e.scratch.resize(256);
+        reset(); m.prepare(0,-1); m.transitionTo(RelayCallbackMachine::State::RUNNING);
+        f.available=40; f.got=8;
+        for(int i=0;i<8;++i) process();
+        check(m.state==RelayCallbackMachine::State::DRAIN,"persistent short-read residual recovers without XRun");
+        reset(); m.transitionTo(RelayCallbackMachine::State::RUNNING);
         m.inputThresholdFrames=0;
         f.supply=[](void* data,int n)->int32_t { auto* x=static_cast<int16_t*>(data); for(int i=0;i<n;++i) {x[2*i]=100;x[2*i+1]=300;} return n; };
         process(); check(out[0]==200 && out[1]==0 && out[14]==200, "I16 mean and unrouted silence");

@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import cn.xiaotao29.HighSpeedIEM.audio.AAudio
+import cn.xiaotao29.HighSpeedIEM.audio.RelayParamRules
 import cn.xiaotao29.HighSpeedIEM.audio.RelayParams
 import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
 
@@ -52,8 +53,13 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
     val extraFrameOptions = (listOf(0) + (0..10).map { 1 shl it }).map {
         it to if (it == 0) "0 帧" else "$it 帧"
     }
-    val backlogOptions = (listOf(0) + (1..10).map { it * 100 } + (2..10).map { it * 1000 })
-        .map { it to if (it == 0) "关闭（0）" else "$it" }
+    fun backlogLabel(value: Int) = when (value) {
+        -1 -> "自动（持续积压恢复）"
+        0 -> "关闭（0）"
+        else -> "$value"
+    }
+    val backlogOptions = RelayParamRules.backlogs
+        .map { it to backlogLabel(it) }
     val phaseOptions = RelayParams.PHASE_COUNT_OPTIONS.map { it to "$it" }
 
     ImmersiveDialog(onDismissRequest = onDismiss) {
@@ -187,17 +193,15 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                     SectionHeader("输入积压恢复")
                     ParamDropdown(
                         label = "输入高积压阈值（帧）",
-                        selectedLabel = if (params.inputBacklogThresholdFrames == 0) {
-                            "关闭（0）"
-                        } else {
-                            "${params.inputBacklogThresholdFrames}"
-                        },
+                        selectedLabel = backlogLabel(params.inputBacklogThresholdFrames),
                         options = backlogOptions,
                         onSelect = { update(params.copy(inputBacklogThresholdFrames = it)) },
                     )
                     SectionNote(
-                        "转发中积压估算超过阈值时进入 DRAIN 清空、DISCARD 同步，再开始正常转发。" +
-                            "0 关闭积压触发；正数必须严格高于有效读取门槛。允许反复恢复，期间输出静音。",
+                        "默认自动：按实际输入、输出缓冲节奏和读取门槛保留余量，" +
+                            "持续积压约 1 秒后清空、同步，再开始正常转发。" +
+                            "正数超限立即恢复，且必须严格高于有效读取门槛；0 关闭。允许反复恢复，期间输出短暂静音。" +
+                            "可在实时输入参数查看当前阈值与恢复次数。",
                     )
                     HorizontalDivider()
                     SectionHeader("DRAIN 清空阶段")

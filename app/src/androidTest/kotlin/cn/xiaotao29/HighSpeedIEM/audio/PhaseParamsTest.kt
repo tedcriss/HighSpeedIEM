@@ -55,6 +55,33 @@ class PhaseParamsTest {
     @Test fun portraitDropdownsAndStartRejection() = exerciseDialog(false)
     @Test fun landscapeDropdownsAndStartRejection() = exerciseDialog(true)
 
+    @Test fun automaticBacklogDefaultCanBeDisabledAndSurvivesRotation() {
+        await { nodes().any { it.contentDescription?.toString() == "转发参数设置" } }
+        click(nodes().first { it.contentDescription?.toString() == "转发参数设置" })
+        scrollTo("输入高积压阈值（帧）")
+        assertTrue(nodes().any { it.text?.toString() == "自动（持续积压恢复）" })
+        selectLabel("输入高积压阈值（帧）", "关闭（0）")
+        scenario.onActivity { assertEquals(0, session.relayParams.inputBacklogThresholdFrames) }
+        selectLabel("输入高积压阈值（帧）", "自动（持续积压恢复）")
+        scenario.onActivity {
+            assertEquals(-1, session.relayParams.inputBacklogThresholdFrames)
+            it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+        await { i.targetContext.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE }
+        scenario.recreate()
+        scenario.onActivity { assertEquals(-1, session.relayParams.inputBacklogThresholdFrames) }
+        // The existing portrait/landscape navigation can rebuild ForwardPage
+        // and close its local dialog. Reopen it to verify the retained value.
+        await { nodes().any { it.contentDescription?.toString() in
+            listOf("转发参数设置", "关闭转发参数设置") } }
+        if (nodes().none { it.contentDescription?.toString() == "关闭转发参数设置" }) {
+            click(nodes().first { it.contentDescription?.toString() == "转发参数设置" })
+        }
+        scrollTo("输入高积压阈值（帧）")
+        assertTrue(nodes().any { it.text?.toString() == "自动（持续积压恢复）" })
+        scenario.onActivity { assertEquals(-1, session.relayParams.inputBacklogThresholdFrames) }
+    }
+
     private fun exerciseDialog(landscape: Boolean) {
         scenario.onActivity {
             it.requestedOrientation = if (landscape) ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -127,7 +154,9 @@ class PhaseParamsTest {
         assertTrue(info.getValue("FramesRead").toLong() > 0)
     }
 
-    private fun select(label: String, value: Int) {
+    private fun select(label: String, value: Int) = selectLabel(label, value.toString())
+
+    private fun selectLabel(label: String, value: String) {
         scrollTo(label)
         // A visible label can belong to a field clipped by the scroll viewport.
         // Ask Compose to bring the whole anchor into view before opening its popup.
@@ -136,8 +165,8 @@ class PhaseParamsTest {
         anchor.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
         SystemClock.sleep(300)
         click(nodes().first { it.text?.toString()?.contains(label) == true })
-        scrollTo(value.toString(), exact = true)
-        click(nodes().first { it.text?.toString() == value.toString() })
+        scrollTo(value, exact = true)
+        click(nodes().first { it.text?.toString() == value })
         await { nodes().none { it.className?.toString() == "android.widget.PopupWindow" } }
         SystemClock.sleep(150)
     }

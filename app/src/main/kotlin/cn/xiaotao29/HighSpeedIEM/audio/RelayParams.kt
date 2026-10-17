@@ -27,8 +27,8 @@ data class RelayParams(
      */
     val inputReadThresholdBursts: Int = 0,
     val inputReadThresholdExtraFrames: Int = 0,
-    /** Above this backlog return to DRAIN. 0 disables the check. */
-    val inputBacklogThresholdFrames: Int = 0,
+    /** -1 = automatic sustained recovery; 0 = off; positive = immediate DRAIN threshold. */
+    val inputBacklogThresholdFrames: Int = -1,
     /** Consecutive stable callbacks / maximum callbacks for each recovery phase. */
     val drainStableThreshold: Int = 7,
     val drainMaxExecutions: Int = 200,

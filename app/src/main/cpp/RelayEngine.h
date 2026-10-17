@@ -55,9 +55,9 @@ struct StartConfig {
     int32_t inputReadThresholdBursts = 0;
     int32_t inputReadThresholdExtraFrames = 0;
 
-    // A positive backlog threshold triggers RUNNING -> DRAIN. Zero disables
-    // the check. Each phase is bounded; the number of recovery cycles is not.
-    int32_t inputBacklogThresholdFrames = 0;
+    // -1 = automatic sustained backlog recovery, 0 = off, positive = immediate
+    // fixed threshold. Each phase is bounded; recovery cycles are unlimited.
+    int32_t inputBacklogThresholdFrames = -1;
 
     // Per-direction MMAP policy request: true = platform policy (system
     // decides, may fall back to non-MMAP), false = AAUDIO_POLICY_NEVER.
@@ -140,7 +140,7 @@ private:
     aaudio_format_t format = AAUDIO_FORMAT_UNSPECIFIED;
     int32_t inChannels = 0, outChannels = 0;
     int32_t inRate = 0, outRate = 0;
-    int32_t outBurst = 0;
+    int32_t inBurst = 0, outBurst = 0;
     int32_t inputCapacity = 0, outputCapacity = 0;
     size_t inputBytesPerFrame = 0, outputBytesPerFrame = 0;
     std::atomic<uint32_t> startupFramesDiscarded{0}, runtimeFramesDiscarded{0};
