@@ -116,7 +116,7 @@ class DeviceMenuNavigationTest {
         // The first parameter is focused automatically. Its native dropdown
         // owns a separate window, which must also forward the menu shortcut.
         key(KeyEvent.KEYCODE_DPAD_CENTER)
-        await { !hasText("输出设备参数 · ID $deviceId") && hasText("自动（0）") }
+        await { !hasText("输出设备参数 · ID $deviceId") && hasText("自动") }
         showNext("设备能力 · ID $deviceId")
         backToCard()
         scenario.onActivity { assertNull(session.selectedOutputId) }

@@ -256,7 +256,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         setMixerMask(outChannel, mixerMask(outChannel) xor (1 shl inChannel))
     }
 
-    /** Apply the whole dialog selection in one native routing update. */
+    /** Apply routing immediately, publishing selection only after native success. */
     fun setMixerMask(outChannel: Int, mask: Int) {
         if (busy || restartWaiting) return
         if (forwarding) {

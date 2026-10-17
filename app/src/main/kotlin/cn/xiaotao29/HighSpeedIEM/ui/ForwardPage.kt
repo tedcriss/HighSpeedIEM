@@ -50,7 +50,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -387,16 +386,13 @@ private fun MixerDialogButton(
     }
 }
 
-/** Fixed title/actions around a scrollable Material checkbox list. */
+/** Scrollable Material checkboxes write directly to the shared session routing. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -> Unit) {
     val inputId = session.selectedInputId
     val device = inputId?.let { session.inputDevices[it] }
     val inputChannels = session.effectiveInputChannels
-    var draftMask by rememberSaveable(inputId, session.selectedOutputId, outChannel, inputChannels) {
-        mutableIntStateOf(session.mixerMask(outChannel))
-    }
     val available = device != null && inputChannels > 0 &&
         session.selectedOutputId != null && outChannel in 0 until session.effectiveOutputChannels
     BasicAlertDialog(onDismissRequest = onDismiss) {
@@ -427,30 +423,16 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
                         items(inputChannels, key = { it }) { channel ->
-                            val checked = (draftMask and (1 shl channel)) != 0
+                            val checked = (session.mixerMask(outChannel) and (1 shl channel)) != 0
                             ListItem(
                                 checked = checked,
-                                onCheckedChange = { draftMask = draftMask xor (1 shl channel) },
+                                onCheckedChange = { session.toggleMixerChannel(outChannel, channel) },
                                 enabled = !session.busy && !session.restartWaiting,
                                 leadingContent = { Checkbox(checked = checked, onCheckedChange = null) },
                                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             ) { MarqueeText("ID $inputId · 通道 $channel") }
                         }
                     }
-                }
-                HorizontalDivider()
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                ) {
-                    TextButton(onClick = onDismiss) { MarqueeText("取消") }
-                    TextButton(
-                        enabled = available && !session.busy && !session.restartWaiting,
-                        onClick = {
-                            session.setMixerMask(outChannel, draftMask)
-                            onDismiss()
-                        },
-                    ) { MarqueeText("确定") }
                 }
             }
         }

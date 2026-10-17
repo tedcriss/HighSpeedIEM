@@ -58,11 +58,11 @@ class PhaseParamsTest {
     @Test fun automaticBacklogDefaultCanBeDisabledAndSurvivesRotation() {
         await { nodes().any { it.contentDescription?.toString() == "转发参数设置" } }
         click(nodes().first { it.contentDescription?.toString() == "转发参数设置" })
-        scrollTo("输入高积压阈值（帧）")
-        assertTrue(nodes().any { it.text?.toString() == "自动（持续积压恢复）" })
-        selectLabel("输入高积压阈值（帧）", "关闭（0）")
+        scrollTo("输入积压帧数")
+        assertTrue(nodes().any { it.text?.toString() == "程序自动" })
+        selectLabel("输入积压帧数", "关闭")
         scenario.onActivity { assertEquals(0, session.relayParams.inputBacklogThresholdFrames) }
-        selectLabel("输入高积压阈值（帧）", "自动（持续积压恢复）")
+        selectLabel("输入积压帧数", "程序自动")
         scenario.onActivity {
             assertEquals(-1, session.relayParams.inputBacklogThresholdFrames)
             it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -76,8 +76,8 @@ class PhaseParamsTest {
         if (nodes().none { it.text?.toString() == "转发参数设置" }) {
             click(nodes().first { it.contentDescription?.toString() == "转发参数设置" })
         }
-        scrollTo("输入高积压阈值（帧）")
-        assertTrue(nodes().any { it.text?.toString() == "自动（持续积压恢复）" })
+        scrollTo("输入积压帧数")
+        assertTrue(nodes().any { it.text?.toString() == "程序自动" })
         scenario.onActivity { assertEquals(-1, session.relayParams.inputBacklogThresholdFrames) }
     }
 

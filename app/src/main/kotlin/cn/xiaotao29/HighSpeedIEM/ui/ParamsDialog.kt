@@ -41,10 +41,10 @@ fun StreamParamsDialog(
     val params = session.paramsFor(input, device.id)
     fun update(next: StreamParams) { session.setParams(input, device.id, next) }
 
-    val channelOptions = listOf(0 to "自动（0）") +
+    val channelOptions = listOf(0 to "自动") +
         device.channelCounts.distinct().sorted().map { it to "$it" }
     val rateOptions = session.sampleRateOptions(input, device.id).map {
-        it to when (it) { -1 -> "同步输出采样率"; 0 -> "自动（0）"; else -> "$it Hz" }
+        it to when (it) { -1 -> "同步输出采样率"; 0 -> "自动"; else -> "$it Hz" }
     }
     val formatOptions = listOf(AAudio.FORMAT_UNSPECIFIED to "${AAudio.formatName(AAudio.FORMAT_UNSPECIFIED)}（自动）") +
         device.encodings.toList().mapNotNull { encoding ->
@@ -72,7 +72,7 @@ fun StreamParamsDialog(
                 modifier = Modifier.weight(1f).focusRequester(initialFocus),
                 onMenu = onMenu,
                 label = "ChannelCount",
-                selectedLabel = if (params.channelCount == 0) "自动（0）" else "${params.channelCount}",
+                selectedLabel = if (params.channelCount == 0) "自动" else "${params.channelCount}",
                 options = channelOptions,
                 onSelect = { update(params.copy(channelCount = it)) },
             )
@@ -83,7 +83,7 @@ fun StreamParamsDialog(
                 selectedLabel = when {
                     params.sampleRateMode == cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT -> "同步输出采样率"
                     rateOptions.isEmpty() -> "请选择输入设备 / 暂无可用采样率"
-                    params.sampleRate == 0 -> "自动（0）"
+                    params.sampleRate == 0 -> "自动"
                     else -> "${params.sampleRate} Hz"
                 },
                 options = rateOptions,
@@ -136,20 +136,27 @@ fun StreamParamsDialog(
             )
         }
         if (!input && Build.VERSION.SDK_INT >= 28) {
-            ParamDropdown(
-                onMenu = onMenu,
-                label = "Usage",
-                selectedLabel = AAudio.usageName(params.usage),
-                options = usageOptions,
-                onSelect = { update(params.copy(usage = it)) },
-            )
-            ParamDropdown(
-                onMenu = onMenu,
-                label = "ContentType",
-                selectedLabel = AAudio.contentTypeName(params.contentType),
-                options = contentTypeOptions,
-                onSelect = { update(params.copy(contentType = it)) },
-            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ParamDropdown(
+                    modifier = Modifier.weight(1f),
+                    onMenu = onMenu,
+                    label = "Usage",
+                    selectedLabel = AAudio.usageName(params.usage),
+                    options = usageOptions,
+                    onSelect = { update(params.copy(usage = it)) },
+                )
+                ParamDropdown(
+                    modifier = Modifier.weight(1f),
+                    onMenu = onMenu,
+                    label = "ContentType",
+                    selectedLabel = AAudio.contentTypeName(params.contentType),
+                    options = contentTypeOptions,
+                    onSelect = { update(params.copy(contentType = it)) },
+                )
+            }
         }
     }
 }

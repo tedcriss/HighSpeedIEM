@@ -32,9 +32,9 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
     val params = session.relayParams
     fun update(next: RelayParams) { session.updateRelayParams(next) }
 
-    val capacityOptions = AAudio.BUFFER_CAPACITIES.map { it to if (it == 0) "自动（0）" else "$it" }
+    val capacityOptions = AAudio.BUFFER_CAPACITIES.map { it to if (it == 0) "自动" else "$it" }
     val sizeOptions = (0..16).map {
-        it to if (it == 0) "系统默认（0）" else "$it × FramesPerBurst"
+        it to if (it == 0) "自动" else "$it × FramesPerBurst"
     }
     val thresholdBurstOptions = (0..10).map {
         it to "$it"
@@ -44,8 +44,8 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
         it to "$it"
     }
     fun backlogLabel(value: Int) = when (value) {
-        -1 -> "自动（持续积压恢复）"
-        0 -> "关闭（0）"
+        -1 -> "程序自动"
+        0 -> "关闭"
         else -> "$value"
     }
     val backlogOptions = RelayParamRules.backlogs
@@ -65,7 +65,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
         ParamDropdown(
             label = "BufferCapacity",
             selectedLabel = if (params.inBufferCapacity == 0) {
-                "自动（0）"
+                "自动"
             } else {
                 "${params.inBufferCapacity}"
             },
@@ -75,7 +75,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
         ParamDropdown(
             label = "BufferSize",
             selectedLabel = if (params.inBufferSizeBursts == 0) {
-                "系统默认（0）"
+                "自动"
             } else {
                 "${params.inBufferSizeBursts} × FramesPerBurst"
             },
@@ -93,7 +93,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
         ParamDropdown(
             label = "BufferCapacity",
             selectedLabel = if (params.outBufferCapacity == 0) {
-                "自动（0）"
+                "自动"
             } else {
                 "${params.outBufferCapacity}"
             },
@@ -102,7 +102,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
         )
         ParamDropdown(
             label = "BufferSize",
-            selectedLabel = if (params.outBufferSizeBursts == 0) "系统默认（0）" else "${params.outBufferSizeBursts} × FramesPerBurst",
+            selectedLabel = if (params.outBufferSizeBursts == 0) "自动" else "${params.outBufferSizeBursts} × FramesPerBurst",
             options = sizeOptions,
             onSelect = { update(params.copy(outBufferSizeBursts = it)) },
         )
@@ -139,19 +139,14 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
         HorizontalDivider()
         SectionHeader("输入积压恢复")
         ParamDropdown(
-            label = "输入高积压阈值（帧）",
+            label = "输入积压帧数",
             selectedLabel = backlogLabel(params.inputBacklogThresholdFrames),
             options = backlogOptions,
             onSelect = { update(params.copy(inputBacklogThresholdFrames = it)) },
         )
-        SectionNote(
-            "默认自动：按实际输入、输出缓冲节奏和读取门槛保留余量，" +
-                "持续积压约 1 秒后清空、同步，再开始正常转发。" +
-                "正数超限立即恢复，且必须严格高于有效读取门槛；0 关闭。允许反复恢复，期间输出短暂静音。" +
-                "可在实时输入参数查看当前阈值与恢复次数。",
-        )
+        SectionNote("输入可用帧大于该值后进入 DRAIN 状态")
         HorizontalDivider()
-        SectionHeader("DRAIN 清空阶段")
+        SectionHeader("DRAIN 状态参数")
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -174,7 +169,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             )
         }
         HorizontalDivider()
-        SectionHeader("DISCARD 同步阶段")
+        SectionHeader("DISCARD 状态参数")
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
