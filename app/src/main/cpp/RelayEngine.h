@@ -151,6 +151,9 @@ private:
 #ifndef NDEBUG
     // Debug-only evidence that the callback has mixed real PCM, not just zeros.
     std::atomic<bool> nonSilentOutputSeen{false};
+    // RUNNING reads only; startup/recovery discards and gated callbacks are
+    // excluded. These distinguish a short-read queue ratchet from clock drift.
+    std::atomic<uint32_t> runningShortReadCount{0}, runningMissingInputFrames{0};
 #endif
 
     std::atomic<JavaVM*> jvm{nullptr};

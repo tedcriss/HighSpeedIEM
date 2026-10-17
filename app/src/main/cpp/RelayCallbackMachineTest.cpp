@@ -48,6 +48,7 @@ std::string runCallbackMachineTests() {
             e.events.overflowState.reset(); e.events.overflowXrun.reset(); e.events.overflowGate.reset();
             e.events.overflowInputTotal = e.events.overflowOutputTotal = 0;
             f = {}; e.callbackReady = true; m.prepare(0,0);
+            e.runningShortReadCount = 0; e.runningMissingInputFrames = 0;
         };
         reset();
         check(e.events.head == 0, "initial DRAIN must not notify");
@@ -191,6 +192,8 @@ std::string runCallbackMachineTests() {
         process(); check(out[0]==200 && out[1]==0 && out[14]==200, "I16 mean and unrouted silence");
         f.supply=[](void* data,int)->int32_t { auto* x=static_cast<int16_t*>(data);x[0]=200;x[1]=400;return 1; };
         before=f.calls;process();check(out[0]==300 && out[1]==0 && out[2]==0 && f.calls==before+1, "short read one request and zero tail");
+        check(e.runningShortReadCount==1 && e.runningMissingInputFrames==7,
+              "RUNNING short read diagnostics count actual missing frames only");
         f.supply=nullptr;f.got=0;process();check(silent(), "zero read all silence");
         // All four PCM mixer representations, including packed sign extension.
         for(auto format : {AAUDIO_FORMAT_PCM_FLOAT,AAUDIO_FORMAT_PCM_I32,AAUDIO_FORMAT_PCM_I24_PACKED}) {

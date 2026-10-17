@@ -162,6 +162,12 @@ aaudio_data_callback_result_t RelayCallbackMachine::processRunning(void* data, i
     const int got = read(frames);
     if (got < 0) return fail(data, frames, RelayErrorKind::Read, got, frames);
     if (got > frames) return fail(data, frames, RelayErrorKind::Bounds, AAUDIO_ERROR_OUT_OF_RANGE, got);
+#ifndef NDEBUG
+    if (got < frames) {
+        engine.runningShortReadCount.fetch_add(1, std::memory_order_relaxed);
+        engine.runningMissingInputFrames.fetch_add(static_cast<uint32_t>(frames - got), std::memory_order_relaxed);
+    }
+#endif
     RelayEngine::Plan plan;
     const uint32_t valid = UINT32_MAX >> (32 - engine.inChannels);
     for (int o = 0; o < engine.outChannels; ++o) {

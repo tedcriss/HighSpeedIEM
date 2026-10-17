@@ -510,6 +510,7 @@ std::string RelayEngine::openStreams(const StartConfig& cfg, const std::vector<i
     startupFramesDiscarded = 0; runtimeFramesDiscarded = 0;
 #ifndef NDEBUG
     nonSilentOutputSeen = false;
+    runningShortReadCount = 0; runningMissingInputFrames = 0;
 #endif
 
     for (int32_t o = 0; o < outChannels; ++o) {
@@ -803,6 +804,10 @@ std::vector<std::pair<std::string, std::string>> RelayEngine::streamInfo(int32_t
         add("CallbackState", state < 4 ? states[state] : "Unknown");
     }
 #ifndef NDEBUG
+    if (direction == AAUDIO_DIRECTION_INPUT) {
+        add("RunningShortReadCount", std::to_string(runningShortReadCount.load(std::memory_order_relaxed)));
+        add("RunningMissingInputFrames", std::to_string(runningMissingInputFrames.load(std::memory_order_relaxed)));
+    }
     if (direction == AAUDIO_DIRECTION_OUTPUT) {
         add("NonSilentOutputSeen", nonSilentOutputSeen.load() ? "true" : "false");
     }

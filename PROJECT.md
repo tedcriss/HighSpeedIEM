@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v5.9
+# HighSpeedIEM（高速耳返）v6.0
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -158,6 +158,49 @@ adb -s emulator-5554 shell am instrument -w -r cn.xiaotao29.HighSpeedIEM.test/an
 `MMapPolicyTest` 迁移到准备/启动两步，保留 NEVER/UNSPECIFIED 恢复、共享/独占请求、
 I16/Float、连续推进及混音更新；`ErrorReportingTest` 和 `MixerDialogTest` 保留旋转、
 重建、后台、遥控/键盘与长列表覆盖。
+
+### v6.0 小米实机长测与短读诊断
+
+新增 `DuplexSoakTest`，通过 runner 参数指定输入/输出 ID、连续运行秒数、积压模式
+及 Activity 横竖屏方向；`rotateAtSeconds` 可在同一音频会话内切换至横屏，每秒记录
+完整两端实际流参数和原生状态事件。测试仅通过 Activity 窗口标志保持亮屏，旋转后
+继续应用并在结束时解除，不改变系统亮屏或旋转设置。录音、通知
+权限从应用正常界面授权；MIUI 若拦截测试进程的后台 Activity 启动，用 adb 正常
+前台打开 MainActivity 即可继续，不需要改变系统后台启动设置。
+
+Debug 输入参数新增 `RunningShortReadCount`、`RunningMissingInputFrames`，分别统计
+RUNNING 普通读取中实际返回不足的次数及尾部补零帧数；不包含启动/恢复丢弃、门槛
+跳读或 XRun 专用分支。每次 prepare 复位，使用无锁 32 位原子，仅短读时增加。
+Release 不编入这两个调试计数；默认自动恢复仍沿用 v5.9 的实现。
+
+实测对象：小米 2304FPN6DC / Android 13，输入 ID 23 → 输出 ID 2。实际为 48 kHz、
+Float、双声道；输入独占 MMAP、burst 96、capacity 3072、size 1536；输出共享、
+非 MMAP、burst 192、capacity 1536、size 384（默认 2 burst）。混音将第一输入通道
+接入两路输出，并通过 `NonSilentOutputSeen` 检查确有非静音 PCM。
+
+原始逐秒 JSONL、CSV 和每分钟统计保存在
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/xiaomi-soak/`。
+
+最终实机验收（2026-10-17）：v6.0 Debug、输入 ID 23 → 输出 ID 2、默认自动恢复，
+连续采集 **480 次 / 481.196 秒**。前 240 次竖屏，后 240 次横屏，旋转过程中两端
+帧计数持续推进；输出已确认混入非静音 PCM。输入可用帧范围 288–576，平均
+379.5；八个分钟均值依次为 371.2、380.0、377.6、371.2、391.2、387.2、384.0、373.6。
+无明显持续增长，未复现由 300–500 帧持续增至 800 多帧的情况。双端 XRun、
+RUNNING 短读次数、缺失帧数、自动恢复次数均为 0，仪器测试 `OK (1 test)`。
+按用户指定的连续 8 分钟标准，判定修改有效；本轮无短读，不能据此将历史增长
+确证为短读或时钟漂移。原有自动恢复作为持续积压时的处理仍保留。
+
+本轮构建：四 ABI Debug / 签名 Release、测试 APK、6 项 JVM 测试和 `lintRelease`
+通过（0 errors / 8 warnings）。既有 API37 / x86_64 手机模拟器定向回归通过
+`CallbackMachineTest` 与 `AutomaticBacklogTest`，含 370,571 条原生行为断言及
+横竖屏实际 AAudio；已核对四 ABI Release 不含新增 Debug 短读计数。
+v6.0 / versionCode 65，APK：
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_6.0.apk`。
+最终实机记录为 `xiaomi-soak/acceptance8m.jsonl`、`acceptance8m.csv`、
+`acceptance8m-summary.json`、`acceptance8m-instrument.txt`；构建记录为
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/v6.0-final-build.log`。
+最终已在小米手机安装通过 v2 签名验证的四 ABI Release，核实版本 6.0 / 65、
+无 DEBUGGABLE 标志，前台停留在未选设备的默认输入页；测试 APK 已移除。
 
 ### v5.9 无 XRun 的长期输入积压
 
