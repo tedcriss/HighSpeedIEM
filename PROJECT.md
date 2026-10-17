@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v6.0
+# HighSpeedIEM（高速耳返）v6.1
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -138,6 +138,46 @@ MMAP 开启仍表示保留平台原策略（包括 UNSPECIFIED），关闭临时
 映射见 `设备类型映射.md`。
 
 ## 构建与验证
+
+### v6.1 锁屏后台转发与服务生命周期
+
+前台界面发起的 `microphone|mediaPlayback` 服务继续持有部分唤醒锁，允许熄屏、
+锁屏后采集和播放。无需申请不存在的“始终允许麦克风”权限，也不通过保持屏幕
+常亮绕过锁屏。依据：[麦克风前台服务](https://developer.android.com/develop/background-work/services/fgs/service-types#microphone)、
+[Android 17 后台音频限制](https://developer.android.com/about/versions/17/changes/bg-audio)。
+
+修复前可复现：同一服务收到第二次启动请求时，`startEngine` 因 busy/forwarding
+调用该服务自身的 `relayClosed`，移除通知、释放唤醒锁并停止服务，却留下仍在转发的
+原生会话。快速重复点击也可能在第一条服务消息被处理前排入多次请求。界面可继续
+显示转发中，但会话已失去锁屏所需的前台服务保障。现在服务和会话均对同一 owner
+幂等处理，重复请求不停止或重开音频流，停止期间也不重启。
+
+前台提升、唤醒锁获取在 owner 建立前失败时，显示原始异常并立即关闭服务；owner
+已建立时仍等待原生关闭完成后释放唤醒锁。通知更新异常也进入同一停止路径，启动
+完成回调内部提出的停止请求会在本次生命周期任务中完成清理。
+
+`LockScreenRelayTest` 使用真实 Activity → 服务 → 会话路径，覆盖连续启动请求、
+打开期间快速双击、横竖屏各锁屏 30 秒、解锁后继续、正常停止及音频开流失败清理。
+旧版重复请求用例实测失败：`duplicate start removed foreground service`。
+测试检查 keyguard 已锁定且屏幕不交互、双端帧持续推进、服务保持前台，以及停止后
+服务和部分唤醒锁均已释放。测试只在 API 37 / x86_64 手机模拟器进行，不能据此
+确认小米等厂商系统的额外后台电源策略；尚未取得用户原设备故障时的日志。
+
+本轮验证（2026-10-17）：四 ABI Debug / 签名 Release、测试 APK、6 项 JVM 测试、
+`lintRelease` 通过（0 errors / 8 项既有 warnings）。手机模拟器通过锁屏用例和
+14 项已有生命周期/错误提示回归；新增开流失败用例定向通过，实际错误为
+`打开输入流失败 AAudioStreamBuilder_openStream(input): AAUDIO_ERROR_ILLEGAL_ARGUMENT`，
+错误后确认服务、音频流和部分唤醒锁释放。API 37 镜像不接受直接设置录音运行时
+app-op 的权限拒绝模拟，因此未将该方式作为权限拒绝验证证据。
+
+锁屏逐段记录为 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/v6.1-lock-telemetry.log`，
+已有回归记录为 `v6.1-regression-tests.log`（其中初版权限模拟用例未通过并已替换），
+最终开流失败记录为 `v6.1-start-failure-test.log`，构建记录为 `v6.1-final-build.log`。
+Debug / Release crash buffer 为空。Release 横竖屏截图在 `qa61/`；恢复原旋转及
+锁屏设置后，最终已安装 6.1 / versionCode 66 的非 debuggable Release，停留在
+竖屏默认输入页，模拟器保持运行。APK 包含 armeabi-v7a / arm64-v8a / x86 / x86_64，
+v2 签名验证通过，沿用仓库现有签名配置：
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_6.1.apk`。
 
 AGP 9.4.1、Kotlin Compose 插件 2.3.21、NDK 30.0.16248370、CMake 4.1.2，未升级。
 Windows 构建输出保持 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/`，临时产物不进源码。

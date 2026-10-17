@@ -60,6 +60,10 @@ class ForwardingService : Service(), RelaySession.Owner {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android may deliver multiple start requests before the UI observes busy.
+        // Re-entering startEngine used to close this same owner, removing the FGS
+        // and wake lock while its native streams continued without background access.
+        if (closing || session.owner === this) return START_NOT_STICKY
         try {
             val notification = notice("正在打开音频流…")
             if (Build.VERSION.SDK_INT >= 30) {
@@ -76,21 +80,36 @@ class ForwardingService : Service(), RelaySession.Owner {
                     .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "highspeediem:relay")
                     .apply {
                         setReferenceCounted(false)
-                        acquire()
                     }
+                wake?.acquire()
             }
             session.startEngine(this)
         } catch (e: Exception) {
-            session.stopForwarding(e.toString())
+            failStart(e.toString())
         } catch (e: LinkageError) {
-            session.stopForwarding(e.toString())
+            failStart(e.toString())
         }
         return START_NOT_STICKY
     }
 
     override fun relayStarted() {
-        getSystemService(NotificationManager::class.java)
-            .notify(NOTICE, notice("转发进行中 · 点击打开转发控制"))
+        try {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTICE, notice("转发进行中 · 点击打开转发控制"))
+        } catch (e: Exception) {
+            failStart(e.toString())
+        }
+    }
+
+    private fun failStart(error: String) {
+        if (session.owner === this) {
+            // Keep foreground access and the wake lock until native close completes.
+            session.stopForwarding(error)
+        } else {
+            // Foreground promotion / wake acquisition may fail before an owner exists.
+            session.showError(error)
+            relayClosed()
+        }
     }
 
     override fun relayClosed() {

@@ -323,6 +323,8 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
 
     /** Called by the service once its foreground notification is up. Blocking open on IO. */
     fun startEngine(newOwner: Owner) {
+        // An already attached owner is a repeated start, never a rejected new owner.
+        if (owner === newOwner) return
         if (busy || forwarding) {
             newOwner.relayClosed()
             return
@@ -361,6 +363,8 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
             } catch (t: Throwable) { failure = t.toString() }
             if (failure == null && !stopRequested) {
                 forwarding = true; busy = false; owner?.relayStarted()
+                // Owner notification failures may request stop inside this lifecycle job.
+                if (stopRequested) finishStopping()
             } else {
                 if (failure != null && !stopRequested) { showError(failure); errorHandledSessionId = activeSessionId; clearSelectionOnStop = true }
                 finishStopping()
