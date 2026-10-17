@@ -75,8 +75,8 @@ class ParameterDialogTest {
                 open("转发参数设置", "转发参数设置")
                 assertLargeInset("转发参数设置")
                 screenshot("relay-${if (landscape) "landscape" else "portrait"}")
-                scrollTo("允许 MMAP（输入）")
-                click(nodes().first { it.text?.toString() == "允许 MMAP（输入）" })
+                scrollTo("尝试输入 MMAP")
+                click(nodes().first { it.text?.toString() == "尝试输入 MMAP" })
                 scenario.onActivity { assertFalse(session.relayParams.inMMapEnabled) }
                 outside("转发参数设置")
                 open("转发参数设置", "转发参数设置")

@@ -145,7 +145,7 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
                 item(key = "page-heading") {
                     PageHeading(
                         title = "转发控制",
-                        description = "按输出通道配置混音输入，启动后由前台服务后台常驻转发。",
+                        description = "配置转发混音与音效",
                         status = if (session.restartWaiting) "等待自动重启" else if (session.forwarding) "转发中" else "未转发",
                     )
                 }
@@ -527,5 +527,29 @@ private fun pollStream(direction: Int): List<Pair<String, String>> {
     } catch (e: Exception) {
         return listOf("Error" to e.toString())
     } ?: return emptyList()
-    return flat.asList().chunked(2).map { (key, value) -> key to value }
+    return flat.asList().chunked(2).map { (key, value) ->
+        val label = when (key) {
+            "getAvailableFrames()" -> "AvailableFrames"
+            "BufferCapacityInFrames" -> "BufferCapacity"
+            "BufferSizeInFrames" -> "BufferSize"
+            "StartupFramesDiscarded" -> "StartupDiscard"
+            "RuntimeFramesDiscarded" -> "RuntimeDiscard"
+            "InputBacklogLimitFrames" -> "AutoLimit"
+            "BacklogRecoveryCount" -> "DrainCount"
+            else -> key
+        }
+        val prefix = when (key) {
+            "Format" -> "AAUDIO_FORMAT_"
+            "Direction" -> "AAUDIO_DIRECTION_"
+            "InputPreset" -> "AAUDIO_INPUT_PRESET_"
+            "PerformanceMode" -> "AAUDIO_PERFORMANCE_MODE_"
+            "SharingMode" -> "AAUDIO_SHARING_MODE_"
+            "Usage" -> "AAUDIO_USAGE_"
+            "ContentType" -> "AAUDIO_CONTENT_TYPE_"
+            "SessionId" -> "AAUDIO_SESSION_ID_"
+            "State" -> "AAUDIO_STREAM_STATE_"
+            else -> ""
+        }
+        label to value.removePrefix(prefix)
+    }
 }

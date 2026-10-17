@@ -37,11 +37,11 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
         it to if (it == 0) "系统默认（0）" else "$it × FramesPerBurst"
     }
     val thresholdBurstOptions = (0..10).map {
-        it to if (it == 0) "0（不加倍数）" else "$it × 输出 FramesPerBurst"
+        it to "$it"
     }
-    // "0 帧" and "2^0 = 1 帧" are distinct options.
+    // Zero frames and 2^0 = 1 frame are distinct options.
     val extraFrameOptions = (listOf(0) + (0..10).map { 1 shl it }).map {
-        it to if (it == 0) "0 帧" else "$it 帧"
+        it to "$it"
     }
     fun backlogLabel(value: Int) = when (value) {
         -1 -> "自动（持续积压恢复）"
@@ -59,11 +59,11 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             onCheckedChange = { update(params.copy(autoRestart = it)) },
             enabled = !session.operationsBlocked,
         )
-        SectionNote("转发报错后等待 500ms 再次尝试，保留设备与混音设置。点击刷新图标“中止尝试”，同时关闭自动重启；选中的设备断开时自动中止。")
+        SectionNote("如遇报错，等待 500 ms 后重试")
         HorizontalDivider()
         SectionHeader("输入流")
         ParamDropdown(
-            label = "BufferCapacityInFrames（输入缓冲容量）",
+            label = "BufferCapacity",
             selectedLabel = if (params.inBufferCapacity == 0) {
                 "自动（0）"
             } else {
@@ -73,7 +73,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             onSelect = { update(params.copy(inBufferCapacity = it)) },
         )
         ParamDropdown(
-            label = "BufferSizeInFrames（输入缓冲大小）",
+            label = "BufferSize",
             selectedLabel = if (params.inBufferSizeBursts == 0) {
                 "系统默认（0）"
             } else {
@@ -82,26 +82,16 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             options = sizeOptions,
             onSelect = { update(params.copy(inBufferSizeBursts = it)) },
         )
-        SectionNote(
-            "0＝保留开流后的系统默认缓冲大小；N＝请求 N × 该流实际 " +
-                "FramesPerBurst，且不超过实际 BufferCapacityInFrames。输入侧按后端" +
-                "实际支持情况生效，不构成保证有效的输入延迟控制。",
-        )
         ParamCheckboxRow(
-            label = "允许 MMAP（输入）",
+            label = "尝试输入 MMAP",
             checked = params.inMMapEnabled,
             onCheckedChange = { update(params.copy(inMMapEnabled = it)) },
         )
-        SectionNote(
-            "开启＝遵循系统 MMAP 策略，系统允许时使用 MMAP；" +
-                "关闭＝请求 AAUDIO_POLICY_NEVER（需要系统提供策略接口，" +
-                "无法兑现时启动将明确报错）。实际是否使用 MMAP 以实时流参数中的 " +
-                "MMapUsed 为准，开关状态不代表实际结果。",
-        )
+        SectionNote("使用 MMAP 可提高内存性能")
         HorizontalDivider()
         SectionHeader("输出流")
         ParamDropdown(
-            label = "BufferCapacityInFrames（输出缓冲容量）",
+            label = "BufferCapacity",
             selectedLabel = if (params.outBufferCapacity == 0) {
                 "自动（0）"
             } else {
@@ -111,22 +101,17 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             onSelect = { update(params.copy(outBufferCapacity = it)) },
         )
         ParamDropdown(
-            label = "BufferSizeInFrames（输出缓冲大小）",
+            label = "BufferSize",
             selectedLabel = if (params.outBufferSizeBursts == 0) "系统默认（0）" else "${params.outBufferSizeBursts} × FramesPerBurst",
             options = sizeOptions,
             onSelect = { update(params.copy(outBufferSizeBursts = it)) },
         )
-        SectionNote("默认 2 × 实际 FramesPerBurst，裁剪到实际容量；0 保留系统默认。运行期间不自动调整。")
         ParamCheckboxRow(
-            label = "允许 MMAP（输出）",
+            label = "尝试输出 MMAP",
             checked = params.outMMapEnabled,
             onCheckedChange = { update(params.copy(outMMapEnabled = it)) },
         )
-        SectionNote(
-            "含义与输入侧相同：开启＝遵循系统策略，关闭＝禁止 MMAP。" +
-                "策略为进程级，引擎在分别打开输出、输入流之前串行设置各自策略，" +
-                "结束后恢复原策略。",
-        )
+        SectionNote("使用 MMAP 可提高内存性能")
         HorizontalDivider()
         SectionHeader("输入读取门槛")
         Row(
@@ -134,23 +119,15 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             ParamDropdown(
-                label = "门槛倍数（× 输出 burst）",
-                selectedLabel = if (params.inputReadThresholdBursts == 0) {
-                    "0（不加倍数）"
-                } else {
-                    "${params.inputReadThresholdBursts} × 输出 FramesPerBurst"
-                },
+                label = "输出 burst 倍数",
+                selectedLabel = "${params.inputReadThresholdBursts}",
                 options = thresholdBurstOptions,
                 onSelect = { update(params.copy(inputReadThresholdBursts = it)) },
                 modifier = Modifier.weight(1f),
             )
             ParamDropdown(
                 label = "附加帧数",
-                selectedLabel = if (params.inputReadThresholdExtraFrames == 0) {
-                    "0 帧"
-                } else {
-                    "${params.inputReadThresholdExtraFrames} 帧"
-                },
+                selectedLabel = "${params.inputReadThresholdExtraFrames}",
                 options = extraFrameOptions,
                 onSelect = {
                     update(params.copy(inputReadThresholdExtraFrames = it))
@@ -158,12 +135,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
         }
-        SectionNote(
-            "读取前的最低可用帧数 F＝倍数 × 实际输出 FramesPerBurst ＋ 附加帧数，" +
-                "并与输入流实际 BufferSizeInFrames 取较小值。转发回调中输入可用帧数" +
-                "达到 F 才读取；F 不是每次读取的数量，也不是读取后必须剩余的帧数。" +
-                "两项均为 0 时不做门槛判断。",
-        )
+        SectionNote("读取输入缓冲的最低帧数门槛 = 倍数 × 输出 burst + 附加帧数")
         HorizontalDivider()
         SectionHeader("输入积压恢复")
         ParamDropdown(
@@ -185,7 +157,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             ParamDropdown(
-                label = "DRAIN 稳定阈值（次）",
+                label = "DRAIN 稳定次数",
                 selectedLabel = "${params.drainStableThreshold}",
                 options = phaseOptions,
                 onSelect = { update(params.copy(drainStableThreshold = it)) },
@@ -193,7 +165,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             ParamDropdown(
-                label = "DRAIN 强制退出次数",
+                label = "DRAIN 结束次数",
                 selectedLabel = "${params.drainMaxExecutions}",
                 options = phaseOptions,
                 onSelect = { update(params.copy(drainMaxExecutions = it)) },
@@ -201,7 +173,6 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
         }
-        SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 7 / 200。")
         HorizontalDivider()
         SectionHeader("DISCARD 同步阶段")
         Row(
@@ -209,7 +180,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             ParamDropdown(
-                label = "DISCARD 稳定阈值（次）",
+                label = "DISCARD 稳定次数",
                 selectedLabel = "${params.discardStableThreshold}",
                 options = phaseOptions,
                 onSelect = { update(params.copy(discardStableThreshold = it)) },
@@ -217,7 +188,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             ParamDropdown(
-                label = "DISCARD 强制退出次数",
+                label = "DISCARD 结束次数",
                 selectedLabel = "${params.discardMaxExecutions}",
                 options = phaseOptions,
                 onSelect = { update(params.copy(discardMaxExecutions = it)) },
@@ -225,15 +196,7 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
         }
-        SectionNote("连续达到稳定阈值后退出，不稳定则复位；达到强制退出次数时退出。默认 7 / 200。")
-        SectionNote("每个阶段的强制退出次数必须大于或等于稳定阈值，否则启动转发时将报错。")
         session.parameterAdjustment?.let { SectionNote(it) }
-        HorizontalDivider()
-        Text(
-            "参数在下次启动转发时生效。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

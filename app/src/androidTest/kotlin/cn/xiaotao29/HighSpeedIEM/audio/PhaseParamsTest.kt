@@ -89,10 +89,10 @@ class PhaseParamsTest {
             if (landscape) Configuration.ORIENTATION_LANDSCAPE else Configuration.ORIENTATION_PORTRAIT }
         await { nodes().any { it.contentDescription?.toString() == "转发参数设置" } }
         click(nodes().first { it.contentDescription?.toString() == "转发参数设置" })
-        select("DRAIN 稳定阈值（次）", 2)
-        select("DRAIN 强制退出次数", 1)
-        select("DISCARD 稳定阈值（次）", 3)
-        select("DISCARD 强制退出次数", 20)
+        select("DRAIN 稳定次数", 2)
+        select("DRAIN 结束次数", 1)
+        select("DISCARD 稳定次数", 3)
+        select("DISCARD 结束次数", 20)
         val screenshot = i.uiAutomation.takeScreenshot()
         assertNotNull(screenshot)
         File(i.targetContext.getExternalFilesDir(null), "phase-${if (landscape) "landscape" else "portrait"}.png")
@@ -105,8 +105,8 @@ class PhaseParamsTest {
             assertEquals(20, session.relayParams.discardMaxExecutions)
             assertTrue(session.prepareStartError()!!.contains("DRAIN"))
         }
-        select("DRAIN 强制退出次数", 10)
-        select("DISCARD 强制退出次数", 1)
+        select("DRAIN 结束次数", 10)
+        select("DISCARD 结束次数", 1)
         scenario.onActivity {
             assertTrue(session.prepareStartError()!!.contains("DISCARD"))
         }

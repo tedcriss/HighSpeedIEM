@@ -9,9 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -48,7 +46,7 @@ fun StreamParamsDialog(
     val rateOptions = session.sampleRateOptions(input, device.id).map {
         it to when (it) { -1 -> "同步输出采样率"; 0 -> "自动（0）"; else -> "$it Hz" }
     }
-    val formatOptions = listOf(AAudio.FORMAT_UNSPECIFIED to "AAUDIO_FORMAT_UNSPECIFIED（自动）") +
+    val formatOptions = listOf(AAudio.FORMAT_UNSPECIFIED to "${AAudio.formatName(AAudio.FORMAT_UNSPECIFIED)}（自动）") +
         device.encodings.toList().mapNotNull { encoding ->
             AAudio.formatFromEncoding(encoding)?.let { it to AAudio.formatName(it) }
         }.distinctBy { it.first }
@@ -73,7 +71,7 @@ fun StreamParamsDialog(
             ParamDropdown(
                 modifier = Modifier.weight(1f).focusRequester(initialFocus),
                 onMenu = onMenu,
-                label = "ChannelCount（通道数）",
+                label = "ChannelCount",
                 selectedLabel = if (params.channelCount == 0) "自动（0）" else "${params.channelCount}",
                 options = channelOptions,
                 onSelect = { update(params.copy(channelCount = it)) },
@@ -81,7 +79,7 @@ fun StreamParamsDialog(
             ParamDropdown(
                 onMenu = onMenu,
                 modifier = Modifier.weight(1f),
-                label = "SampleRate（采样率）",
+                label = "SampleRate",
                 selectedLabel = when {
                     params.sampleRateMode == cn.xiaotao29.HighSpeedIEM.audio.SampleRateMode.SYNC_OUTPUT -> "同步输出采样率"
                     rateOptions.isEmpty() -> "请选择输入设备 / 暂无可用采样率"
@@ -98,7 +96,7 @@ fun StreamParamsDialog(
         }
         ParamDropdown(
             onMenu = onMenu,
-            label = "Format（采样格式）",
+            label = "Format",
             selectedLabel = AAudio.formatName(params.format),
             options = formatOptions,
             onSelect = { update(params.copy(format = it)) },
@@ -123,7 +121,7 @@ fun StreamParamsDialog(
         }
         ParamDropdown(
             onMenu = onMenu,
-            label = "PerformanceMode（性能模式）",
+            label = "PerformanceMode",
             selectedLabel = AAudio.performanceName(params.performanceMode),
             options = performanceOptions,
             onSelect = { update(params.copy(performanceMode = it)) },
@@ -131,7 +129,7 @@ fun StreamParamsDialog(
         if (input) {
             ParamDropdown(
                 onMenu = onMenu,
-                label = "InputPreset（输入预设）",
+                label = "InputPreset",
                 selectedLabel = AAudio.presetName(params.inputPreset),
                 options = presetOptions,
                 onSelect = { update(params.copy(inputPreset = it)) },
@@ -140,23 +138,18 @@ fun StreamParamsDialog(
         if (!input && Build.VERSION.SDK_INT >= 28) {
             ParamDropdown(
                 onMenu = onMenu,
-                label = "Usage（用途）",
+                label = "Usage",
                 selectedLabel = AAudio.usageName(params.usage),
                 options = usageOptions,
                 onSelect = { update(params.copy(usage = it)) },
             )
             ParamDropdown(
                 onMenu = onMenu,
-                label = "ContentType（内容类型）",
+                label = "ContentType",
                 selectedLabel = AAudio.contentTypeName(params.contentType),
                 options = contentTypeOptions,
                 onSelect = { update(params.copy(contentType = it)) },
             )
         }
-        Text(
-            "参数在下次启动转发时生效。缓冲容量/大小已移至转发控制页的“转发参数设置”。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }

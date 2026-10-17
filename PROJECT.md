@@ -1,8 +1,27 @@
-# HighSpeedIEM（高速耳返）v6.6
+# HighSpeedIEM（高速耳返）v6.7
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
 最低 API 27、目标 API 37，四 ABI 和现有主题、导航、权限、MMAP 策略保持不变。
+
+v6.7：精简输入、输出和转发页副标题；设备参数菜单统一使用不带中文括注的名称，
+AAudio 枚举显示去掉公共前缀。实时流参数在显示层缩短缓冲、可用帧数、丢弃帧数、
+自动积压阈值和恢复次数名称；原生遥测字段、枚举及错误原文保留。转发参数设置
+缩短 MMAP、自动重启和读取门槛说明，门槛选项只显示数字，更新 DRAIN / DISCARD
+次数字段名称，删除指定的冗长说明与底部提示。参数取值、音频处理流程不变。
+
+v6.7 验收（2026-10-17）：Debug / Release 四 ABI 编译、6 项 JVM 测试通过；手机
+模拟器 ParameterDialogTest、RealtimeDialogTest、PhaseParamsTest 共 8 项通过，
+覆盖横竖屏、参数修改保留、原始校验错误和遥控器滚动。Release 逐页核对横竖屏
+副标题、设备参数下拉名称与枚举、转发参数说明与纯数字选项；实际转发时核对
+全部缩短的实时字段及枚举，深色横屏下 FramesRead 继续推进，crash buffer 为空。
+最终安装非 debuggable 的 6.7 / versionCode 72，恢复浅色竖屏默认输入首页。
+v2 签名验证通过，APK 包含 armeabi-v7a / arm64-v8a / x86 / x86_64。
+证据位于外置构建目录的 `build67.txt`、`build67-final.txt`、`qa67-debug.txt`、
+`qa67-phase.txt`、`qa67-release.txt`、`qa67-realtime-release.txt` 和 `qa67/`。
+实时字段的自动核对采用合并的无障碍标签；首次核对脚本仅读取可见文字，补充
+读取标签后检查通过。交付包为 `cn.xiaotao29.HighSpeedIEM_6.7.apk`，SHA-256：
+`ABEEA295EC1697F7CA176382B69A062A5A27C6648BD337B9C8982D85819FB470`。
 
 v6.6：输出设备参数的 `Exclusive` 默认不勾选，以共享模式请求开流；输入设备仍
 默认勾选。方向默认值统一由 `StreamParams.defaultFor(input)` 提供，用户手动设置
