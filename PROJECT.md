@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v6.2
+# HighSpeedIEM（高速耳返）v6.3
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -138,6 +138,44 @@ MMAP 开启仍表示保留平台原策略（包括 UNSPECIFIED），关闭临时
 映射见 `设备类型映射.md`。
 
 ## 构建与验证
+
+### v6.3 大面积非全屏参数窗口
+
+设备卡片的输入/输出设备参数、转发控制页的转发参数设置统一改用共享
+`ParameterDialog`。原生 Compose Dialog 关闭默认宽度限制，实际 Surface 采用
+可用宽高的 92%，四周保留外部点击区域；原生窗口处理系统栏和异形屏避让。
+两类参数窗口统一使用 Material 3 大圆角、主题容器色与原生阴影，标题固定，
+参数区通过原生 verticalScroll 滚动。移除 X，不增加保存/取消按钮。
+点击窗口外部或按返回键均走原生 `onDismissRequest`；设备参数的菜单键循环和
+焦点恢复保持不变。没有全屏透明布局拦截外部点击，也没有自绘点击遮罩。
+
+参数仍直接订阅并修改唯一会话，选择选项即更新，没有需要确认或关闭时提交的
+独立副本；开流参数依然在下次启动转发时生效。与本轮界面调整无关的音频流程、
+参数联动与校验规则保持不变。
+
+依据：[Android Dialog](https://developer.android.com/develop/ui/compose/components/dialog)。
+
+四 ABI Debug、签名 Release、测试 APK、6 项 JVM 单元测试和 `lintRelease`
+通过（0 errors / 8 项既有 warnings）。API 37 / x86_64 手机模拟器浅色模式共
+9 项界面/参数回归通过，包括新增 `ParameterDialogTest` 的输入参数、输出参数、
+转发参数横竖屏窗口边界、无 X、真实外部点击、返回关闭，以及关闭前即时更新/
+关闭后重新打开仍保留设置；既有菜单、焦点、嵌套下拉框、旋转和启动校验通过。
+
+1080×2400 竖屏时三个窗口的实际边界均为 `(43,154)-(1037,2246)`；
+2400×1080 横屏时均为 `(96,40)-(2304,976)`，没有占满屏幕边界。
+深色模式同一组横竖屏用例完整复测 2 项通过（`dark-retest.log`）；初次深色
+横屏在测试发起转发页导航后等待超时，补充失败现场输出后完整复测未再出现。
+Release 使用真实页面导航检查输入、输出和转发参数的浅色竖屏、深色横屏，
+检查滚动前后实际 Surface / ScrollView 边界和标题位置不变；文字可访问区域
+被滚动子项语义裁剪时，不将文字节点的可见高度当成窗口高度。
+Debug / Release crash buffer 均为空；原主题、自动旋转设置已恢复，最终安装
+非 debuggable 6.3 Release 并在前台打开默认竖屏输入页，模拟器保持运行。
+构建、测试及截图保存在 `C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/qa63/`。
+记录包括 `build.log`、`light-tests.log`、`dark-retest.log`、`geometry.log`、
+`release-qa.log`（浅色部分）、`release-dark-final.log` 和 `release-*.png/xml`。
+版本 6.3 / versionCode 68，沿用工程已有签名配置，v2 签名验证通过，APK 包含
+armeabi-v7a / arm64-v8a / x86 / x86_64：
+`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/app/outputs/apk/release/cn.xiaotao29.HighSpeedIEM_6.3.apk`。
 
 ### v6.2 设备能力滚动时浮层尺寸与位置稳定
 

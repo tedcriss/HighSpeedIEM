@@ -72,9 +72,8 @@ class PhaseParamsTest {
         scenario.onActivity { assertEquals(-1, session.relayParams.inputBacklogThresholdFrames) }
         // The existing portrait/landscape navigation can rebuild ForwardPage
         // and close its local dialog. Reopen it to verify the retained value.
-        await { nodes().any { it.contentDescription?.toString() in
-            listOf("转发参数设置", "关闭转发参数设置") } }
-        if (nodes().none { it.contentDescription?.toString() == "关闭转发参数设置" }) {
+        await { nodes().any { it.contentDescription?.toString() == "转发参数设置" || it.text?.toString() == "转发参数设置" } }
+        if (nodes().none { it.text?.toString() == "转发参数设置" }) {
             click(nodes().first { it.contentDescription?.toString() == "转发参数设置" })
         }
         scrollTo("输入高积压阈值（帧）")
@@ -115,7 +114,7 @@ class PhaseParamsTest {
         scenario.recreate()
         scenario.onActivity { assertEquals(1, session.relayParams.discardMaxExecutions) }
         i.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        await { nodes().none { it.contentDescription?.toString() == "关闭转发参数设置" } }
+        await { nodes().none { it.text?.toString() == "转发参数设置" } }
         // The same preflight used by the service must reject and show its original error.
         scenario.onActivity {
             session.startEngine(object : RelaySession.Owner {

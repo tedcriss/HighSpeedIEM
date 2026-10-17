@@ -3,7 +3,6 @@ package cn.xiaotao29.HighSpeedIEM.ui
 import android.content.res.Configuration
 import android.os.Build
 import android.view.Window
-import android.view.WindowManager
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -32,6 +31,12 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,11 +51,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -253,45 +255,50 @@ fun StatusBadge(status: String) {
     }
 }
 
-/**
- * Full-screen dialog shared by every full-screen dialog in the app.
- *
- * The dialog owns its window: it is edge-to-edge (background paints under the
- * transparent system bars and the display cutout, no letterbox black bars) and
- * lays out into cutout areas on the short edges — the top edge in portrait and
- * the left/right edge in either landscape rotation. Bar visibility follows the
- * orientation only (status bar visible in portrait, hidden in landscape; the
- * navigation bar and gesture pill always remain), configured on the dialog
- * window itself so the activity window keeps its own rules after dismiss.
- * Content must apply [safeContentInsets] once at its root to stay in the safe
- * area beneath the visible bars and the cutout.
- */
+/** Large inset parameter window; native Dialog handles outside/back dismissal. */
 @Composable
-fun ImmersiveDialog(onDismissRequest: () -> Unit, content: @Composable () -> Unit) {
+fun ParameterDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    onMenu: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Dialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
             usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
+            // Let the native window constrain content to system bars/cutouts.
+            decorFitsSystemWindows = true,
         ),
     ) {
-        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        val darkTheme = isSystemInDarkTheme()
-        val orientation = LocalConfiguration.current.orientation
-        LaunchedEffect(window, darkTheme, orientation) {
-            window ?: return@LaunchedEffect
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // SHORT_EDGES covers the cutout on the top edge in portrait and
-                // on the left/right edge in both landscape rotations; the
-                // attribute itself only exists from API 28.
-                window.attributes = window.attributes.apply {
-                    layoutInDisplayCutoutMode =
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
+        Surface(
+            // Size the actual surface, with no full-screen wrapper intercepting
+            // outside taps. Leave a visible margin on every screen edge.
+            modifier = Modifier.fillMaxSize(0.92f).onMenuKey(onMenu)
+                .semantics { paneTitle = title },
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 6.dp,
+            shadowElevation = 6.dp,
+        ) {
+            Column {
+                MarqueeText(
+                    title,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp)
+                        .semantics { heading() },
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                HorizontalDivider()
+                Column(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                        .verticalScroll(rememberScrollState()).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    content = content,
+                )
             }
-            configureEdgeToEdgeWindow(window, darkTheme, orientation)
         }
-        content()
     }
 }
 
