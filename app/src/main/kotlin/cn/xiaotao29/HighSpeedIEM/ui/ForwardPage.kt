@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Battery5Bar
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
@@ -145,7 +146,7 @@ fun ForwardPage(activity: MainActivity, session: RelaySession, onEditMixer: (Int
                     PageHeading(
                         title = "转发控制",
                         description = "按输出通道配置混音输入，启动后由前台服务后台常驻转发。",
-                        status = if (session.forwarding) "转发中" else "未转发",
+                        status = if (session.restartWaiting) "等待自动重启" else if (session.forwarding) "转发中" else "未转发",
                     )
                 }
                 if (outChannels == 0) {
@@ -221,7 +222,7 @@ private fun ForwardControlButtons(
 private fun RelayParamsIconButton(session: RelaySession, onClick: () -> Unit) {
     IconButton(
         onClick = onClick,
-        enabled = !session.forwarding && !session.busy,
+        enabled = !session.operationsBlocked,
         colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Transparent),
     ) {
         Icon(Icons.Filled.Settings, contentDescription = "转发参数设置")
@@ -260,10 +261,17 @@ private fun RealtimeParamsIconButton(enabled: Boolean, open: Boolean, onClick: (
 @Composable
 private fun StartStopIconButton(activity: MainActivity, session: RelaySession) {
     val running = session.forwarding
-    val enabled = running ||
+    val waiting = session.restartWaiting
+    val enabled = waiting || (!session.busy && running) ||
         (session.canForward && session.hasMixerRoutes && !session.busy)
     IconButton(
-        onClick = { if (running) activity.stopForwarding() else activity.startForwarding() },
+        onClick = {
+            when {
+                waiting -> session.abortRestart()
+                running -> activity.stopForwarding()
+                else -> activity.startForwarding()
+            }
+        },
         enabled = enabled,
         colors = IconButtonDefaults.iconButtonColors(
             containerColor = Color.Transparent,
@@ -271,8 +279,8 @@ private fun StartStopIconButton(activity: MainActivity, session: RelaySession) {
         ),
     ) {
         Icon(
-            if (running) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-            contentDescription = if (running) "停止转发" else "启动转发",
+            when { waiting -> Icons.Filled.Refresh; running -> Icons.Filled.Stop; else -> Icons.Filled.PlayArrow },
+            contentDescription = when { waiting -> "中止尝试"; running -> "停止转发"; else -> "启动转发" },
         )
     }
 }
@@ -354,10 +362,10 @@ private fun ChannelMixCard(session: RelaySession, channel: Int, onEditMixer: (In
             MixerDialogButton(
                 channel = channel,
                 label = "混音输入 · 已选 $selectedCount",
-                enabled = !session.busy,
+                enabled = !session.busy && !session.restartWaiting,
                 onClick = { onEditMixer(channel) },
             )
-            EffectsDialogButton(channel = channel, enabled = !session.busy)
+            EffectsDialogButton(channel = channel, enabled = !session.busy && !session.restartWaiting)
         }
     }
 }
@@ -423,7 +431,7 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
                             ListItem(
                                 checked = checked,
                                 onCheckedChange = { draftMask = draftMask xor (1 shl channel) },
-                                enabled = !session.busy,
+                                enabled = !session.busy && !session.restartWaiting,
                                 leadingContent = { Checkbox(checked = checked, onCheckedChange = null) },
                                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             ) { MarqueeText("ID $inputId · 通道 $channel") }
@@ -437,7 +445,7 @@ internal fun MixerDialog(session: RelaySession, outChannel: Int, onDismiss: () -
                 ) {
                     TextButton(onClick = onDismiss) { MarqueeText("取消") }
                     TextButton(
-                        enabled = available && !session.busy,
+                        enabled = available && !session.busy && !session.restartWaiting,
                         onClick = {
                             session.setMixerMask(outChannel, draftMask)
                             onDismiss()

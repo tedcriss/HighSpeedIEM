@@ -115,12 +115,23 @@ fun RelayApp(activity: MainActivity, session: RelaySession) {
             }
         }
 
-        // One latest status slot; collectLatest cancels obsolete status and
-        // immediately lets retained errors take priority over informational text.
+        // Retry notices include the raw failure; keep only the newest during a
+        // retry loop. Other errors remain queued and take priority over telemetry.
         LaunchedEffect(session, activity) {
             activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                snapshotFlow { session.pendingError?.let { it to null } ?: (null to session.pendingStatus) }.collectLatest { (error, status) ->
-                    if (error != null) {
+                snapshotFlow {
+                    val restart = session.restartNotice
+                    val error = session.pendingError
+                    when {
+                        restart != null -> Triple(restart, null, null)
+                        error != null -> Triple(null, error, null)
+                        else -> Triple(null, null, session.pendingStatus)
+                    }
+                }.collectLatest { (restart, error, status) ->
+                    if (restart != null) {
+                        snackbarHostState.showSnackbar("自动重启中\n${restart.text}", actionLabel = "关闭", duration = SnackbarDuration.Long)
+                        session.consumeRestartNotice(restart.id)
+                    } else if (error != null) {
                         snackbarHostState.showSnackbar(error.text, actionLabel = "关闭", duration = SnackbarDuration.Long)
                         session.consumeError(error.id)
                     } else if (status != null) {

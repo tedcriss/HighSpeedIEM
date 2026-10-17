@@ -44,6 +44,8 @@ data class RelayParams(
     val inMMapEnabled: Boolean = true,
     /** Output counterpart of [inMMapEnabled]. */
     val outMMapEnabled: Boolean = true,
+    /** Front-end only: close on every error, then request a normal start after 500 ms. */
+    val autoRestart: Boolean = false,
 ) {
     /** Checked at start, without silently changing the user's selections. */
     fun phaseStartError(): String? {

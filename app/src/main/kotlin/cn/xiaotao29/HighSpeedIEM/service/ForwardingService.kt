@@ -20,7 +20,8 @@ import cn.xiaotao29.HighSpeedIEM.audio.RelaySession
  * Foreground service (microphone + mediaPlayback, partial wake lock) that
  * keeps the relay alive in the background. The ongoing notification opens the
  * forward-control tab. Swiping the app from recents stops the relay at once
- * and releases everything; the service never restarts itself.
+ * and releases everything. The front-end session may retain this foreground
+ * host while closing and reopening audio streams after a reported error.
  */
 class ForwardingService : Service(), RelaySession.Owner {
 
@@ -99,6 +100,11 @@ class ForwardingService : Service(), RelaySession.Owner {
         } catch (e: Exception) {
             failStart(e.toString())
         }
+    }
+
+    override fun relayRestarting() {
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTICE, notice("自动重启中 · 点击打开转发控制"))
     }
 
     private fun failStart(error: String) {

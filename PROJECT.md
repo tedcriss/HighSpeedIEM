@@ -1,4 +1,4 @@
-# HighSpeedIEM（高速耳返）v6.4
+# HighSpeedIEM（高速耳返）v6.5
 
 单一输入设备 → 单一输出设备的低延迟音频转发应用。Kotlin / Jetpack Compose /
 Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或格式转换库。
@@ -11,6 +11,62 @@ Material Design 3 前端，C++ 直接调用 AAudio；没有 Oboe、重采样或�
 联动结果的独立参数副本。准备、启动、停止期间保持 busy，界面阻止冲突操作。
 `ForwardingService` 继续负责 microphone/mediaPlayback 前台服务及部分唤醒锁。
 设备热插拔、运行中路由更新、通知入口、任务清除时停止均保留。
+
+### v6.5 前端自动重启
+
+转发参数对话框新增 Material 3 原生“自动重启”checkbox，默认关闭，保存在共享
+前端会话的 `RelayParams.autoRestart` 中，不进入 JNI 配置。未开启时保持原有报错
+停止、取消设备选择和清除混音配对流程。
+
+开启后，原生错误回调及 prepare/start 返回的失败不分类、不限制次数；前端先执行
+原有完整 `nativeStop` 释放流程，再用协程 `delay(500)` 等待，最后进入同一个
+`startEngine` → prepare → 几何归一化 → startPrepared 流程。C++ 不增加重试状态。
+等待期间保留设备、参数和混音，锁定配置操作，转发按钮显示原生 Refresh 图标、
+无障碍名称“中止尝试”；点击即取消后续尝试、取消 checkbox、清除选择与混音并
+关闭服务。选中设备移除同样取消等待并执行原有设备清理，但保留 checkbox 勾选。
+普通用户停止、清除任务和过期回调均不能重新触发尝试。
+
+Snackbar 显示“自动重启中”及错误原文；重试循环只保留最新错误，避免持续失败时
+无限积累通知。其他错误继续保留原有逐条展示队列。每次启动重置错误去重状态，
+覆盖 nativePrepare 在分配会话 ID 之前拒绝配置、下一次启动复用预测 ID 的情形。
+
+音频流在每次失败后完整释放；500ms 等待期间保留现有 microphone/mediaPlayback
+前台服务及其唤醒锁，正常恢复后更新通知，终止尝试时释放。这样后台恢复不需要
+重新创建受系统 while-in-use 麦克风权限限制的服务，不依赖 Activity 可见性。
+继续不申请音频焦点，不改变用户的共享/独占、Usage、ContentType 等开流请求。
+既有 RECORD_AUDIO、前台服务权限与 WAKE_LOCK 已配置，不额外申请无关权限。
+
+依据：[AAudio 断开流必须关闭并重新打开](https://developer.android.com/ndk/guides/audio/aaudio/aaudio)，
+[Android 音频输入共享与前台服务限制](https://developer.android.com/media/platform/sharing-audio-input)。
+没有收到本次任务所指“上述错误”的具体日志，因此不宣称已定位某一实体设备中断
+的根因；音频服务、路由、硬件或独占流断开无法仅通过普通权限保证不中断。
+
+#### v6.5 验收（2026-10-17）
+
+- 基于远端最新 `92b6e9c`（v6.4），版本更新至 6.5 / versionCode 70。
+- Debug / DebugAndroidTest / Release 编译及 6 项 JVM 参数规则测试通过；
+  lintRelease 为 0 errors / 9 warnings。
+- API 37 x86_64 手机模拟器：AutoRestartTest、ErrorReportingTest、ParameterDialogTest、
+  PreparedLifecycleTest 共 25 项通过；最终构建额外复测 9 项自动重启测试全部通过，
+  深色横屏控件测试另通过。设备移除使用真实 AudioDeviceInfo 调用框架回调模拟；
+  原生错误注入调用生产 errorCallback，仅 Debug 导出测试入口。
+- 覆盖不同原生错误码及未知码、不限次数的错误配置重试、完整关流与 500ms 间隔、
+  保留设备/参数/混音、配置锁定、刷新按钮中止并取消勾选、选中设备消失中止但保留
+  勾选、后台恢复、用户停止、过期回调及准备阶段拒绝配置后的下一次错误。
+- 最终 Release 实际界面完成：默认未勾选；Tab 聚焦 checkbox 并用遥控器确认键
+  DPAD_CENTER 勾选/取消；选择设备及混音 → 竖屏启动 → 深色横屏 → 实时参数
+  FramesRead 从 76395 增至 108491 → 停止。最后恢复浅色竖屏默认输入首页、未选
+  设备，MainActivity 为 topResumedActivity，服务已退出，crash buffer 为空，模拟器
+  保持运行。安装包为非 debuggable 的签名 Release 6.5。
+- APK 包含 armeabi-v7a / arm64-v8a / x86 / x86_64，v2 签名验证通过；四份
+  librelay.so 均不含 AutoRestartTest 原生故障注入入口。
+
+证据目录：`C:/Users/xuyuntao/AndroidBuild/HighSpeedIEM/` 下的
+`build65-delivery.txt`、`qa65-final.txt`、`qa65-delivery.txt`、`qa65-dark.txt`、
+`qa65-release.txt`、`qa65-release/` 和 `qa65-dark/`。
+交付包：`cn.xiaotao29.HighSpeedIEM_6.5.apk`；SHA-256：
+`33C349328115B753F9C9E683D2C96AA87411CE3114D5A53D4C4985866AFBF7D5`。
+测试仅在手机模拟器完成，不把模拟错误或平台计数推进视为实体设备音质/延迟证据。
 
 启动由同一个生命周期协程串行执行：
 

@@ -147,6 +147,10 @@ extern "C" JNIEXPORT void JNICALL
 Java_cn_xiaotao29_HighSpeedIEM_audio_PreparedLifecycleTest_nativeInjectError(JNIEnv*, jobject, jint error) {
     RelayEngine::errorCallback(nullptr, &RelayEngine::get(), error);
 }
+extern "C" JNIEXPORT void JNICALL
+Java_cn_xiaotao29_HighSpeedIEM_audio_AutoRestartTest_nativeInjectError(JNIEnv*, jobject, jint error) {
+    RelayEngine::errorCallback(nullptr, &RelayEngine::get(), error);
+}
 #endif
 
 #ifndef NDEBUG

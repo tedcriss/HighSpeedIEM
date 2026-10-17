@@ -138,7 +138,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun startForwarding() {
-        if (session.busy || session.forwarding) return
+        if (session.busy || session.forwarding || session.restartWaiting) return
         val error = session.prepareStartError()
         if (error != null) {
             session.showError(error)

@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -35,6 +36,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     interface Owner {
         fun relayStarted()
         fun relayClosed()
+        fun relayRestarting() = Unit
     }
 
     private val audioManager = app.getSystemService(AudioManager::class.java)
@@ -61,6 +63,18 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     /** True while opening/closing streams; the UI must block all operations. */
     var busy by mutableStateOf(false)
         private set
+
+    /** Audio resources are closed; the user can cancel the next start. */
+    var restartWaiting by mutableStateOf(false)
+        private set
+    var restartNotice by mutableStateOf<ErrorNotice?>(null)
+        private set
+    private var restartJob: Job? = null
+    private var restartRequested = false
+
+    fun consumeRestartNotice(id: Long) {
+        if (restartNotice?.id == id) restartNotice = null
+    }
 
     data class ErrorNotice(val id: Long, val text: String)
 
@@ -128,7 +142,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         // Key uniqueness means a re-added id overwrites the stale entry.
         devices[device.id] = device
         normalizeSampleRates()
-        if (deviceInUse(input, device.id) && (forwarding || busy)) {
+        if (deviceInUse(input, device.id) && (forwarding || busy || restartWaiting)) {
             stopForwarding("转发已停止：音频设备 ID ${device.id} 被系统重新枚举")
         }
     }
@@ -144,7 +158,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         if (!input && selectedOutputId == device.id) selectedOutputId = null
         normalizeSampleRates()
         if (wasInUse) mixer.clear()
-        if (wasInUse && (forwarding || busy)) {
+        if (wasInUse && (forwarding || busy || restartWaiting)) {
             // The native error callback may already have stopped the relay;
             // stopForwarding is idempotent and tolerates that.
             stopForwarding("转发已停止：音频设备 ID ${device.id} 已被移除")
@@ -156,7 +170,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
 
     // ---- selection ----
 
-    val operationsBlocked: Boolean get() = busy || forwarding
+    val operationsBlocked: Boolean get() = busy || forwarding || restartWaiting
 
     fun toggleInputSelection(id: Int) {
         if (operationsBlocked) return
@@ -180,7 +194,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         (if (input) inputParams else outputParams)[id] ?: StreamParams.defaultFor(input)
 
     fun setParams(input: Boolean, id: Int, params: StreamParams) {
-        if (busy) return
+        if (busy || restartWaiting) return
         val old = paramsFor(input, id)
         (if (input) inputParams else outputParams)[id] = params
         if (old.channelCount != params.channelCount) mixer.clear()
@@ -244,7 +258,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
 
     /** Apply the whole dialog selection in one native routing update. */
     fun setMixerMask(outChannel: Int, mask: Int) {
-        if (busy) return
+        if (busy || restartWaiting) return
         if (forwarding) {
             try {
                 NativeRelay.nativeSetMixer(outChannel, mask)
@@ -323,14 +337,18 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
 
     /** Called by the service once its foreground notification is up. Blocking open on IO. */
     fun startEngine(newOwner: Owner) {
-        // An already attached owner is a repeated start, never a rejected new owner.
-        if (owner === newOwner) return
-        if (busy || forwarding) {
+        // Duplicate starts are ignored; a retained idle owner can start after the delay.
+        if (owner === newOwner && (busy || forwarding || restartWaiting)) return
+        if (busy || forwarding || restartWaiting) {
             newOwner.relayClosed()
             return
         }
         val error = prepareStartError()
         if (error != null) {
+            if (owner === newOwner) {
+                stopForwarding(error)
+                return
+            }
             showError(error)
             newOwner.relayClosed()
             return
@@ -339,6 +357,10 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         busy = true
         stopRequested = false
         clearSelectionOnStop = false
+        restartRequested = false
+        // A rejected nativePrepare can return before allocating a native ID.
+        // Reset per-attempt deduplication even when the predicted ID is reused.
+        errorHandledSessionId = -1L
         val config = buildConfig()
         val masks = IntArray(effectiveOutputChannels) { mixerMask(it) }
         activeSessionId = NativeRelay.nativeSessionId() + 1
@@ -366,7 +388,10 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
                 // Owner notification failures may request stop inside this lifecycle job.
                 if (stopRequested) finishStopping()
             } else {
-                if (failure != null && !stopRequested) { showError(failure); errorHandledSessionId = activeSessionId; clearSelectionOnStop = true }
+                if (failure != null && !stopRequested) {
+                    recordFailure(failure)
+                    errorHandledSessionId = activeSessionId
+                }
                 finishStopping()
             }
         }
@@ -383,12 +408,13 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     /**
      * Stop and release everything. Idempotent and safe when the native error
      * callback already tore the relay down. [clearSelection] drops both device
-     * selections (error stops do; a plain user stop keeps them).
+     * selections (terminal errors do; retryable errors and plain user stops keep them).
      */
     @JvmOverloads
     fun stopForwarding(error: String? = null, clearSelection: Boolean = error != null) {
-        error?.let(::showError)
-        clearSelectionOnStop = clearSelectionOnStop || clearSelection
+        cancelRestartWait()
+        if (error != null) recordFailure(error) else restartRequested = false
+        clearSelectionOnStop = clearSelectionOnStop || (clearSelection && !restartRequested)
         if (lifecycleJob?.isActive == true) {
             stopRequested = true
             return
@@ -405,6 +431,32 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         }
     }
 
+    /** Every failure follows the same path; never classify backend error codes. */
+    private fun recordFailure(text: String) {
+        restartRequested = relayParams.autoRestart && canForward && owner != null
+        if (restartRequested) {
+            // One latest retry notice avoids an unbounded queue during persistent failures.
+            restartNotice = ErrorNotice(++nextErrorId, text)
+        } else {
+            showError(text)
+            clearSelectionOnStop = true
+        }
+    }
+
+    private fun cancelRestartWait() {
+        restartJob?.cancel()
+        restartJob = null
+        restartWaiting = false
+    }
+
+    fun abortRestart() {
+        if (!restartWaiting) return
+        relayParams = relayParams.copy(autoRestart = false)
+        restartNotice?.let { showError(it.text) }
+        restartNotice = null
+        stopForwarding(clearSelection = true)
+    }
+
     private suspend fun finishStopping() {
         pendingStatus = null
         val currentOwner = owner
@@ -419,10 +471,33 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
         if (clearSelectionOnStop) clearSelections()
         clearSelectionOnStop = false
         stopRequested = false
-        owner = null
         busy = false
-        closeError?.let(::showError)
-        currentOwner?.relayClosed()
+        if (closeError != null) {
+            if (restartRequested) recordFailure(closeError) else showError(closeError)
+        }
+        if (restartRequested && relayParams.autoRestart && canForward && currentOwner != null) {
+            restartRequested = false
+            restartWaiting = true
+            // Keep the existing microphone FGS authorization across retries. Only
+            // the front end retries; nativePrepare/startPrepared see a normal start.
+            try { currentOwner.relayRestarting() } catch (t: Exception) { showError(t.toString()) }
+            restartJob = scope.launch {
+                delay(500)
+                restartJob = null
+                restartWaiting = false
+                if (!canForward || !relayParams.autoRestart) {
+                    stopForwarding(clearSelection = true)
+                    return@launch
+                }
+                startEngine(currentOwner)
+            }
+        } else {
+            restartRequested = false
+            owner = null
+            restartNotice?.let { showError(it.text) }
+            restartNotice = null
+            currentOwner?.relayClosed()
+        }
     }
 
     private fun clearSelections() {
@@ -437,7 +512,7 @@ class RelaySession(private val app: Application) : NativeRelay.Listener {
     @Keep
     override fun onNativeError(sessionId: Long, text: String) {
         mainHandler.post {
-            if (sessionId == activeSessionId && errorHandledSessionId != sessionId && (busy || forwarding)) {
+            if (sessionId == activeSessionId && errorHandledSessionId != sessionId && !stopRequested && (busy || forwarding)) {
                 errorHandledSessionId = sessionId
                 pendingStatus = null
                 stopForwarding(text)

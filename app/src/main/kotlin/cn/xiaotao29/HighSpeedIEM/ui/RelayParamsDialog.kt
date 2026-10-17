@@ -53,6 +53,14 @@ fun RelayParamsDialog(session: RelaySession, onDismiss: () -> Unit) {
     val phaseOptions = RelayParams.PHASE_COUNT_OPTIONS.map { it to "$it" }
 
     ParameterDialog(title = "转发参数设置", onDismissRequest = onDismiss) {
+        ParamCheckboxRow(
+            label = "自动重启",
+            checked = params.autoRestart,
+            onCheckedChange = { update(params.copy(autoRestart = it)) },
+            enabled = !session.operationsBlocked,
+        )
+        SectionNote("转发报错后等待 500ms 再次尝试，保留设备与混音设置。点击刷新图标“中止尝试”，同时关闭自动重启；选中的设备断开时自动中止。")
+        HorizontalDivider()
         SectionHeader("输入流")
         ParamDropdown(
             label = "BufferCapacityInFrames（输入缓冲容量）",
@@ -241,14 +249,15 @@ private fun ParamCheckboxRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier
-            .toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange)
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onCheckedChange)
             .padding(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = checked, onCheckedChange = null)
+        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
         MarqueeText(label, style = MaterialTheme.typography.bodyMedium)
     }
 }
